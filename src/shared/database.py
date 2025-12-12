@@ -101,6 +101,56 @@ class MasterDatabase:
             (telegram_invoice_id, total_amount, currency, invoice_id),
         )
 
+    async def get_saas_plans_for_billing(self) -> list[dict]:
+        """
+        Список тарифов для витрины биллинга:
+        saas_plans + billing_products (если product есть и активен).
+        """
+        rows = await self.fetchall(
+            """
+            SELECT
+                sp.code         AS plan_code,
+                sp.name         AS plan_name,
+                sp.period_days  AS period_days,
+                sp.tickets_limit,
+                sp.price_stars,
+                bp.code         AS product_code
+            FROM saas_plans AS sp
+            LEFT JOIN billing_products AS bp
+            ON bp.plan_id = sp.plan_id
+            AND bp.is_active = TRUE
+            ORDER BY sp.plan_id
+            """
+        )
+        return [dict(r) for r in rows]
+
+
+    async def get_saas_plan_with_product_by_code(self, plan_code: str) -> dict | None:
+        row = await self.fetchone(
+            """
+            SELECT
+                sp.plan_id,
+                sp.code         AS plan_code,
+                sp.name         AS plan_name,
+                sp.period_days,
+                sp.tickets_limit,
+                sp.price_stars,
+                bp.product_id,
+                bp.code         AS product_code,
+                bp.amount_stars
+            FROM saas_plans AS sp
+            LEFT JOIN billing_products AS bp
+              ON bp.plan_id = sp.plan_id
+             AND bp.is_active = TRUE
+            WHERE sp.code = %s
+            LIMIT 1
+            """,
+            (plan_code,),
+        )
+        return dict(row) if row else None
+
+
+
     async def apply_saas_plan_for_invoice(self, invoice_id: int) -> None:
         """
         По invoice_id находим instance_id и соответствующий saas_plan
@@ -801,6 +851,82 @@ class MasterDatabase:
         with self.conn.cursor() as cur:
             cur.execute("DELETE FROM bot_instances WHERE instance_id = %s", (instance_id,))
         self.conn.commit()
+
+
+    async def update_billing_invoice_link_and_payload(
+        self,
+        invoice_id: int,
+        payload: str,
+        invoice_link: str,
+    ) -> None:
+        await self.execute(
+            """
+            UPDATE billing_invoices
+            SET payload = %s,
+                invoice_link = %s,
+                updated_at = NOW()
+            WHERE invoice_id = %s
+            """,
+            (payload, invoice_link, invoice_id),
+        )
+
+    async def insert_billing_invoice(
+        self,
+        instance_id: str,
+        user_id: int,
+        plan_code: str,      # можно не использовать, но оставим для совместимости
+        periods: int,
+        amount_stars: int,
+        product_code: str,
+        payload: str,
+        invoice_link: str,
+        status: str = "pending",
+    ) -> int:
+        # product_code = billing_products.code → достаём product_id
+        product_row = await self.fetchone(
+            """
+            SELECT product_id
+            FROM billing_products
+            WHERE code = %s
+            LIMIT 1
+            """,
+            (product_code,),
+        )
+        if not product_row:
+            raise ValueError(f"Unknown billing product_code={product_code}")
+
+        product_id = product_row["product_id"]
+
+        row = await self.fetchone(
+            """
+            INSERT INTO billing_invoices (
+                instance_id,
+                user_id,
+                product_id,
+                payload,
+                telegram_invoice_id,
+                invoice_link,
+                stars_amount,
+                currency,
+                status
+            )
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            RETURNING invoice_id
+            """,
+            (
+                instance_id,
+                user_id,
+                product_id,
+                payload,
+                None,             
+                invoice_link,
+                amount_stars,     
+                "XTR",
+                status,
+            ),
+        )
+        return row["invoice_id"]
+
 
     async def get_instance(self, instance_id: str) -> Optional[BotInstance]:
         assert self.conn is not None

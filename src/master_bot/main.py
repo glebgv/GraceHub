@@ -291,6 +291,61 @@ class MasterBot:
 
         return instance
 
+    async def handle_billing_main_menu(self, callback: CallbackQuery):
+        user_id = callback.from_user.id
+
+        from shared import settings
+        if settings.SINGLE_TENANT_OWNER_ONLY:
+            owner_id = settings.OWNER_TELEGRAM_ID
+            if not owner_id or user_id != owner_id:
+                await callback.answer("Доступ только владельцу", show_alert=True)
+                return
+
+        texts = await self.t(user_id)
+
+        # берём все публичные планы (как для мини‑аппы)
+        plans = await self.db.get_saas_plans_for_billing()
+
+        if not plans:
+            await callback.message.edit_text(
+                "Тарифы пока не настроены.",
+                reply_markup=self.get_main_menu_for_lang(texts),
+            )
+            await callback.answer()
+            return
+
+        text = "Выберите тариф для вашего аккаунта:\n\n"
+        keyboard_rows: list[list[InlineKeyboardButton]] = []
+
+        for p in plans:
+            text += (
+                f"• <b>{p['plan_name']}</b>: {p['price_stars']} ⭐ / {p['period_days']} д., "
+                f"лимит {p['tickets_limit']} тикетов\n"
+            )
+            if p["product_code"]:
+                keyboard_rows.append(
+                    [
+                        InlineKeyboardButton(
+                            text=f"{p['plan_name']} — {p['price_stars']} ⭐",
+                            callback_data=f"billing_choose_plan_{p['plan_code']}",
+                        )
+                    ]
+                )
+
+        keyboard_rows.append(
+            [
+                InlineKeyboardButton(
+                    text=texts.master_list_bots_main_menu_button,
+                    callback_data="main_menu",
+                )
+            ]
+        )
+
+        keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
+
+        await callback.message.edit_text(text, reply_markup=keyboard)
+        await callback.answer()
+
 
 
     async def _send_personal_miniapp_link(
@@ -358,7 +413,13 @@ class MasterBot:
         self.dp.callback_query(F.data.startswith("remove_yes_"))(self.handle_remove_instance)
         self.dp.callback_query(F.data.startswith("remove_no_"))(self.handle_remove_cancel)
         
-
+        # === Биллинг из мастер-бота ===
+        self.dp.callback_query(F.data.startswith("billing_choose_plan_"))(
+            self.handle_billing_choose_plan
+        )
+        self.dp.callback_query(F.data.startswith("billing_confirm_plan_"))(
+            self.handle_billing_confirm_plan
+        )
 
         # Общий handler для меню callbacks
         self.dp.callback_query()(self.handle_menu_callback)
@@ -369,6 +430,7 @@ class MasterBot:
         # === Stars / оплата тарифов ===
         self.dp.pre_checkout_query()(self.handle_pre_checkout_query)
         self.dp.message(F.successful_payment)(self.handle_successful_payment)
+
 
 
     # ====================== МЕНЮ МАСТЕРА ======================
@@ -399,6 +461,8 @@ class MasterBot:
                 texts.master_help_text,
                 reply_markup=self.get_main_menu_for_lang(texts),
             )
+        elif data == "billing_menu":
+            await self.handle_billing_main_menu(callback)
 
         elif data == "change_language":
             from languages import LANGS
@@ -495,6 +559,150 @@ class MasterBot:
             f"• {texts.master_start_cmd_remove_bot}\n"
         )
         await message.answer(text, reply_markup=self.get_main_menu_for_lang(texts))
+
+
+    async def handle_billing_choose_plan(self, callback: CallbackQuery):
+        user_id = callback.from_user.id
+        from shared import settings
+        if settings.SINGLE_TENANT_OWNER_ONLY:
+            owner_id = settings.OWNER_TELEGRAM_ID
+            if not owner_id or user_id != owner_id:
+                await callback.answer("Доступ только владельцу", show_alert=True)
+                return
+
+        plan_code = callback.data.split("billing_choose_plan_", 1)[1]
+        plan = await self.db.get_saas_plan_with_product_by_code(plan_code)
+        if not plan or not plan["product_code"]:
+            await callback.answer("Тариф недоступен", show_alert=True)
+            return
+
+        # пока один период = 1x
+        periods = 1
+
+        text = (
+            f"Тариф аккаунта: <b>{plan['plan_name']}</b>\n"
+            f"Период: {plan['period_days']} дней, лимит {plan['tickets_limit']} тикетов.\n"
+            f"Стоимость: <b>{plan['price_stars'] * periods} ⭐</b>\n\n"
+            "Оплатить за 1 период?"
+        )
+
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="✅ Оплатить",
+                        callback_data=f"billing_confirm_plan_{plan_code}_{periods}",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="⬅️ Назад",
+                        callback_data="billing_menu",
+                    )
+                ],
+            ]
+        )
+
+        await callback.message.edit_text(text, reply_markup=kb)
+        await callback.answer()
+
+
+    async def handle_billing_confirm_plan(self, callback: CallbackQuery):
+        user_id = callback.from_user.id
+        from shared import settings
+        if settings.SINGLE_TENANT_OWNER_ONLY:
+            owner_id = settings.OWNER_TELEGRAM_ID
+            if not owner_id or user_id != owner_id:
+                await callback.answer("Доступ только владельцу", show_alert=True)
+                return
+
+        # billing_confirm_plan_<plan_code>_<periods>
+        payload_part = callback.data.split("billing_confirm_plan_", 1)[1]
+        plan_code, periods_str = payload_part.rsplit("_", 1)
+        periods = int(periods_str)
+
+        plan = await self.db.get_saas_plan_with_product_by_code(plan_code)
+        if not plan or not plan["product_code"]:
+            await callback.answer("Тариф недоступен", show_alert=True)
+            return
+
+        base_amount = plan["price_stars"]
+        total_amount = base_amount * periods
+
+        # Привязываем аккаунтный тариф к первому боту пользователя
+        instances = await self.db.get_user_instances(user_id)
+        if not instances:
+            await callback.answer(
+                "Сначала добавьте хотя бы одного бота, затем можно оформить тариф.",
+                show_alert=True,
+            )
+            return
+
+        instance_id = instances[0].instance_id
+
+        # создаём запись в billing_invoices
+        invoice_id = await self.db.insert_billing_invoice(
+            instance_id=instance_id,
+            user_id=user_id,
+            plan_code=plan_code,
+            periods=periods,
+            amount_stars=total_amount,
+            product_code=plan["product_code"],
+            payload="",
+            invoice_link="",
+            status="pending",
+        )
+
+        payload = f"saas:{invoice_id}"
+
+        try:
+            invoice_link = await self.create_stars_invoice_link_for_miniapp(
+                user_id=user_id,
+                title=plan["plan_name"],
+                description=f"SaaS тариф аккаунта {plan_code} на {periods} период(ов)",
+                payload=payload,
+                currency="XTR",
+                amount_stars=total_amount,
+            )
+        except Exception as e:
+            logger.exception("handle_billing_confirm_plan: create_invoice_link error: %s", e)
+            await callback.answer("Не удалось создать счёт Stars", show_alert=True)
+            return
+
+        await self.db.update_billing_invoice_link_and_payload(
+            invoice_id=invoice_id,
+            payload=payload,
+            invoice_link=invoice_link,
+        )
+
+        text = (
+            f"Тариф аккаунта: <b>{plan['plan_name']}</b>\n"
+            f"Периодов: {periods}\n"
+            f"Итого к оплате: <b>{total_amount} ⭐</b>\n\n"
+            "Нажмите кнопку ниже, чтобы оплатить через Telegram Stars.\n"
+            "После успешной оплаты доступ к функциям аккаунта будет продлён."
+        )
+
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="💳 Оплатить Stars",
+                        url=invoice_link,
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="⬅️ Назад к тарифам",
+                        callback_data="billing_menu",
+                    )
+                ],
+            ]
+        )
+
+        await callback.message.edit_text(text, reply_markup=kb)
+        await callback.answer()
+
 
 
     async def handle_pre_checkout_query(self, pre_checkout_query: PreCheckoutQuery):
@@ -1265,14 +1473,32 @@ class MasterBot:
         return InlineKeyboardMarkup(
             inline_keyboard=[
                 [
-                    InlineKeyboardButton(text=texts.master_menu_add_bot, callback_data="add_bot"),
-                    InlineKeyboardButton(text=texts.master_menu_list_bots, callback_data="list_bots"),
+                    InlineKeyboardButton(
+                        text=texts.master_menu_add_bot,
+                        callback_data="add_bot",
+                    ),
+                    InlineKeyboardButton(
+                        text=texts.master_menu_list_bots,
+                        callback_data="list_bots",
+                    ),
                 ],
                 [
-                    InlineKeyboardButton(text=texts.master_menu_help, callback_data="help"),
+                    InlineKeyboardButton(
+                        text="💳 Тарифы и оплата",
+                        callback_data="billing_menu",
+                    ),
                 ],
                 [
-                    InlineKeyboardButton(text=texts.menu_language, callback_data="change_language"),
+                    InlineKeyboardButton(
+                        text=texts.master_menu_help,
+                        callback_data="help",
+                    ),
+                ],
+                [
+                    InlineKeyboardButton(
+                        text=texts.menu_language,
+                        callback_data="change_language",
+                    ),
                 ],
             ]
         )
