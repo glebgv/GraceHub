@@ -1,0 +1,33 @@
+site_name: GraceHub Manual
+site_url: https://gracehub.ru/manual/
+
+theme:
+  name: material
+  palette:
+    scheme: default
+    primary: blue
+    accent: blue
+
+nav:
+  - Обзор: index.md
+  - Быстрый старт:
+      - Требования: requirements.md
+      - Подготовка окружения: setup.md
+      - Запуск для разработки: dev-run.md
+      - Продакшен-деплой: prod-deploy.md
+  - Использование:
+      - Общий сценарий: usage-flow.md
+  - Архитектура:
+      - Стек и структура проекта: architecture.md
+  - Логи и мониторинг: logging.md
+  - Лицензия: license.md
+
+markdown_extensions:
+  - attr_list
+
+extra_css:
+  - assets/extra.css
+
+docs_dir: docs
+site_dir: site
+
