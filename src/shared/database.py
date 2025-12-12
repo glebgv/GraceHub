@@ -76,6 +76,96 @@ class MasterDatabase:
             pass
         return key
 
+
+    async def get_instance_settings(self, instance_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Настройки инстанса для мастер-бота (как dict).
+        """
+        assert self.conn is not None
+
+        with self.conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            cur.execute(
+                """
+                SELECT
+                    bi.instance_id,
+                    bi.bot_username,
+                    bi.bot_name,
+                    bi.created_at,
+                    bi.owner_user_id,
+                    bi.admin_private_chat_id,
+                    bi.user_id AS owner_id
+                FROM bot_instances bi
+                WHERE bi.instance_id = %s
+                LIMIT 1
+                """,
+                (instance_id,),
+            )
+            row = cur.fetchone()
+
+        if not row:
+            return None
+
+        inst = dict(row)
+
+        auto_close_hours = 12
+        greeting: Optional[str] = None
+        default_answer: Optional[str] = None
+        branding_bot_name = inst.get("bot_name")
+        openchat_enabled = False
+        openchat_username = inst.get("openchat_username")
+        general_panel_chat_id = inst.get("general_panel_chat_id")
+        language: Optional[str] = None
+
+        with self.conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            cur.execute(
+                """
+                SELECT
+                    openchat_username,
+                    general_panel_chat_id,
+                    auto_close_hours,
+                    auto_reply_greeting,
+                    auto_reply_default_answer,
+                    branding_bot_name,
+                    openchat_enabled,
+                    language
+                FROM instance_meta
+                WHERE instance_id = %s
+                """,
+                (instance_id,),
+            )
+            meta = cur.fetchone()
+
+        if meta:
+            m = dict(meta)
+            if m.get("auto_close_hours") is not None:
+                auto_close_hours = m["auto_close_hours"]
+            greeting = m.get("auto_reply_greeting")
+            default_answer = m.get("auto_reply_default_answer")
+            if m.get("branding_bot_name"):
+                branding_bot_name = m["branding_bot_name"]
+            if m.get("openchat_enabled") is not None:
+                openchat_enabled = bool(m["openchat_enabled"])
+            if m.get("openchat_username") is not None:
+                openchat_username = m["openchat_username"]
+            if m.get("general_panel_chat_id") is not None:
+                general_panel_chat_id = m["general_panel_chat_id"]
+            if m.get("language") is not None:
+                language = m["language"]
+
+        return {
+            "instance_id": inst["instance_id"],
+            "bot_username": inst.get("bot_username"),
+            "bot_name": inst.get("bot_name"),
+            "auto_close_hours": auto_close_hours,
+            "greeting": greeting,
+            "default_answer": default_answer,
+            "branding_bot_name": branding_bot_name,
+            "openchat_enabled": openchat_enabled,
+            "openchat_username": openchat_username,
+            "general_panel_chat_id": general_panel_chat_id,
+            "language": language,
+        }
+
     async def mark_billing_invoice_paid(
         self,
         invoice_id: int,
@@ -1005,6 +1095,58 @@ class MasterDatabase:
             result.append(inst)
 
         return result
+
+    async def get_instance_with_meta_by_id(self, instance_id: str) -> Optional[Dict[str, Any]]:
+        assert self.conn is not None
+        with self.conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            cur.execute(
+                """
+                SELECT
+                    bi.instance_id,
+                    bi.bot_username,
+                    bi.bot_name,
+                    bi.created_at,
+                    bi.owner_user_id,
+                    bi.admin_private_chat_id,
+                    bi.user_id AS owner_id
+                FROM bot_instances bi
+                WHERE bi.instance_id = %s
+                LIMIT 1
+                """,
+                (instance_id,),
+            )
+            row = cur.fetchone()
+
+        if not row:
+            return None
+
+        inst = dict(row)
+
+        with self.conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            cur.execute(
+                """
+                SELECT
+                    openchat_username,
+                    general_panel_chat_id,
+                    auto_close_hours,
+                    auto_reply_greeting,
+                    auto_reply_default_answer,
+                    branding_bot_name,
+                    openchat_enabled,
+                    language
+                FROM instance_meta
+                WHERE instance_id = %s
+                """,
+                (inst["instance_id"],),
+            )
+            meta = cur.fetchone()
+
+        if meta:
+            inst.update(dict(meta))
+
+        inst["role"] = "owner"
+        return inst
+
 
     async def get_all_active_instances(self) -> List[BotInstance]:
         assert self.conn is not None

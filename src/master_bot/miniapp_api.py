@@ -487,6 +487,36 @@ class MiniAppDB:
         )
 
 
+    async def get_instance_settings(self, instance_id: str) -> InstanceSettings:
+        data = await self.db.get_instance_settings(instance_id)
+        if not data:
+            raise HTTPException(status_code=404, detail="Instance not found")
+
+        privacy_mode_enabled = await self.get_privacy_mode(instance_id)
+
+        return InstanceSettings(
+            openchat_enabled=data["openchat_enabled"],
+            general_panel_chat_id=data["general_panel_chat_id"],
+            autoclose_hours=data["auto_close_hours"],
+            auto_reply=AutoReplyConfig(
+                greeting=data["greeting"],
+                default_answer=data["default_answer"],
+            ),
+            branding=BrandingConfig(
+                bot_name=data["branding_bot_name"],
+                status_emoji_scheme={
+                    "new": "⬜️",
+                    "inprogress": "🟨",
+                    "answered": "🟩",
+                    "closed": "🟥",
+                    "spam": "🟦",
+                    "muted": "⬛️",
+                },
+            ),
+            privacy_mode_enabled=privacy_mode_enabled,
+            language=data["language"],
+        )
+
     async def get_billing_product_by_plan_code(
         self,
         plan_code: str,
@@ -512,51 +542,6 @@ class MiniAppDB:
             (plan_code,),
         )
         return dict(row) if row else None
-
-    async def get_instance_by_id(self, instance_id: str) -> Optional[Dict[str, Any]]:
-        """Инстанс по instance_id с метаданными."""
-        logger.debug("MiniAppDB.get_instance_by_id: instance_id=%s", instance_id)
-        row = await self.db.fetchone(
-            """
-            SELECT
-                bi.instance_id,
-                bi.bot_username,
-                bi.bot_name,
-                bi.created_at,
-                bi.owner_user_id,
-                bi.admin_private_chat_id,
-                bi.user_id as owner_id
-            FROM bot_instances bi
-            WHERE bi.instance_id = %s
-            LIMIT 1
-            """,
-            (instance_id,),
-        )
-
-        if not row:
-            return None
-
-        inst = dict(row)
-        meta = await self.db.fetchone(
-            """
-            SELECT
-                openchat_username,
-                general_panel_chat_id,
-                auto_close_hours,
-                auto_reply_greeting,
-                auto_reply_default_answer,
-                branding_bot_name,
-                openchat_enabled,
-                language
-            FROM instance_meta
-            WHERE instance_id = %s
-            """,
-            (inst["instance_id"],),
-        )
-        if meta:
-            inst.update(dict(meta))
-        inst["role"] = "owner"
-        return inst
 
     async def get_instance_by_owner(self, owner_user_id: int) -> Optional[Dict[str, Any]]:
         """Инстанс, где owner_user_id совпадает с переданным Telegram user id."""
@@ -992,81 +977,6 @@ class MiniAppDB:
             (instance_id,),
         )
         return bool(row and row["value"] == "True")
-
-    async def get_instance_settings(self, instance_id: str) -> InstanceSettings:
-        inst = await self.get_instance_by_id(instance_id)
-        if not inst:
-            raise HTTPException(status_code=404, detail="Instance not found")
-
-        # базовые значения по умолчанию
-        auto_close_hours = 12
-        greeting: Optional[str] = None
-        default_answer: Optional[str] = None
-        branding_bot_name = inst.get("bot_name")
-        openchat_enabled = False
-        openchat_username = inst.get("openchat_username")
-        general_panel_chat_id = inst.get("general_panel_chat_id")
-        language: Optional[str] = None
-
-        meta = await self.db.fetchone(
-            """
-            SELECT
-                openchat_username,
-                general_panel_chat_id,
-                auto_close_hours,
-                auto_reply_greeting,
-                auto_reply_default_answer,
-                branding_bot_name,
-                openchat_enabled,
-                language
-            FROM instance_meta
-            WHERE instance_id = %s
-            """,
-            (instance_id,),
-        )
-
-        if meta:
-            m = dict(meta)
-            if m.get("auto_close_hours") is not None:
-                auto_close_hours = m["auto_close_hours"]
-            greeting = m.get("auto_reply_greeting")
-            default_answer = m.get("auto_reply_default_answer")
-            if m.get("branding_bot_name"):
-                branding_bot_name = m["branding_bot_name"]
-            if m.get("openchat_enabled") is not None:
-                openchat_enabled = bool(m["openchat_enabled"])
-            if m.get("openchat_username") is not None:
-                openchat_username = m["openchat_username"]
-            if m.get("general_panel_chat_id") is not None:
-                general_panel_chat_id = m["general_panel_chat_id"]
-            if m.get("language") is not None:
-                language = m["language"]
-
-        # читаем реальный Privacy Mode из worker_settings
-        privacy_mode_enabled = await self.get_privacy_mode(instance_id)
-
-        return InstanceSettings(
-            openchat_enabled=openchat_enabled,
-            general_panel_chat_id=general_panel_chat_id,
-            autoclose_hours=auto_close_hours,
-            auto_reply=AutoReplyConfig(
-                greeting=greeting,
-                default_answer=default_answer,
-            ),
-            branding=BrandingConfig(
-                bot_name=branding_bot_name,
-                status_emoji_scheme={
-                    "new": "⬜️",
-                    "inprogress": "🟨",
-                    "answered": "🟩",
-                    "closed": "🟥",
-                    "spam": "🟦",
-                    "muted": "⬛️",
-                },
-            ),
-            privacy_mode_enabled=privacy_mode_enabled,
-            language=language,
-        )
 
 
     async def set_worker_setting(self, instance_id: str, key: str, value: str) -> None:
@@ -1562,7 +1472,7 @@ def create_miniapp_app(
         )
 
         if payload.instance_id:
-            inst = await miniapp_db.get_instance_by_id(payload.instance_id)
+            inst = await master_bot.db.get_instance_with_meta_by_id(payload.instance_id)
             if not inst:
                 logger.info(
                     "resolve_instance: instance not found instance_id=%s",
