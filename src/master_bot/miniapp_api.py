@@ -444,61 +444,6 @@ class MiniAppDB:
             ),
         )
 
-    async def get_user_instances(self, user_id: int) -> List[Dict[str, Any]]:
-        """
-        Инстансы, к которым у юзера есть доступ (владельцы/интеграторы).
-        """
-        logger.debug("MiniAppDB.get_user_instances: user_id=%s", user_id)
-
-        rows = await self.db.fetchall(
-            """
-            SELECT
-                bi.instance_id   AS instance_id,
-                bi.bot_username  AS bot_username,
-                bi.bot_name      AS bot_name,
-                bi.created_at    AS created_at,
-                bi.owner_user_id AS owner_user_id,
-                bi.admin_private_chat_id AS admin_private_chat_id,
-                bi.user_id       AS owner_id
-            FROM bot_instances bi
-            WHERE bi.user_id = %s OR bi.owner_user_id = %s
-            ORDER BY bi.created_at DESC
-            """,
-            (user_id, user_id),
-        )
-
-
-        result: List[Dict[str, Any]] = []
-        for row in rows:
-            inst = dict(row)
-            inst["role"] = "owner"
-            meta = await self.db.fetchone(
-                """
-                SELECT openchat_username,
-                    general_panel_chat_id,
-                    auto_close_hours,
-                    auto_reply_greeting,
-                    auto_reply_default_answer,
-                    branding_bot_name,
-                    openchat_enabled,
-                    language
-                FROM instance_meta
-                WHERE instance_id = %s
-                """,
-                (inst["instance_id"],),
-            )
-
-            if meta:
-                inst.update(dict(meta))
-            result.append(inst)
-
-        logger.info(
-            "MiniAppDB.get_user_instances: user_id=%s instances=%s",
-            user_id,
-            [i["instance_id"] for i in result],
-        )
-        return result
-
     async def get_instance_billing(self, instance_id: str) -> Optional[Dict[str, Any]]:
         row = await self.db.fetchone(
             """
@@ -1431,7 +1376,6 @@ def create_miniapp_app(
         )
         logger.debug("auth_telegram RAW initData: %r", req.init_data)
 
-        # Валидация initData от Telegram
         try:
             user_data = telegram_validator.validate(req.init_data)
         except ValueError as e:
@@ -1442,17 +1386,14 @@ def create_miniapp_app(
         if not user_id:
             raise HTTPException(status_code=401, detail="user_id не найден в initData")
 
-        # Single-tenant режим: панель доступна только владельцу
         if settings.SINGLE_TENANT_OWNER_ONLY:
             owner_id = settings.OWNER_TELEGRAM_ID
             if not owner_id or user_id != owner_id:
-                # фронт уже умеет показывать t('app.owner_only') по 403
                 raise HTTPException(
                     status_code=403,
                     detail="панель доступна только владельцу",
                 )
 
-        # Обновляем/создаём пользователя в БД мини‑аппы
         await miniapp_db.upsert_user(
             user_id=user_id,
             username=user_data.get("username"),
@@ -1461,10 +1402,9 @@ def create_miniapp_app(
             language=user_data.get("language_code"),
         )
 
-        # Получаем инстансы, к которым у юзера есть доступ (владельцы/интеграторы)
-        instances = await miniapp_db.get_user_instances(user_id)
+        # тут уже masterbot виден
+        instances = await master_bot.db.get_user_instances_with_meta(user_id)
 
-        # Определяем default_instance_id: сначала из start_param=inst_<id>, потом первый из списка
         default_instance_id: str | None = None
         if req.start_param and req.start_param.startswith("inst_"):
             requested_id = req.start_param[5:]
@@ -1476,7 +1416,6 @@ def create_miniapp_app(
         if not default_instance_id and instances:
             default_instance_id = instances[0]["instance_id"]
 
-        # Создаём сессию для mini app
         token = session_manager.create_session(user_id, user_data.get("username"))
 
         logger.info(
@@ -1486,7 +1425,6 @@ def create_miniapp_app(
             default_instance_id,
         )
 
-        # Формируем payload пользователя для фронтенда mini app
         user_response = UserResponse(
             user_id=user_id,
             username=user_data.get("username"),
@@ -1714,7 +1652,7 @@ def create_miniapp_app(
 
     @app.get("/api/me", response_model=UserResponse)
     async def get_me(current_user: Dict[str, Any] = Depends(get_current_user)):
-        instances = await miniapp_db.get_user_instances(current_user["user_id"])
+        instances = await master_bot.db.get_user_instances_with_meta(current_user["user_id"])
 
         return UserResponse(
             user_id=current_user["user_id"],
@@ -1736,7 +1674,7 @@ def create_miniapp_app(
     async def list_instances(
         current_user: Dict[str, Any] = Depends(get_current_user),
     ):
-        instances = await miniapp_db.get_user_instances(current_user["user_id"])
+        instances = await master_bot.db.get_user_instances_with_meta(current_user["user_id"])
 
         logger.info(
             "/api/instances user_id=%s -> %s",

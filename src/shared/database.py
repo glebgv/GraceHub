@@ -956,6 +956,56 @@ class MasterDatabase:
             rows = cur.fetchall()
         return [self.row_to_instance(r) for r in rows]
 
+    async def get_user_instances_with_meta(
+        self, user_id: int
+    ) -> List[Dict[str, Any]]:
+        assert self.conn is not None
+        with self.conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            cur.execute(
+                """
+                SELECT
+                    bi.instance_id   AS instance_id,
+                    bi.bot_username  AS bot_username,
+                    bi.bot_name      AS bot_name,
+                    bi.created_at    AS created_at,
+                    bi.owner_user_id AS owner_user_id,
+                    bi.admin_private_chat_id AS admin_private_chat_id,
+                    bi.user_id       AS owner_id
+                FROM bot_instances bi
+                WHERE bi.user_id = %s OR bi.owner_user_id = %s
+                ORDER BY bi.created_at DESC
+                """,
+                (user_id, user_id),
+            )
+            rows = cur.fetchall()
+
+        result: List[Dict[str, Any]] = []
+        for row in rows:
+            inst = dict(row)
+            inst["role"] = "owner"
+            with self.conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT openchat_username,
+                        general_panel_chat_id,
+                        auto_close_hours,
+                        auto_reply_greeting,
+                        auto_reply_default_answer,
+                        branding_bot_name,
+                        openchat_enabled,
+                        language
+                    FROM instance_meta
+                    WHERE instance_id = %s
+                    """,
+                    (inst["instance_id"],),
+                )
+                meta = cur.fetchone()
+            if meta:
+                inst.update(dict(meta))
+            result.append(inst)
+
+        return result
+
     async def get_all_active_instances(self) -> List[BotInstance]:
         assert self.conn is not None
         with self.conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
