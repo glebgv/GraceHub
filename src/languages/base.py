@@ -185,3 +185,25 @@ class Texts:
     billing_owner_demo_expired_message: str
     billing_owner_no_plan_message: str
     master_owner_only: str
+
+    billing_owner_only: str
+    billing_plan_unavailable: str
+    billing_need_instance_first: str
+    billing_invoice_create_error: str
+
+    billing_confirm_title: str    
+    billing_confirm_periods: str    
+    billing_confirm_total: str         
+    billing_confirm_pay_hint: str
+    billing_confirm_after_pay: str
+
+    billing_button_pay_stars: str
+    billing_button_back_plans: str
+
+    master_remove_owner_only: str
+    master_remove_not_yours: str
+    master_remove_confirm_title: str
+    master_remove_confirm_question: str 
+    master_remove_confirm_irreversible: str  
+    master_remove_confirm_yes: str
+    master_remove_confirm_cancel: str

@@ -269,5 +269,32 @@ TEXTS_EN = Texts(
         "Please configure a plan in the mini app."
     ),
     master_owner_only="The master bot is available only to the owner.",
+    billing_owner_only="Access is restricted to the owner only",
+    billing_plan_unavailable="The plan is not available",
+    billing_need_instance_first=(
+        "Add at least one bot first, then you can purchase a plan."
+    ),
+    billing_invoice_create_error="Failed to create Stars invoice",
+
+    billing_confirm_title="Account plan: <b>{plan_name}</b>",
+    billing_confirm_periods="Periods: {periods}",
+    billing_confirm_total="Total to pay: <b>{total_amount} ⭐</b>",
+    billing_confirm_pay_hint=(
+        "Tap the button below to pay via Telegram Stars."
+    ),
+    billing_confirm_after_pay=(
+        "After successful payment, your account features will be extended."
+    ),
+
+    billing_button_pay_stars="💳 Pay with Stars",
+    billing_button_back_plans="⬅️ Back to plans",
+
+    master_remove_owner_only="Access is restricted to the owner only",
+    master_remove_not_yours="❌ This bot does not belong to you",
+    master_remove_confirm_title="🤖 <b>{bot_name}</b> (@{bot_username})",
+    master_remove_confirm_question="Do you really want to delete this bot?",
+    master_remove_confirm_irreversible="This action cannot be undone.",
+    master_remove_confirm_yes="✅ Yes, delete",
+    master_remove_confirm_cancel="❌ Cancel",
 )
 

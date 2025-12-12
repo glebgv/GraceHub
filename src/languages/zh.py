@@ -267,5 +267,31 @@ TEXTS_ZH = Texts(
         "请在小程序中配置合适的套餐。"
     ),
     master_owner_only="主控机器人仅对所有者可用。",
+    billing_owner_only="仅限拥有者访问",
+    billing_plan_unavailable="该套餐不可用",
+    billing_need_instance_first=(
+        "请先添加至少一个机器人，然后再购买套餐。"
+    ),
+    billing_invoice_create_error="无法创建 Stars 账单",
+
+    billing_confirm_title="账户套餐：<b>{plan_name}</b>",
+    billing_confirm_periods="周期数：{periods}",
+    billing_confirm_total="应付总额：<b>{total_amount} ⭐</b>",
+    billing_confirm_pay_hint=(
+        "点击下方按钮，通过 Telegram Stars 完成支付。"
+    ),
+    billing_confirm_after_pay=(
+        "支付成功后，您的账户功能使用期限将延长。"
+    ),
+
+    billing_button_pay_stars="💳 使用 Stars 支付",
+    billing_button_back_plans="⬅️ 返回套餐列表",
+    master_remove_owner_only="仅限拥有者访问",
+    master_remove_not_yours="❌ 该机器人不属于你",
+    master_remove_confirm_title="🤖 <b>{bot_name}</b> (@{bot_username})",
+    master_remove_confirm_question="你确定要删除这个机器人吗？",
+    master_remove_confirm_irreversible="此操作无法撤销。",
+    master_remove_confirm_yes="✅ 是的，删除",
+    master_remove_confirm_cancel="❌ 取消",
 )
 

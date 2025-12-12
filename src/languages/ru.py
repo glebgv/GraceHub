@@ -289,5 +289,32 @@ TEXTS_RU = Texts(
         "Настройте тариф в мини‑приложении."
     ),
     master_owner_only="Мастер-бот доступен только владельцу.",
+    billing_owner_only="Доступ только владельцу",
+    billing_plan_unavailable="Тариф недоступен",
+    billing_need_instance_first=(
+        "Сначала добавьте хотя бы одного бота, затем можно оформить тариф."
+    ),
+    billing_invoice_create_error="Не удалось создать счёт Stars",
+
+    billing_confirm_title="Тариф аккаунта: <b>{plan_name}</b>",
+    billing_confirm_periods="Периодов: {periods}",
+    billing_confirm_total="Итого к оплате: <b>{total_amount} ⭐</b>",
+    billing_confirm_pay_hint=(
+        "Нажмите кнопку ниже, чтобы оплатить через Telegram Stars."
+    ),
+    billing_confirm_after_pay=(
+        "После успешной оплаты доступ к функциям аккаунта будет продлён."
+    ),
+
+    billing_button_pay_stars="💳 Оплатить Stars",
+    billing_button_back_plans="⬅️ Назад к тарифам",
+    master_remove_owner_only="Доступ только владельцу",
+    master_remove_not_yours="❌ Не ваш бот",
+    master_remove_confirm_title="🤖 <b>{bot_name}</b> (@{bot_username})",
+    master_remove_confirm_question="Вы действительно хотите удалить этого бота?",
+    master_remove_confirm_irreversible="Действие необратимо.",
+    master_remove_confirm_yes="✅ Да, удалить",
+    master_remove_confirm_cancel="❌ Отмена",
+
 )
 

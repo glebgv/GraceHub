@@ -31,6 +31,7 @@ from shared.database import MasterDatabase
 from shared.models import BotInstance, InstanceStatus
 from shared.webhook_manager import WebhookManager
 from shared.security import SecurityManager
+from shared import settings
 
 # Configure logging
 logging.basicConfig(
@@ -293,8 +294,6 @@ class MasterBot:
 
     async def handle_billing_main_menu(self, callback: CallbackQuery):
         user_id = callback.from_user.id
-
-        from shared import settings
         if settings.SINGLE_TENANT_OWNER_ONLY:
             owner_id = settings.OWNER_TELEGRAM_ID
             if not owner_id or user_id != owner_id:
@@ -439,9 +438,6 @@ class MasterBot:
         """Handle menu callbacks like add_bot, list_bots etc."""
         data = callback.data
         user_id = callback.from_user.id
-
-        # Single-tenant режим: доступ только владельцу
-        from shared import settings
         if settings.SINGLE_TENANT_OWNER_ONLY:
             owner_id = settings.OWNER_TELEGRAM_ID
             if not owner_id or user_id != owner_id:
@@ -465,8 +461,6 @@ class MasterBot:
             await self.handle_billing_main_menu(callback)
 
         elif data == "change_language":
-            from languages import LANGS
-
             base_texts = LANGS.get(self.default_lang)
 
             keyboard = InlineKeyboardMarkup(
@@ -508,8 +502,6 @@ class MasterBot:
         if user_id is None:
             user_id = message.from_user.id
 
-        # Single-tenant режим: доступ только владельцу
-        from shared import settings
         if settings.SINGLE_TENANT_OWNER_ONLY:
             owner_id = settings.OWNER_TELEGRAM_ID
             if not owner_id or user_id != owner_id:
@@ -521,8 +513,6 @@ class MasterBot:
         user_lang = await self.db.get_user_language(user_id)
 
         if not user_lang:
-            from languages import LANGS
-
             base_texts = LANGS.get(self.default_lang)
 
             keyboard = InlineKeyboardMarkup(
@@ -563,7 +553,7 @@ class MasterBot:
 
     async def handle_billing_choose_plan(self, callback: CallbackQuery):
         user_id = callback.from_user.id
-        from shared import settings
+
         if settings.SINGLE_TENANT_OWNER_ONLY:
             owner_id = settings.OWNER_TELEGRAM_ID
             if not owner_id or user_id != owner_id:
@@ -609,11 +599,21 @@ class MasterBot:
 
     async def handle_billing_confirm_plan(self, callback: CallbackQuery):
         user_id = callback.from_user.id
-        from shared import settings
+        # язык пользователя/инстанса
+        instances = await self.db.get_user_instances(user_id)
+        if instances:
+            instance_id = instances[0].instance_id
+            instance_settings = await self.db.get_instance_settings(instance_id)  # свой метод
+            lang_code = instance_settings.language or "ru"
+        else:
+            lang_code = (callback.from_user.language_code or "ru").split("-")[0]
+
+        texts = get_texts(lang_code)
+
         if settings.SINGLE_TENANT_OWNER_ONLY:
             owner_id = settings.OWNER_TELEGRAM_ID
             if not owner_id or user_id != owner_id:
-                await callback.answer("Доступ только владельцу", show_alert=True)
+                await callback.answer(texts.billing_owner_only, show_alert=True)
                 return
 
         # billing_confirm_plan_<plan_code>_<periods>
@@ -623,24 +623,18 @@ class MasterBot:
 
         plan = await self.db.get_saas_plan_with_product_by_code(plan_code)
         if not plan or not plan["product_code"]:
-            await callback.answer("Тариф недоступен", show_alert=True)
+            await callback.answer(texts.billing_plan_unavailable, show_alert=True)
             return
 
         base_amount = plan["price_stars"]
         total_amount = base_amount * periods
 
-        # Привязываем аккаунтный тариф к первому боту пользователя
-        instances = await self.db.get_user_instances(user_id)
         if not instances:
-            await callback.answer(
-                "Сначала добавьте хотя бы одного бота, затем можно оформить тариф.",
-                show_alert=True,
-            )
+            await callback.answer(texts.billing_need_instance_first, show_alert=True)
             return
 
         instance_id = instances[0].instance_id
 
-        # создаём запись в billing_invoices
         invoice_id = await self.db.insert_billing_invoice(
             instance_id=instance_id,
             user_id=user_id,
@@ -659,14 +653,14 @@ class MasterBot:
             invoice_link = await self.create_stars_invoice_link_for_miniapp(
                 user_id=user_id,
                 title=plan["plan_name"],
-                description=f"SaaS тариф аккаунта {plan_code} на {periods} период(ов)",
+                description=f"SaaS тариф аккаунта {plan_code} на {periods} период(ов)",  # при желании тоже вынести в Texts
                 payload=payload,
                 currency="XTR",
                 amount_stars=total_amount,
             )
-        except Exception as e:
-            logger.exception("handle_billing_confirm_plan: create_invoice_link error: %s", e)
-            await callback.answer("Не удалось создать счёт Stars", show_alert=True)
+        except Exception:
+            logger.exception("handle_billing_confirm_plan: create_invoice_link error")
+            await callback.answer(texts.billing_invoice_create_error, show_alert=True)
             return
 
         await self.db.update_billing_invoice_link_and_payload(
@@ -676,24 +670,24 @@ class MasterBot:
         )
 
         text = (
-            f"Тариф аккаунта: <b>{plan['plan_name']}</b>\n"
-            f"Периодов: {periods}\n"
-            f"Итого к оплате: <b>{total_amount} ⭐</b>\n\n"
-            "Нажмите кнопку ниже, чтобы оплатить через Telegram Stars.\n"
-            "После успешной оплаты доступ к функциям аккаунта будет продлён."
+            texts.billing_confirm_title.format(plan_name=plan["plan_name"]) + "\n"
+            + texts.billing_confirm_periods.format(periods=periods) + "\n"
+            + texts.billing_confirm_total.format(total_amount=total_amount) + "\n\n"
+            + texts.billing_confirm_pay_hint + "\n"
+            + texts.billing_confirm_after_pay
         )
 
         kb = InlineKeyboardMarkup(
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text="💳 Оплатить Stars",
+                        text=texts.billing_button_pay_stars,
                         url=invoice_link,
                     )
                 ],
                 [
                     InlineKeyboardButton(
-                        text="⬅️ Назад к тарифам",
+                        text=texts.billing_button_back_plans,
                         callback_data="billing_menu",
                     )
                 ],
@@ -743,8 +737,6 @@ class MasterBot:
         data = callback.data  # "lang_ru", "lang_en", ...
         _, lang_code = data.split("_", 1)
 
-        from languages import LANGS
-
         # Если язык неизвестен — просто игнорируем
         if lang_code not in LANGS:
             base_texts = LANGS.get(self.default_lang)
@@ -771,8 +763,6 @@ class MasterBot:
         """
         user_id = message.from_user.id
 
-        # Single-tenant режим: доступ только владельцу
-        from shared import settings
         if settings.SINGLE_TENANT_OWNER_ONLY:
             owner_id = settings.OWNER_TELEGRAM_ID
             if not owner_id or user_id != owner_id:
@@ -782,8 +772,6 @@ class MasterBot:
 
     async def cmd_add_bot(self, message: Message, user_id: int):
         """Handle add bot command (общая логика)"""
-
-        from shared import settings
         if settings.SINGLE_TENANT_OWNER_ONLY:
             owner_id = settings.OWNER_TELEGRAM_ID
             if not owner_id or user_id != owner_id:
@@ -833,7 +821,6 @@ class MasterBot:
         user_id = callback.from_user.id
 
         # Single-tenant режим: доступ только владельцу
-        from shared import settings
         if settings.SINGLE_TENANT_OWNER_ONLY:
             owner_id = settings.OWNER_TELEGRAM_ID
             if not owner_id or user_id != owner_id:
@@ -846,36 +833,50 @@ class MasterBot:
     async def handle_remove_confirm(self, callback: CallbackQuery):
         user_id = callback.from_user.id
 
-        # Single-tenant режим: доступ только владельцу
-        from shared import settings
-        if settings.SINGLE_TENANT_OWNER_ONLY:
-            owner_id = settings.OWNER_TELEGRAM_ID
-            if not owner_id or user_id != owner_id:
-                await callback.answer("Доступ только владельцу", show_alert=True)
-                return
-
+        # язык: по инстансу если есть, иначе language_code пользователя
         _, _, instance_id = callback.data.split("_", 2)
         instance = await self.db.get_instance(instance_id)
 
+        if instance:
+            # предположим, что язык хранится в настройках инстанса
+            settings_row = await self.db.get_instance_settings(instance_id)  # свой метод
+            lang_code = (settings_row.language or "ru") if settings_row else "ru"
+        else:
+            lang_code = (callback.from_user.language_code or "ru").split("-")[0]
+
+        texts = get_texts(lang_code)
+
+        # Single-tenant режим: доступ только владельцу
+        if settings.SINGLE_TENANT_OWNER_ONLY:
+            owner_id = settings.OWNER_TELEGRAM_ID
+            if not owner_id or user_id != owner_id:
+                await callback.answer(texts.master_remove_owner_only, show_alert=True)
+                return
+
         if not instance or instance.user_id != user_id:
-            await callback.answer("❌ Не ваш бот")
+            await callback.answer(texts.master_remove_not_yours, show_alert=True)
             return
 
         text = (
-            f"🤖 <b>{instance.bot_name}</b> (@{instance.bot_username})\n\n"
-            f"Вы действительно хотите удалить этого бота?\n"
-            "Действие необратимо."
+            texts.master_remove_confirm_title.format(
+                bot_name=instance.bot_name,
+                bot_username=instance.bot_username,
+            )
+            + "\n\n"
+            + texts.master_remove_confirm_question
+            + "\n"
+            + texts.master_remove_confirm_irreversible
         )
 
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text="✅ Да, удалить",
+                        text=texts.master_remove_confirm_yes,
                         callback_data=f"remove_yes_{instance_id}",
                     ),
                     InlineKeyboardButton(
-                        text="❌ Отмена",
+                        text=texts.master_remove_confirm_cancel,
                         callback_data=f"remove_no_{instance_id}",
                     ),
                 ],
@@ -890,7 +891,6 @@ class MasterBot:
         user_id = callback.from_user.id
 
         # Single-tenant режим: доступ только владельцу
-        from shared import settings
         if settings.SINGLE_TENANT_OWNER_ONLY:
             owner_id = settings.OWNER_TELEGRAM_ID
             if not owner_id or user_id != owner_id:
@@ -950,7 +950,6 @@ class MasterBot:
         user_id = message.from_user.id
 
         # Single-tenant режим: доступ только владельцу
-        from shared import settings
         if settings.SINGLE_TENANT_OWNER_ONLY:
             owner_id = settings.OWNER_TELEGRAM_ID
             if not owner_id or user_id != owner_id:
@@ -1388,7 +1387,6 @@ class MasterBot:
         user_id = message.from_user.id
 
         # Single-tenant режим: доступ только владельцу
-        from shared import settings
         if settings.SINGLE_TENANT_OWNER_ONLY:
             owner_id = settings.OWNER_TELEGRAM_ID
             if not owner_id or user_id != owner_id:
@@ -1398,8 +1396,6 @@ class MasterBot:
 
     async def cmd_list_bots(self, message: Message, user_id: int):
         """List user's bots"""
-
-        from shared import settings
         if settings.SINGLE_TENANT_OWNER_ONLY:
             owner_id = settings.OWNER_TELEGRAM_ID
             if not owner_id or user_id != owner_id:
