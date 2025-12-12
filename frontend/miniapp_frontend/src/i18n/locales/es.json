@@ -1,0 +1,33 @@
+{
+  "app": {
+    "title": "GraceHub Platform",
+    "masterBot": "Master Bot",
+    "footerBrand": "Funciona con GraceHub"
+  },
+  "nav": {
+    "dashboard": "Panel",
+    "tickets": "Tickets",
+    "operators": "Operadores",
+    "settings": "Ajustes"
+  },
+  "firstLaunch": {
+    "welcome": "¡Bienvenido a la plataforma de gestión de bots GraceHub!",
+    "actionsTitle": "¿Qué quieres hacer ahora?",
+    "addBot": "Añadir nuevo bot",
+    "listBots": "Lista de tus bots",
+    "removeBot": "Eliminar bot",
+    "status": "Estado de los bots",
+    "howToStartTitle": "Cómo empezar",
+    "step1": "Crea un bot a través de @BotFather.",
+    "step2": "Pulsa «Añadir nuevo bot» y envía el token.",
+    "step3": "Cuando se cree la instancia, aquí aparecerán el panel de control y las estadísticas."
+  },
+  "settings": {
+    "title": "Ajustes",
+    "greetingLabel": "Mensaje de bienvenida para el usuario",
+    "defaultAnswerLabel": "Respuesta por defecto",
+    "autoCloseLabel": "Cierre automático de tickets (horas)",
+    "privacyTitle": "Modo de privacidad",
+    "languageLabel": "Idioma de la interfaz"
+  }
+}

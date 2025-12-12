@@ -1,0 +1,33 @@
+{
+  "app": {
+    "title": "GraceHub 平台",
+    "masterBot": "Master Bot",
+    "footerBrand": "由 GraceHub 提供支持"
+  },
+  "nav": {
+    "dashboard": "控制台",
+    "tickets": "工单",
+    "operators": "客服人员",
+    "settings": "设置"
+  },
+  "firstLaunch": {
+    "welcome": "欢迎使用 GraceHub 机器人管理平台！",
+    "actionsTitle": "你现在想做什么？",
+    "addBot": "添加新机器人",
+    "listBots": "你的机器人列表",
+    "removeBot": "删除机器人",
+    "status": "机器人状态",
+    "howToStartTitle": "如何开始",
+    "step1": "通过 @BotFather 创建一个机器人。",
+    "step2": "点击「添加新机器人」并发送 token。",
+    "step3": "实例创建完成后，这里会显示控制面板和统计信息。"
+  },
+  "settings": {
+    "title": "设置",
+    "greetingLabel": "用户欢迎消息",
+    "defaultAnswerLabel": "默认回复",
+    "autoCloseLabel": "工单自动关闭时间（小时）",
+    "privacyTitle": "隐私模式",
+    "languageLabel": "界面语言"
+  }
+}

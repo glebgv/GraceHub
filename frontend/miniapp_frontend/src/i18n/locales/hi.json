@@ -1,0 +1,33 @@
+{
+  "app": {
+    "title": "GraceHub Platform",
+    "masterBot": "Master Bot",
+    "footerBrand": "GraceHub द्वारा संचालित"
+  },
+  "nav": {
+    "dashboard": "डैशबोर्ड",
+    "tickets": "टिकट",
+    "operators": "ऑपरेटर्स",
+    "settings": "सेटिंग्स"
+  },
+  "firstLaunch": {
+    "welcome": "GraceHub बॉट प्रबंधन प्लेटफ़ॉर्म में आपका स्वागत है!",
+    "actionsTitle": "आप अभी क्या करना चाहते हैं?",
+    "addBot": "नया बॉट जोड़ें",
+    "listBots": "आपके बॉट्स की सूची",
+    "removeBot": "बॉट हटाएं",
+    "status": "बॉट्स की स्थिति",
+    "howToStartTitle": "शुरू कैसे करें",
+    "step1": "@BotFather के माध्यम से बॉट बनाएं।",
+    "step2": "«नया बॉट जोड़ें» दबाएं और टोकन भेजें।",
+    "step3": "इंस्टेंस बनने के बाद यहां कंट्रोल पैनल और आँकड़े दिखाई देंगे।"
+  },
+  "settings": {
+    "title": "सेटिंग्स",
+    "greetingLabel": "उपयोगकर्ता के लिए स्वागत संदेश",
+    "defaultAnswerLabel": "डिफ़ॉल्ट उत्तर",
+    "autoCloseLabel": "टिकट का ऑटो-क्लोज़ (घंटों में)",
+    "privacyTitle": "प्राइवेसी मोड",
+    "languageLabel": "इंटरफ़ेस भाषा"
+  }
+}
