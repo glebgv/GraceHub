@@ -76,6 +76,120 @@ class MasterDatabase:
             pass
         return key
 
+    async def mark_billing_invoice_paid(
+        self,
+        invoice_id: int,
+        telegram_invoice_id: str,
+        total_amount: int,
+        currency: str,
+    ) -> None:
+        """
+        Обновляет статус инвойса на paid и сохраняет данные от Telegram.
+        total_amount для Stars Telegram отдаёт в тех же единицах, что и мы передавали (кол-во звёзд).
+        """
+        await self.execute(
+            """
+            UPDATE billing_invoices
+            SET status = 'paid',
+                telegram_invoice_id = %s,
+                stars_amount = %s,
+                currency = %s,
+                paid_at = NOW(),
+                updated_at = NOW()
+            WHERE invoice_id = %s
+            """,
+            (telegram_invoice_id, total_amount, currency, invoice_id),
+        )
+
+    async def apply_saas_plan_for_invoice(self, invoice_id: int) -> None:
+        """
+        По invoice_id находим instance_id и соответствующий saas_plan
+        и применяем/продлеваем тариф в instance_billing.
+        """
+        row = await self.fetchone(
+            """
+            SELECT
+                bi.instance_id,
+                bi.user_id,
+                bi.product_id,
+                bp.plan_id,
+                sp.code        AS plan_code,
+                sp.name        AS plan_name,
+                sp.period_days AS period_days,
+                sp.tickets_limit
+            FROM billing_invoices AS bi
+            JOIN billing_products AS bp ON bp.product_id = bi.product_id
+            JOIN saas_plans       AS sp ON sp.plan_id = bp.plan_id
+            WHERE bi.invoice_id = %s
+            """,
+            (invoice_id,),
+        )
+        if not row:
+            logger.warning("apply_saas_plan_for_invoice: invoice %s not found", invoice_id)
+            return
+
+        data = dict(row)
+        instance_id = data["instance_id"]
+        plan_id = data["plan_id"]
+        period_days = data["period_days"]
+        tickets_limit = data["tickets_limit"]
+
+        # продлеваем/устанавливаем период для инстанса:
+        # - если period_end > NOW() — добавляем дни к существующему period_end
+        # - иначе начинаем новый период от NOW()
+        await self.execute(
+            """
+            INSERT INTO instance_billing (
+                instance_id,
+                plan_id,
+                period_start,
+                period_end,
+                tickets_used,
+                tickets_limit,
+                over_limit
+            )
+            VALUES (
+                %(instance_id)s,
+                %(plan_id)s,
+                NOW(),
+                NOW() + (%(period_days)s || ' days')::interval,
+                0,
+                %(tickets_limit)s,
+                FALSE
+            )
+            ON CONFLICT (instance_id) DO UPDATE SET
+                plan_id = EXCLUDED.plan_id,
+                period_start = CASE
+                                WHEN instance_billing.period_end > NOW()
+                                THEN instance_billing.period_start
+                                ELSE NOW()
+                            END,
+                period_end = CASE
+                                WHEN instance_billing.period_end > NOW()
+                                THEN instance_billing.period_end + (%(period_days)s || ' days')::interval
+                                ELSE NOW() + (%(period_days)s || ' days')::interval
+                            END,
+                tickets_used = 0,
+                tickets_limit = EXCLUDED.tickets_limit,
+                over_limit = FALSE
+            """,
+            {
+                "instance_id": instance_id,
+                "plan_id": plan_id,
+                "period_days": period_days,
+                "tickets_limit": tickets_limit,
+            },
+        )
+
+        logger.info(
+            "apply_saas_plan_for_invoice: instance=%s plan=%s +%s days",
+            instance_id,
+            data["plan_code"],
+            period_days,
+        )
+
+
+
     async def create_tables(self) -> None:
         assert self.conn is not None
         cur = self.conn.cursor()

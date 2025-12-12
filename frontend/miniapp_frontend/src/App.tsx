@@ -6,7 +6,7 @@ import InstancesList from './pages/InstancesList';
 import Tickets from './pages/Tickets';
 import Operators from './pages/Operators';
 import Settings from './pages/Settings';
-import Billing from './pages/Billing'; 
+import Billing from './pages/Billing';
 import { apiClient } from './api/client';
 import FirstLaunch from './pages/FirstLaunch';
 import { useTranslation } from 'react-i18next';
@@ -20,7 +20,7 @@ interface AppProps {
   initDataRaw: string | null;
 }
 
-type Page = 'dashboard' | 'tickets' | 'operators' | 'settings' | 'billing'; 
+type Page = 'dashboard' | 'tickets' | 'operators' | 'settings' | 'billing';
 
 type Instance = {
   instanceid: string;
@@ -474,7 +474,7 @@ const App: React.FC<AppProps> = ({
       : '—';
 
   const displayPlanLabel = billing?.unlimited ? t('app.tariff_private_mode') : planLabel;
-  
+
   return (
     <div className="app-container">
       <header className="app-header">
@@ -584,10 +584,7 @@ const App: React.FC<AppProps> = ({
 
       <main className="main-content">
         {currentPage === 'dashboard' && (
-          <Dashboard 
-            instanceId={selectedInstance.instanceid}
-            onOpenBilling={() => setCurrentPage('billing')} // ДОБАВЛЕНО
-          />
+          <Dashboard instanceId={selectedInstance.instanceid} />
         )}
         {currentPage === 'tickets' && (
           <Tickets instanceId={selectedInstance.instanceid} />
@@ -598,7 +595,7 @@ const App: React.FC<AppProps> = ({
         {currentPage === 'settings' && selectedInstance.role === 'owner' && (
           <Settings instanceId={selectedInstance.instanceid} />
         )}
-        {currentPage === 'billing' && ( // ДОБАВЛЕНО
+        {currentPage === 'billing' && (
           <Billing instanceId={selectedInstance.instanceid} />
         )}
       </main>
@@ -640,6 +637,15 @@ const App: React.FC<AppProps> = ({
               >
                 <span className="nav-icon">⚙️</span>
                 <span className="nav-label">{t('nav.settings')}</span>
+              </button>
+              <button
+                className={`nav-button ${
+                  currentPage === 'billing' ? 'active' : ''
+                }`}
+                onClick={() => setCurrentPage('billing')}
+              >
+                <span className="nav-icon">💳</span>
+                <span className="nav-label">{t('nav.billing')}</span>
               </button>
             </>
           )}

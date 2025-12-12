@@ -53,6 +53,18 @@ export interface SaasPlanDTO {
   productCode: string | null;
 }
 
+// --- Billing invoices ---
+
+export interface CreateInvoiceRequest {
+  plan_code: string;
+  periods: number;
+}
+
+export interface CreateInvoiceResponse {
+  invoice_id: number;
+  invoice_link: string;
+}
+
 class ApiClient {
   private token: string | null = null;
   private baseUrl: string;
@@ -272,6 +284,17 @@ class ApiClient {
     return this.request<SaasPlanDTO[]>(
       'GET',
       '/api/saas/plans',
+    );
+  }
+
+  async createBillingInvoice(
+    instanceId: string,
+    payload: CreateInvoiceRequest,
+  ): Promise<CreateInvoiceResponse> {
+    return this.request<CreateInvoiceResponse>(
+      'POST',
+      `/api/instances/${instanceId}/billing/create_invoice`,
+      payload,
     );
   }
 }

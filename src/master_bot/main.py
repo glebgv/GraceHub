@@ -18,6 +18,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     Update,
+    PreCheckoutQuery,
 )
 from aiogram.enums import ParseMode, ChatType
 from aiogram.client.default import DefaultBotProperties
@@ -130,6 +131,106 @@ class MasterBot:
         self.worker_procs.pop(instance_id, None)
 
     # ====================== МИНИ-APПА: УТИЛИТЫ ======================
+
+    async def handle_successful_payment(self, message: Message):
+        """
+        Обработка успешной оплаты Stars (Telegram Stars).
+        payload у нас вида "saas:<invoice_id>".
+        """
+        logger.info(
+            "handle_successful_payment CALLED: chat_id=%s user_id=%s",
+            message.chat.id,
+            message.from_user.id if message.from_user else None,
+        )
+
+        sp = message.successful_payment
+        if not sp:
+            logger.warning("handle_successful_payment called without successful_payment")
+            return
+
+        logger.info(
+            "successful_payment RAW: currency=%s total_amount=%s payload=%r "
+            "telegram_payment_charge_id=%s provider_payment_charge_id=%s",
+            sp.currency,
+            sp.total_amount,
+            sp.invoice_payload,
+            sp.telegram_payment_charge_id,
+            sp.provider_payment_charge_id,
+        )
+
+        payload = sp.invoice_payload or ""
+        if not payload.startswith("saas:"):
+            # не наш инвойс — игнорируем
+            logger.info("successful_payment with foreign payload=%r", payload)
+            return
+
+        invoice_id_str = payload.split(":", 1)[1]
+        try:
+            invoice_id = int(invoice_id_str)
+        except ValueError:
+            logger.warning("successful_payment: bad invoice_id in payload=%r", payload)
+            return
+
+        logger.info(
+            "successful_payment parsed: invoice_id=%s currency=%s total_amount=%s",
+            invoice_id,
+            sp.currency,
+            sp.total_amount,
+        )
+
+        # 1) помечаем инвойс как оплаченный
+        try:
+            logger.info("mark_billing_invoice_paid started: invoice_id=%s", invoice_id)
+            await self.db.mark_billing_invoice_paid(
+                invoice_id=invoice_id,
+                telegram_invoice_id=sp.telegram_payment_charge_id,
+                total_amount=sp.total_amount,
+                currency=sp.currency,
+            )
+            logger.info("mark_billing_invoice_paid done: invoice_id=%s", invoice_id)
+        except Exception as e:
+            logger.exception("mark_billing_invoice_paid failed: %s", e)
+            # тут можно отправить сообщение админам, но пользователю всё равно успешная оплата уже показана Telegram
+            return
+
+        # 2) применяем тариф к инстансу
+        try:
+            logger.info("apply_saas_plan_for_invoice started: invoice_id=%s", invoice_id)
+            await self.db.apply_saas_plan_for_invoice(invoice_id)
+            logger.info("apply_saas_plan_for_invoice done: invoice_id=%s", invoice_id)
+        except Exception as e:
+            logger.exception("apply_saas_plan_for_invoice failed: %s", e)
+            # можно пометить invoice как 'paid_but_failed_apply'
+
+        # 3) опционально уведомляем пользователя
+        try:
+            logger.info("sending success message to chat_id=%s", message.chat.id)
+            await message.answer("✅ Оплата прошла успешно! Тариф обновлён.")
+            logger.info("success message sent to chat_id=%s", message.chat.id)
+        except Exception as e:
+            logger.warning("Failed to send success message after payment: %s", e)
+
+    async def create_stars_invoice_link_for_miniapp(
+        self,
+        user_id: int,
+        title: str,
+        description: str,
+        payload: str,
+        currency: str,
+        amount_stars: int,
+    ) -> str:
+        # для XTR Bot API ожидает amount = кол-во звёзд, без *100
+        prices = [{"label": title, "amount": amount_stars}]
+
+        link = await self.bot.create_invoice_link(
+            title=title,
+            description=description,
+            payload=payload,
+            currency=currency,  # "XTR"
+            prices=prices,
+        )
+        return link
+
 
     def _build_miniapp_url(self, instance: BotInstance, admin_user_id: int) -> str:
         """
@@ -256,6 +357,7 @@ class MasterBot:
         self.dp.callback_query(F.data.startswith("remove_confirm_"))(self.handle_remove_confirm)
         self.dp.callback_query(F.data.startswith("remove_yes_"))(self.handle_remove_instance)
         self.dp.callback_query(F.data.startswith("remove_no_"))(self.handle_remove_cancel)
+        
 
 
         # Общий handler для меню callbacks
@@ -263,6 +365,10 @@ class MasterBot:
 
         # Text handler for adding bot tokens
         self.dp.message(F.text)(self.handle_text)
+
+        # === Stars / оплата тарифов ===
+        self.dp.pre_checkout_query()(self.handle_pre_checkout_query)
+        self.dp.message(F.successful_payment)(self.handle_successful_payment)
 
 
     # ====================== МЕНЮ МАСТЕРА ======================
@@ -390,6 +496,39 @@ class MasterBot:
         )
         await message.answer(text, reply_markup=self.get_main_menu_for_lang(texts))
 
+
+    async def handle_pre_checkout_query(self, pre_checkout_query: PreCheckoutQuery):
+        """
+        Обязательный шаг для Telegram Payments:
+        бот должен подтвердить pre_checkout_query за несколько секунд,
+        иначе платёж будет отменён с ошибкой "Время ожидания ответа от бота истекло".
+        """
+        logger.info(
+            "PRE_CHECKOUT: id=%s from=%s total_amount=%s currency=%s payload=%r",
+            pre_checkout_query.id,
+            pre_checkout_query.from_user.id if pre_checkout_query.from_user else None,
+            pre_checkout_query.total_amount,
+            pre_checkout_query.currency,
+            pre_checkout_query.invoice_payload,
+        )
+        try:
+            # здесь можно делать дополнительные проверки (валидность payload, сумма и т.п.)
+            await self.bot.answer_pre_checkout_query(
+                pre_checkout_query.id,
+                ok=True,
+            )
+            logger.info("PRE_CHECKOUT answered OK: id=%s", pre_checkout_query.id)
+        except Exception as e:
+            logger.exception("Failed to answer pre_checkout_query: %s", e)
+            # в случае ошибки можно явно отклонить
+            try:
+                await self.bot.answer_pre_checkout_query(
+                    pre_checkout_query.id,
+                    ok=False,
+                    error_message="Оплата сейчас недоступна, попробуйте позже.",
+                )
+            except Exception:
+                pass
 
     async def handle_language_choice(self, callback: CallbackQuery):
         user_id = callback.from_user.id
@@ -1204,11 +1343,15 @@ class MasterBot:
         master_webhook_url = f"https://{self.webhook_domain}/master_webhook"
         await self.bot.set_webhook(
             url=master_webhook_url,
-            allowed_updates=["message", "callback_query"],
+            allowed_updates=[
+                "message",
+                "callback_query",
+                "pre_checkout_query",
+                "successful_payment",
+            ],
             drop_pending_updates=True,
         )
         logger.info(f"Master bot webhook set to {master_webhook_url}")
-
         # Keep running
         while True:
             await asyncio.sleep(1)

@@ -5,10 +5,9 @@ import { useTranslation } from 'react-i18next';
 
 interface DashboardProps {
   instanceId: string;
-  onOpenBilling?: () => void; // НОВЫЙ ПРОП
 }
 
-const Dashboard: React.FC<DashboardProps> = ({ instanceId, onOpenBilling }) => {
+const Dashboard: React.FC<DashboardProps> = ({ instanceId }) => {
   const { t } = useTranslation();
 
   const [stats, setStats] = useState<any>(null);
@@ -109,24 +108,6 @@ const Dashboard: React.FC<DashboardProps> = ({ instanceId, onOpenBilling }) => {
           {t('dashboard.uniqueUsersLabel')}
         </div>
         <div className="stat-value">{stats.unique_users || 0}</div>
-      </div>
-
-      {/* НОВАЯ КАРТОЧКА ТАРИФА */}
-      <div className="card tariff-card">
-        <div className="card-title">
-          {t('dashboard.tariffTitle') ?? 'Тариф и оплата'}
-        </div>
-        <div className="stat-label" style={{ marginTop: '8px' }}>
-          {t('dashboard.tariffDescription') ??
-            'Управляйте тарифом и оплатой бота'}
-        </div>
-        <button
-          className="btn"
-          style={{ marginTop: '12px', width: '100%' }}
-          onClick={() => onOpenBilling && onOpenBilling()}
-        >
-          {t('dashboard.openBillingButton') ?? 'Открыть тарифы'}
-        </button>
       </div>
     </div>
   );

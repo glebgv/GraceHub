@@ -216,6 +216,14 @@ class SaasPlanOut(BaseModel):
     priceStars: int
     productCode: str | None
 
+class CreateInvoiceRequest(BaseModel):
+    plan_code: str = Field(..., description="Код тарифа (lite/pro/enterprise/demo)")
+    periods: int = Field(..., ge=1, le=24, description="Количество периодов (1,3,12)")
+
+class CreateInvoiceResponse(BaseModel):
+    invoice_id: int
+    invoice_link: str
+
 # ========================================================================
 # Telegram Validation
 # ========================================================================
@@ -436,6 +444,23 @@ class MiniAppDB:
             ),
         )
 
+    async def update_billing_invoice_link_and_payload(
+        self,
+        invoice_id: int,
+        payload: str,
+        invoice_link: str,
+    ) -> None:
+        await self.db.execute(
+            """
+            UPDATE billing_invoices
+            SET payload = %s,
+                invoice_link = %s,
+                updated_at = NOW()
+            WHERE invoice_id = %s
+            """,
+            (payload, invoice_link, invoice_id),
+        )
+
 
     async def get_user_instances(self, user_id: int) -> List[Dict[str, Any]]:
         """
@@ -533,6 +558,93 @@ class MiniAppDB:
             """,
             (instanceid, key, value),
         )
+
+
+    async def get_billing_product_by_plan_code(
+        self,
+        plan_code: str,
+    ) -> dict | None:
+        row = await self.db.fetchone(
+            """
+            SELECT
+                bp.product_id,
+                bp.code        AS product_code,
+                bp.plan_id,
+                sp.code        AS plan_code,
+                sp.name        AS name,
+                bp.title       AS title,
+                bp.description AS description,
+                bp.amount_stars,
+                bp.is_active
+            FROM billing_products AS bp
+            JOIN saas_plans       AS sp ON sp.plan_id = bp.plan_id
+            WHERE sp.code = %s
+            AND bp.is_active = TRUE
+            LIMIT 1
+            """,
+            (plan_code,),
+        )
+        return dict(row) if row else None
+
+
+    async def insert_billing_invoice(
+        self,
+        instance_id: str,
+        user_id: int,
+        plan_code: str,      # можно не использовать, но пусть останется в сигнатуре
+        periods: int,
+        amount_stars: int,
+        product_code: str,
+        payload: str,
+        invoice_link: str,
+        status: str = "pending",
+    ) -> int:
+        # product_code = billing_products.code → достаём product_id
+        product_row = await self.db.fetchone(
+            """
+            SELECT product_id
+            FROM billing_products
+            WHERE code = %s
+            LIMIT 1
+            """,
+            (product_code,),
+        )
+        if not product_row:
+            raise ValueError(f"Unknown billing product_code={product_code}")
+
+        product_id = product_row["product_id"]
+
+        row = await self.db.fetchone(
+            """
+            INSERT INTO billing_invoices (
+                instance_id,
+                user_id,
+                product_id,
+                payload,
+                telegram_invoice_id,
+                invoice_link,
+                stars_amount,
+                currency,
+                status
+            )
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            RETURNING invoice_id
+            """,
+            (
+                instance_id,
+                user_id,
+                product_id,
+                payload,
+                None,               # telegram_invoice_id — пока нет
+                invoice_link,
+                amount_stars,       # целое число XTR
+                "XTR",
+                status,
+            ),
+        )
+        return row["invoice_id"]
+
+
 
     async def get_instance_by_id(self, instance_id: str) -> Optional[Dict[str, Any]]:
         """Инстанс по instance_id с метаданными."""
@@ -1297,6 +1409,85 @@ def create_miniapp_app(
     # ====================================================================
     # Endpoints
     # ====================================================================
+
+    @app.post(
+        "/api/instances/{instance_id}/billing/create_invoice",
+        response_model=CreateInvoiceResponse,
+    )
+    async def create_billing_invoice(
+        instance_id: str,
+        req: CreateInvoiceRequest,
+        current_user: Dict[str, Any] = Depends(get_current_user),
+    ):
+        """
+        Создать инвойс Stars для тарифа instance'а и вернуть ссылку
+        для открытия через Telegram.WebApp.openInvoice.
+        """
+        user_id = current_user["user_id"]
+
+        # 1. Проверить доступ к инстансу
+        await require_instance_access(instance_id, current_user)
+
+        # 2. Найти продукт в billing_products по plan_code
+        product = await miniapp_db.get_billing_product_by_plan_code(req.plan_code)
+        if not product or not product["product_code"]:
+            raise HTTPException(status_code=400, detail="Тариф недоступен для оплаты")
+
+        base_amount = product["amount_stars"]  # например 300, 800, 2500
+        total_amount = base_amount * req.periods
+
+        # 3. Сначала создаём запись в billing_invoices (без payload и link)
+        invoice_id = await miniapp_db.insert_billing_invoice(
+            instance_id=instance_id,
+            user_id=user_id,
+            plan_code=req.plan_code,
+            periods=req.periods,
+            amount_stars=total_amount,
+            product_code=product["product_code"],
+            payload="",           # временно пусто
+            invoice_link="",      # временно пусто
+            status="pending",
+        )
+
+        # 4. Короткий payload для Telegram (до 128 байт)
+        payload = f"saas:{invoice_id}"
+
+        # 5. Через master_bot создать invoice_link
+        if master_bot is None:
+            logger.error("create_billing_invoice: master_bot is not initialized")
+            raise HTTPException(status_code=500, detail="MasterBot не инициализирован")
+
+        try:
+            invoice_link = await master_bot.create_stars_invoice_link_for_miniapp(
+                user_id=user_id,
+                title=product.get("title") or product["name"],
+                description=product.get("description") or f"SaaS план {req.plan_code}",
+                payload=payload,
+                currency="XTR",
+                amount_stars=total_amount,
+            )
+        except Exception as e:
+            logger.exception("create_billing_invoice: error from MasterBot: %s", e)
+            # при ошибке можно пометить инвойс как failed
+            raise HTTPException(
+                status_code=500,
+                detail="Не удалось создать инвойс Telegram Stars",
+            )
+
+        # 6. Обновить запись billing_invoices с payload и ссылкой
+        await miniapp_db.update_billing_invoice_link_and_payload(
+            invoice_id=invoice_id,
+            payload=payload,
+            invoice_link=invoice_link,
+        )
+
+        return CreateInvoiceResponse(
+            invoice_id=invoice_id,
+            invoice_link=invoice_link,
+        )
+
+
+
     @app.post("/api/auth/telegram", response_model=AuthResponse)
     async def auth_telegram(req: TelegramAuthRequest, request: Request):
         init_header = request.headers.get("X-Telegram-Init-Data")
