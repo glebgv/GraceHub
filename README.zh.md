@@ -34,6 +34,7 @@ GraceHub 是一个 SaaS 平台，使您能够直接在 Telegram 中部署支持�
 **🌐 网站:** [gracehub.ru](https://gracehub.ru)  
 **📢 Telegram 频道:** [@gracehubru](https://t.me/gracehubru)  
 **👨‍💻 开发者:** [@Gribson_Micro](https://t.me/Gribson_Micro)
+**🗺️ 路线图:** [ROADMAP.md](./ROADMAP.md)
 
 ## 主要功能
 

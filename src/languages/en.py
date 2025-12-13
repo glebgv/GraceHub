@@ -296,5 +296,6 @@ TEXTS_EN = Texts(
     master_remove_confirm_irreversible="This action cannot be undone.",
     master_remove_confirm_yes="✅ Yes, delete",
     master_remove_confirm_cancel="❌ Cancel",
+    master_menu_billing="💳 Plans & Billing",
 )
 

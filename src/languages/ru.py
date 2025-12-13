@@ -315,6 +315,7 @@ TEXTS_RU = Texts(
     master_remove_confirm_irreversible="Действие необратимо.",
     master_remove_confirm_yes="✅ Да, удалить",
     master_remove_confirm_cancel="❌ Отмена",
+    master_menu_billing="💳 Тарифы и оплата",
 
 )
 

@@ -293,5 +293,6 @@ TEXTS_ZH = Texts(
     master_remove_confirm_irreversible="此操作无法撤销。",
     master_remove_confirm_yes="✅ 是的，删除",
     master_remove_confirm_cancel="❌ 取消",
+    master_menu_billing="💳 套餐与支付",
 )
 
