@@ -33,7 +33,8 @@ GraceHub — это SaaS платформа, которая позволяет �
 
 **🌐 Сайт:** [gracehub.ru](https://gracehub.ru)  
 **📢 Telegram канал:** [@gracehubru](https://t.me/gracehubru)  
-**👨‍💻 Разработчик:** [@Gribson_Micro](https://t.me/Gribson_Micro)
+**👨‍💻 Разработчик:** [@Gribson_Micro](https://t.me/Gribson_Micro)  
+**🗺️ Roadmap:** [ROADMAP.md](./ROADMAP.md)
 
 ## Основной функционал
 
