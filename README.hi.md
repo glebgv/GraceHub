@@ -84,6 +84,7 @@ gracehub/
 - Node.js 20+
 - PostgreSQL 15+
 - Nginx (वैकल्पिक)
+- डोमेन नाम
 
 ## ⚙️ पर्यावरण सेटअप
 

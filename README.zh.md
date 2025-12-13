@@ -84,6 +84,7 @@ gracehub/
 - Node.js 20+
 - PostgreSQL 15+
 - Nginx（可选）
+- 域名
 
 ## ⚙️ 环境设置
 

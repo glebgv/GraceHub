@@ -84,6 +84,7 @@ gracehub/
 - Node.js 20+
 - PostgreSQL 15+
 - Nginx (opcional)
+- Nombre de dominio
 
 ## ⚙️ Configuración del Entorno
 
