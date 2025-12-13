@@ -1,3 +1,11 @@
+<div align="right">
+  <a href="README.md">🇷🇺 Русский</a> •
+  <a href="README.en.md">🇬🇧 English</a> •
+  <a href="README.es.md">🇪🇸 Español</a> •
+  <a href="README.hi.md">🇮🇳 हिन्दी</a> •
+  <a href="README.zh.md">🇨🇳 简体中文</a>
+</div>
+
 <div align="center">
 
 > ⚠️ **Important:** This project is in **alpha testing** stage.
@@ -8,14 +16,17 @@
 
 ---
 
-# GraceHub Platform
-
-<div align="right">
-  <a href="README.md">🇷🇺 Русский</a> •
-  <a href="README.en.md">🇬🇧 English</a> •
-  <a href="README.es.md">🇪🇸 Español</a> •
-  <a href="README.hi.md">🇮🇳 हिन्दी</a> •
-  <a href="README.zh.md">🇨🇳 简体中文</a>
+<div align="center">
+  <table cellpadding="0" cellspacing="0" style="border: none;">
+    <tr>
+      <td style="padding: 0; border: none; vertical-align: middle;">
+        <img src="logo.png" alt="GraceHub Logo" width="60">
+      </td>
+      <td style="padding: 0 0 0 20px; border: none; vertical-align: middle;">
+        <h1 style="margin: 0;">GraceHub Platform</h1>
+      </td>
+    </tr>
+  </table>
 </div>
 
 GraceHub is a SaaS platform that allows you to deploy your support directly in Telegram, as well as become a provider of feedback bot and technical support services for small and medium-sized businesses.
