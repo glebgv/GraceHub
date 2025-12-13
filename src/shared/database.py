@@ -77,6 +77,34 @@ class MasterDatabase:
         return key
 
 
+    async def get_all_instances_for_monitor(self) -> list[BotInstance]:
+        """
+        Возвращает все инстансы для мониторинга (running + error и т.д.).
+        """
+        rows = await self.fetchall(
+            """
+            SELECT
+                instance_id,
+                user_id,
+                token_hash,
+                bot_username,
+                bot_name,
+                webhook_url,
+                webhook_path,
+                webhook_secret,
+                status,
+                created_at,
+                updatedat AS updated_at,    
+                error_message,
+                owner_user_id,
+                admin_private_chat_id
+            FROM bot_instances
+            """
+        )
+        return [BotInstance(**row) for row in rows]
+
+
+
     async def get_instance_settings(self, instance_id: str) -> Optional[Dict[str, Any]]:
         """
         Настройки инстанса для мастер-бота (как dict).

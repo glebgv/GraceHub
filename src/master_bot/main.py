@@ -89,6 +89,45 @@ class MasterBot:
         lang = await self.get_user_lang(user_id)
         return LANGS.get(lang, LANGS[self.default_lang])
 
+
+    async def _notify_owner_invalid_token(
+        self,
+        owner_id: int,
+        instance: BotInstance,
+        reason: str,
+    ) -> None:
+        """
+        Шлёт владельцу инстанса алерт о том, что токен воркера нерабочий.
+        """
+        if reason == "bad_format":
+            reason_text = "Неверный формат токена бота."
+        elif reason == "unauthorized":
+            reason_text = "Telegram отклонил токен (бот удалён, токен сменён или отозван)."
+        elif reason == "no_token":
+            reason_text = "Для этого инстанса не найден токен в базе."
+        else:
+            reason_text = "Токен бота недоступен."
+
+        text_lines = [
+            "⚠️ <b>Проблема с ботом поддержки</b>\n\n",
+            f"Инстанс: <code>{instance.instance_id}</code>\n",
+            f"Бот: @{instance.bot_username}\n\n",
+            f"{reason_text}\n\n",
+            "Проверьте токен бота в @BotFather и заново добавьте/обновите его в системе.",
+        ]
+        text = "".join(text_lines)
+
+        try:
+            await self.bot.send_message(chat_id=owner_id, text=text)
+        except TelegramAPIError as e:
+            logger.warning(
+                "Failed to send invalid-token alert to owner %s for instance %s: %s",
+                owner_id,
+                instance.instance_id,
+                e,
+            )
+
+
     # ====================== УПРАВЛЕНИЕ ВОРКЕРАМИ ======================
 
     def is_worker_process_alive(self, instance_id: str) -> bool:
@@ -1610,17 +1649,57 @@ class MasterBot:
 
     async def monitor_workers(self, interval: int = 600) -> None:
         """
-        Периодически проверяет всех активных воркеров.
-        Логирует проблемы и при падении процесса пытается его поднять.
+        Периодически проверяет все инстансы из БД (running + error и т.д.).
         """
         while True:
-            for instance_id, instance in list(self.instances.items()):
-                process_alive = self.is_worker_process_alive(instance_id)
+            all_instances = await self.db.get_all_instances_for_monitor()
 
-                if not process_alive:
+            logger.info(
+                "monitor_workers: checking %s instances",
+                len(all_instances),
+            )
+
+            for instance in all_instances:
+                instance_id = instance.instance_id
+
+                process_alive = self.is_worker_process_alive(instance_id)
+                token_ok, token_reason = await self.check_worker_token_health(instance_id)
+
+                logger.info(
+                    "monitor_workers: %s status=%s process_alive=%s token_ok=%s reason=%s",
+                    instance_id, instance.status, process_alive, token_ok, token_reason,
+                )
+
+                # проблемы с токеном
+                if not token_ok and token_reason in ("bad_format", "unauthorized", "no_token"):
+                    logger.error(
+                        "Worker %s token problem: %s", instance_id, token_reason
+                    )
+
+                    await self.db.update_instance_status(
+                        instance_id, InstanceStatus.ERROR
+                    )
+
+                    try:
+                        owner_id = instance.owner_user_id
+                        await self._notify_owner_invalid_token(
+                            owner_id=owner_id,
+                            instance=instance,
+                            reason=token_reason,
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "Failed to notify owner about invalid token for %s: %s",
+                            instance_id,
+                            e,
+                        )
+
+                    continue
+
+                # авторестарт только для running
+                if instance.status == InstanceStatus.RUNNING and not process_alive:
                     logger.error("Worker %s process is dead", instance_id)
 
-                    # пытаемся достать текущий токен и перезапустить воркер
                     token = await self.db.get_decrypted_token(instance_id)
                     if not token:
                         logger.error(
@@ -1643,22 +1722,18 @@ class MasterBot:
     # ====================== ЗАПУСК МАСТЕРА ======================
 
     async def run(self) -> None:
-        """Run the master bot"""
         logger.info("Starting GraceHub Platform Master Bot...")
 
-        # Initialize database
         await self.db.init()
-
-        # Load existing instances (и поднять воркеры)
         await self.load_existing_instances()
 
-        # Стартуем фоновый монитор воркеров (health-check каждые 10 минут)
-        asyncio.create_task(self.monitor_workers(interval=60))
+        logger.info("Worker monitor interval = %s", settings.WORKER_MONITOR_INTERVAL)
+        asyncio.create_task(
+            self.monitor_workers(interval=settings.WORKER_MONITOR_INTERVAL)
+        )
 
-        # Start webhook server (для master_bot)
         await self.start_webhook_server()
 
-        # Set master bot webhook
         master_webhook_url = f"https://{self.webhook_domain}/master_webhook"
         await self.bot.set_webhook(
             url=master_webhook_url,
@@ -1672,9 +1747,9 @@ class MasterBot:
         )
         logger.info(f"Master bot webhook set to {master_webhook_url}")
 
-        # Keep running
         while True:
             await asyncio.sleep(1)
+
 
     async def load_existing_instances(self):
         """Load existing instances from database и запустить polling-воркеры"""
