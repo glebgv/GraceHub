@@ -3,10 +3,23 @@ site_url: https://gracehub.ru/manual/
 
 theme:
   name: material
+  custom_dir: docs/overrides        # папка с overrides (overrides/main.html)
   palette:
-    scheme: default
-    primary: blue
-    accent: blue
+    # Светлая тема (white / cream / blue)
+    - scheme: default
+      primary: blue
+      accent: blue
+      toggle:
+        icon: material/brightness-4
+        name: Переключить на тёмную тему
+
+    # Тёмная рабочая тема (графитовая)
+    - scheme: slate
+      primary: blue
+      accent: blue
+      toggle:
+        icon: material/brightness-7
+        name: Переключить на светлую тему
 
 nav:
   - Обзор: index.md
