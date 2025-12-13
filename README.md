@@ -9,8 +9,16 @@
 ---
 
 <div align="center">
-  <img src="logo.png" alt="GraceHub Logo" width="60" style="vertical-align: middle;">
-  <h1 style="display: inline-block; margin: 0 0 0 20px; vertical-align: middle;">GraceHub Platform</h1>
+  <table cellpadding="0" cellspacing="0" style="border: none;">
+    <tr>
+      <td style="padding: 0; border: none; vertical-align: middle;">
+        <img src="logo.png" alt="GraceHub Logo" width="60">
+      </td>
+      <td style="padding: 0 0 0 20px; border: none; vertical-align: middle;">
+        <h1 style="margin: 0;">GraceHub Platform</h1>
+      </td>
+    </tr>
+  </table>
 </div>
 
 GraceHub — это SaaS платформа, которая позволяет вам развернуть свою поддержку прямо в телеграм, а так же становиться поставщиком услуги по созданию ботов обратной связи и технической поддержки для клиентов малого и среднего бизнеса.
