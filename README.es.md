@@ -1,3 +1,13 @@
+<div align="center">
+
+> ⚠️ **Importante:** Este proyecto se encuentra en la etapa de **pruebas alfa**.
+> La funcionalidad puede cambiar, son posibles errores y funcionamiento inestable.
+> Utilícelo con precaución y reporte cualquier problema.
+
+</div>
+
+---
+
 # GraceHub Platform
 
 <div align="right">
