@@ -34,6 +34,8 @@ GraceHub es una plataforma SaaS que le permite desplegar su soporte directamente
 **🌐 Sitio Web:** [gracehub.ru](https://gracehub.ru)  
 **📢 Canal de Telegram:** [@gracehubru](https://t.me/gracehubru)  
 **👨‍💻 Desarrollador:** [@Gribson_Micro](https://t.me/Gribson_Micro)
+**🗺️ Hoja de ruta:** [ROADMAP.md](./ROADMAP.md)
+
 
 ## Características Principales
 
