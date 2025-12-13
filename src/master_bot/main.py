@@ -22,7 +22,7 @@ from aiogram.types import (
 )
 from aiogram.enums import ParseMode, ChatType
 from aiogram.client.default import DefaultBotProperties
-from aiogram.exceptions import TelegramBadRequest, TelegramAPIError
+from aiogram.exceptions import TelegramBadRequest, TelegramAPIError, TelegramUnauthorizedError
 from aiogram.types.web_app_info import WebAppInfo
 from aiohttp import web
 
@@ -90,6 +90,13 @@ class MasterBot:
         return LANGS.get(lang, LANGS[self.default_lang])
 
     # ====================== УПРАВЛЕНИЕ ВОРКЕРАМИ ======================
+
+    def is_worker_process_alive(self, instance_id: str) -> bool:
+        proc = self.worker_procs.get(instance_id)
+        if not proc:
+            return False
+        return proc.poll() is None  
+
 
     def spawn_worker(self, instance_id: str, token: str) -> None:
         """
@@ -1334,6 +1341,61 @@ class MasterBot:
             await self.db.clear_user_state(user_id)
 
 
+    async def check_worker_token_health(self, instance_id: str) -> tuple[bool, str]:
+        """
+        Проверяет, что токен воркера валиден и бот отвечает.
+        Возвращает (ok, reason).
+        """
+        # 1) достаём текущий токен из БД (учитывая, что он мог измениться)
+        token = await self.db.get_decrypted_token(instance_id)
+        if not token:
+            return False, "no_token"
+
+        # 2) быстрая валидация формата
+        if not self.validate_token_format(token):
+            return False, "bad_format"
+
+        test_bot = Bot(token=token)
+        try:
+            me = await test_bot.get_me()
+        except TelegramUnauthorizedError:
+            # токен сменили / отозвали
+            return False, "unauthorized"
+        except TelegramAPIError:
+            # Telegram временно лежит / сетевые проблемы
+            return False, "telegram_error"
+        except Exception:
+            # что-то ещё странное
+            return False, "unknown_error"
+        finally:
+            await test_bot.session.close()
+
+        # если дошли сюда — токен живой и getMe отвечает
+        return True, "ok"
+
+    async def check_worker_health(self, instance_id: str) -> dict:
+        """
+        Комплексный health-чек воркера.
+        Возвращает словарь:
+        {
+        "instance_id": ...,
+        "process_alive": bool,
+        "token_ok": bool,
+        "token_reason": str,  # ok / no_token / bad_format / unauthorized / ...
+        }
+        """
+        process_alive = self.is_worker_process_alive(instance_id)
+
+        token_ok, token_reason = await self.check_worker_token_health(instance_id)
+
+        return {
+            "instance_id": instance_id,
+            "process_alive": process_alive,
+            "token_ok": token_ok,
+            "token_reason": token_reason,
+        }
+
+
     async def create_bot_instance(
         self, user_id: int, token: str, bot_username: str, bot_name: str
     ) -> BotInstance:
@@ -1546,6 +1608,38 @@ class MasterBot:
         """Health check endpoint"""
         return web.Response(status=200, text="OK")
 
+    async def monitor_workers(self, interval: int = 600) -> None:
+        """
+        Периодически проверяет всех активных воркеров.
+        Логирует проблемы и при падении процесса пытается его поднять.
+        """
+        while True:
+            for instance_id, instance in list(self.instances.items()):
+                process_alive = self.is_worker_process_alive(instance_id)
+
+                if not process_alive:
+                    logger.error("Worker %s process is dead", instance_id)
+
+                    # пытаемся достать текущий токен и перезапустить воркер
+                    token = await self.db.get_decrypted_token(instance_id)
+                    if not token:
+                        logger.error(
+                            "Cannot respawn worker %s: no token in DB", instance_id
+                        )
+                        continue
+
+                    try:
+                        self.spawn_worker(instance_id, token)
+                        logger.info(
+                            "Respawned worker process for instance %s", instance_id
+                        )
+                    except Exception as e:
+                        logger.error(
+                            "Failed to respawn worker %s: %s", instance_id, e
+                        )
+
+            await asyncio.sleep(interval)
+
     # ====================== ЗАПУСК МАСТЕРА ======================
 
     async def run(self) -> None:
@@ -1557,6 +1651,9 @@ class MasterBot:
 
         # Load existing instances (и поднять воркеры)
         await self.load_existing_instances()
+
+        # Стартуем фоновый монитор воркеров (health-check каждые 10 минут)
+        asyncio.create_task(self.monitor_workers(interval=60))
 
         # Start webhook server (для master_bot)
         await self.start_webhook_server()
@@ -1574,6 +1671,7 @@ class MasterBot:
             drop_pending_updates=True,
         )
         logger.info(f"Master bot webhook set to {master_webhook_url}")
+
         # Keep running
         while True:
             await asyncio.sleep(1)
