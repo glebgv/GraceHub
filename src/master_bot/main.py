@@ -128,6 +128,123 @@ class MasterBot:
             )
 
 
+    # ====================== БИЛЛИНГ: CRON-ЗАДАЧИ ======================
+
+    async def _billing_notify_expiring(self) -> None:
+        rows = await self.db.get_instances_expiring_in_7_days()
+        if not rows:
+            return
+
+        logger.info("BillingCron: %d instances expiring in 7 days", len(rows))
+
+        for r in rows:
+            owner_id = r["owner_user_id"]
+            admin_chat = r["admin_private_chat_id"]
+            bot_username = r["bot_username"]
+            days_left = r["days_left"]
+
+            if not owner_id and not admin_chat:
+                continue
+
+            text = (
+                "🔔 <b>Напоминание по тарифу</b>\n\n"
+                f"Для инстанса @{bot_username} осталось {days_left} дней до окончания периода.\n"
+                "Продлите тариф, чтобы бот продолжил работать без ограничений."
+            )
+
+            targets = set()
+            if owner_id:
+                targets.add(owner_id)
+            if admin_chat:
+                targets.add(admin_chat)
+
+            for chat_id in targets:
+                try:
+                    await self.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
+                except Exception as e:
+                    logger.exception(
+                        "BillingCron: failed to send expiring notification to %s: %s",
+                        chat_id,
+                        e,
+                    )
+
+    async def _billing_notify_paused(self) -> None:
+        rows = await self.db.get_recently_paused_instances()
+        if not rows:
+            return
+
+        logger.info("BillingCron: %d instances just paused", len(rows))
+
+        for r in rows:
+            owner_id = r["owner_user_id"]
+            admin_chat = r["admin_private_chat_id"]
+            bot_username = r["bot_username"]
+            over_limit = r["over_limit"]
+
+            if not owner_id and not admin_chat:
+                continue
+
+            if over_limit:
+                reason = "превышен лимит тикетов"
+            else:
+                reason = "истёк срок действия тарифа"
+
+            text = (
+                "⛔️ <b>Тариф приостановлен</b>\n\n"
+                f"Обслуживание инстанса @{bot_username} приостановлено: {reason}.\n"
+                "Продлите тариф или увеличьте лимит, чтобы бот возобновил работу."
+            )
+
+            targets = set()
+            if owner_id:
+                targets.add(owner_id)
+            if admin_chat:
+                targets.add(admin_chat)
+
+            for chat_id in targets:
+                try:
+                    await self.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
+                except Exception as e:
+                    logger.exception(
+                        "BillingCron: failed to send paused notification to %s: %s",
+                        chat_id,
+                        e,
+                    )
+
+    async def _run_billing_cycle(self) -> None:
+        """
+        Один цикл биллингового крона:
+        - пересчитать флаги;
+        - отправить уведомления.
+        """
+        if settings.SINGLE_TENANT_OWNER_ONLY:
+            return
+
+        try:
+            await self.db.update_billing_flags()
+            logger.info("BillingCron: billing flags updated")
+        except Exception as e:
+            logger.exception("BillingCron: failed to update billing flags: %s", e)
+            return
+
+        try:
+            await self._billing_notify_expiring()
+        except Exception as e:
+            logger.exception("BillingCron: notify_expiring failed: %s", e)
+
+        try:
+            await self._billing_notify_paused()
+        except Exception as e:
+            logger.exception("BillingCron: notify_paused failed: %s", e)
+
+    async def run_billing_cron_loop(self, interval_seconds: int = 3600) -> None:
+        logger.info("BillingCron: starting loop with interval=%s sec", interval_seconds)
+        while True:
+            await self._run_billing_cycle()
+            await asyncio.sleep(interval_seconds)
+
+
+
     # ====================== УПРАВЛЕНИЕ ВОРКЕРАМИ ======================
 
     def is_worker_process_alive(self, instance_id: str) -> bool:
@@ -1727,9 +1844,16 @@ class MasterBot:
         await self.db.init()
         await self.load_existing_instances()
 
+        # Монитор воркеров
         logger.info("Worker monitor interval = %s", settings.WORKER_MONITOR_INTERVAL)
         asyncio.create_task(
             self.monitor_workers(interval=settings.WORKER_MONITOR_INTERVAL)
+        )
+
+        # Биллинг‑крон
+        logger.info("Billing cron interval = %s", settings.BILLING_CRON_INTERVAL)
+        asyncio.create_task(
+            self.run_billing_cron_loop(interval_seconds=settings.BILLING_CRON_INTERVAL)
         )
 
         await self.start_webhook_server()

@@ -77,6 +77,71 @@ class MasterDatabase:
         return key
 
 
+    async def update_billing_flags(self) -> None:
+        """
+        Пересчитывает days_left / over_limit / service_paused для всех instance_billing.
+        """
+        sql = """
+        UPDATE instance_billing
+        SET
+          days_left = GREATEST(
+            0,
+            CAST(EXTRACT(EPOCH FROM (period_end - NOW())) / 86400 AS INTEGER)
+          ),
+          over_limit = (tickets_used >= tickets_limit),
+          service_paused = (
+            NOW() > period_end
+            OR (tickets_used >= tickets_limit)
+          ),
+          updated_at = NOW()
+        ;
+        """
+        await self.execute(sql)
+
+    async def get_instances_expiring_in_7_days(self) -> list[dict]:
+        """
+        Инстансы, у которых осталось ровно 7 дней и service_paused = FALSE.
+        """
+        sql = """
+        SELECT ib.instance_id,
+               ib.period_end,
+               ib.days_left,
+               ib.tickets_used,
+               ib.tickets_limit,
+               bi.owner_user_id,
+               bi.admin_private_chat_id,
+               bi.bot_username
+        FROM instance_billing ib
+        JOIN bot_instances bi ON bi.instance_id = ib.instance_id
+        WHERE ib.service_paused = FALSE
+          AND ib.days_left = 7;
+        """
+        rows = await self.fetchall(sql)
+        return [dict(r) for r in rows]
+
+    async def get_recently_paused_instances(self) -> list[dict]:
+        """
+        Инстансы, которые недавно (за сутки) ушли в паузу.
+        """
+        sql = """
+        SELECT ib.instance_id,
+               ib.period_end,
+               ib.days_left,
+               ib.tickets_used,
+               ib.tickets_limit,
+               ib.over_limit,
+               bi.owner_user_id,
+               bi.admin_private_chat_id,
+               bi.bot_username
+        FROM instance_billing ib
+        JOIN bot_instances bi ON bi.instance_id = ib.instance_id
+        WHERE ib.service_paused = TRUE
+          AND ib.updated_at >= (NOW() - INTERVAL '1 day');
+        """
+        rows = await self.fetchall(sql)
+        return [dict(r) for r in rows]
+
+
     async def get_all_instances_for_monitor(self) -> list[BotInstance]:
         """
         Возвращает все инстансы для мониторинга (running + error и т.д.).
