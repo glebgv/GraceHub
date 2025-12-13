@@ -44,7 +44,7 @@ run_dev() {
     # api backend
     nohup python src/master_bot/api_server.py >> logs/api_server.log 2>&1 &
 
-    # frontend
+    # frontend dev server
     cd "$FRONTEND_DIR"
     npm install
     nohup npm run dev -- --host 0.0.0.0 >> "$ROOT_DIR/logs/frontend-dev.log" 2>&1 &
@@ -61,6 +61,14 @@ run_dev() {
 
 create_systemd_units() {
     echo "📝 Creating systemd units..."
+
+    # Находим реальный путь к npm
+    NPM_BIN="$(command -v npm || true)"
+    if [ -z "$NPM_BIN" ]; then
+        echo "❌ npm not found in PATH. Install Node.js/npm first."
+        exit 1
+    fi
+    NPM_DIR="$(dirname "$NPM_BIN")"
 
     cat >/etc/systemd/system/$MASTER_SERVICE <<EOF
 [Unit]
@@ -106,8 +114,10 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=$FRONTEND_DIR
-ExecStart=/usr/bin/npm run dev -- --host 0.0.0.0
+ExecStart=$NPM_BIN run dev -- --host 0.0.0.0
 Restart=always
+Environment=NODE_ENV=production
+Environment=PATH=$NPM_DIR:/usr/bin:/bin
 
 [Install]
 WantedBy=multi-user.target
