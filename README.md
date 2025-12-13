@@ -80,7 +80,7 @@ gracehub/
 
 ## 📋 Требования
 
-- Python 3.11+
+- Python 3.10+
 - Node.js 20+
 - PostgreSQL 15+
 - Nginx (опционально)
