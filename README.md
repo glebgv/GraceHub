@@ -8,17 +8,9 @@
 
 ---
 
-<div align="center">
-  <img src="logo.png" alt="GraceHub Logo" width="60" style="vertical-align: middle;">
-  <h1 style="display: inline-block; margin-left: 20px;">GraceHub Platform</h1>
-</div>
-
-<div align="right">
-  <a href="README.md">🇷🇺 Русский</a> •
-  <a href="README.en.md">🇬🇧 English</a> •
-  <a href="README.es.md">🇪🇸 Español</a> •
-  <a href="README.hi.md">🇮🇳 हिन्दी</a> •
-  <a href="README.zh.md">🇨🇳 简体中文</a>
+<div align="center" style="display: flex; align-items: center; justify-content: center;">
+  <img src="logo.png" alt="GraceHub Logo" width="60">
+  <h1 style="margin: 0 0 0 20px;">GraceHub Platform</h1>
 </div>
 
 GraceHub — это SaaS платформа, которая позволяет вам развернуть свою поддержку прямо в телеграм, а так же становиться поставщиком услуги по созданию ботов обратной связи и технической поддержки для клиентов малого и среднего бизнеса.
