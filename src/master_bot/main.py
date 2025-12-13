@@ -1581,7 +1581,7 @@ class MasterBot:
                 ],
                 [
                     InlineKeyboardButton(
-                        text="💳 Тарифы и оплата",
+                        text=texts.master_menu_billing,
                         callback_data="billing_menu",
                     ),
                 ],

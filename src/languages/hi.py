@@ -295,5 +295,6 @@ TEXTS_HI = Texts(
     master_remove_confirm_irreversible="यह कार्रवाई वापस नहीं की जा सकती।",
     master_remove_confirm_yes="✅ हाँ, हटाएँ",
     master_remove_confirm_cancel="❌ रद्द करें",
+    master_menu_billing="💳 प्लान और भुगतान",
 )
 

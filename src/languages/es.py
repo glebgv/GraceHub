@@ -296,5 +296,6 @@ TEXTS_ES = Texts(
     master_remove_confirm_irreversible="Esta acción no se puede deshacer.",
     master_remove_confirm_yes="✅ Sí, eliminar",
     master_remove_confirm_cancel="❌ Cancelar",
+    master_menu_billing="💳 Planes y pago",
 )
 

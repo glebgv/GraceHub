@@ -139,6 +139,7 @@ class Texts:
     master_menu_help: str
     master_start_hint: str
     master_help_text: str
+    master_menu_billing: str
     master_unknown_command: str
     master_list_bots_empty: str
     master_list_bots_title: str
