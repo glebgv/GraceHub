@@ -87,7 +87,6 @@ TEXTS_ZH = Texts(
     ticket_btn_spam="垃圾信息",
     ticket_btn_close="关闭",
     ticket_btn_compact="⬅️ 折叠",
-    ticket_not_found="未找到工单",
     ticket_taken_in_work="工单已被接手处理",
     ticket_assign_nobody="没有可分配的处理人",
     ticket_assign_cancel="已取消",
@@ -96,6 +95,7 @@ TEXTS_ZH = Texts(
     ticket_restored_from_spam="工单已从垃圾信息中恢复",
     ticket_closed="工单已关闭",
     ticket_reopened="工单已重新打开",
+    ticket_not_found="未找到工单",
 
     ticket_closed_rating_request="您的请求已关闭。请对专家进行评分：",
     rating_topic_message="用户评分：{emoji}",
@@ -298,5 +298,6 @@ TEXTS_ZH = Texts(
     too_many_messages="消息发送过于频繁，请稍后再试。",
     billing_plans_title="为你的账户选择套餐：",
     billing_plan_line="• <b>{plan_name}</b>: {price_stars} ⭐ / {period_days} 天，限 {tickets_limit} 工单",
+
 )
 

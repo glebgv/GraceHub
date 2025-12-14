@@ -1815,7 +1815,7 @@ class GraceHubWorker:
 
             ticket = await self.fetch_ticket(ticket_id)
             if not ticket:
-                await cb.answer("Тикет не найден", show_alert=True)
+                await cb.answer(self.texts.ticket_not_found, show_alert=True)
                 return
 
             status = ticket.get("status") or "new"
@@ -1862,7 +1862,7 @@ class GraceHubWorker:
 
         ticket = await self.fetch_ticket(ticket_id)
         if not ticket:
-            await cb.answer("Тикет не найден", show_alert=True)
+            await cb.answer(self.texts.ticket_not_found, show_alert=True)
             return
 
         message = cb.message
@@ -1888,7 +1888,7 @@ class GraceHubWorker:
             )
             # после действия сворачиваем меню
             await self.put_ticket_keyboard(ticket_id, message.message_id, compact=True)
-            await cb.answer("Тикет взят в работу")
+            await cb.answer(self.texts.ticket_taken_self)
             return
 
         # 2) "Назначить" — показать список других участников (админов) чата
@@ -1913,13 +1913,13 @@ class GraceHubWorker:
                     ]
                 )
             if not rows:
-                await cb.answer("Некого назначать", show_alert=True)
+                await cb.answer(self.texts.ticket_no_assignees, show_alert=True)
                 return
 
             rows.append(
                 [
                     InlineKeyboardButton(
-                        text="Отмена",
+                        text=self.texts.ticket_cancel,
                         callback_data=f"ticket:cancel_assign:{ticket_id}",
                     )
                 ]
@@ -1954,13 +1954,15 @@ class GraceHubWorker:
                 assigned_user_id=assignee_id,
             )
             await self.put_ticket_keyboard(ticket_id, message.message_id, compact=True)
-            await cb.answer(f"Назначено {target_username}")
+            await cb.answer(
+                self.texts.ticket_assigned_to.format(username=target_username)
+            )
             return
 
         # 2b) Отмена назначения
         if action == "cancel_assign":
             await self.put_ticket_keyboard(ticket_id, message.message_id, compact=True)
-            await cb.answer("Отменено")
+            await cb.answer(self.texts.ticket_assignment_cancelled)
             return
 
         # 3) "Спам" — пометить тикет как спам,
@@ -1973,7 +1975,7 @@ class GraceHubWorker:
                 assigned_user_id=None,
             )
             await self.put_ticket_keyboard(ticket_id, message.message_id, compact=True)
-            await cb.answer("Отмечено как спам")
+            await cb.answer(self.texts.ticket_marked_spam)
             return
 
         # 3a) "Не спам" — вернуть тикет из спама в работу с текущим админом
@@ -1985,7 +1987,7 @@ class GraceHubWorker:
                 assigned_user_id=user.id,
             )
             await self.put_ticket_keyboard(ticket_id, message.message_id, compact=True)
-            await cb.answer("Тикет возвращён из спама")
+            await cb.answer(self.texts.ticket_unspammed)
             return
 
         # 4) "Закрыть"
@@ -1997,7 +1999,7 @@ class GraceHubWorker:
                 assigned_user_id=ticket.get("assigned_user_id"),
             )
             await self.put_ticket_keyboard(ticket_id, message.message_id, compact=True)
-            await cb.answer("Тикет закрыт")
+            await cb.answer(self.texts.ticket_closed)
             return
 
         # 4a) "Переоткрыть"
@@ -2009,11 +2011,10 @@ class GraceHubWorker:
                 assigned_user_id=user.id,
             )
             await self.put_ticket_keyboard(ticket_id, message.message_id, compact=True)
-            await cb.answer("Тикет переоткрыт")
+            await cb.answer(self.texts.ticket_reopened)
             return
 
         await cb.answer()
-
 
     # ====================== CALLBACKS АДМИН-ПАНЕЛИ ======================
 
@@ -2353,7 +2354,7 @@ class GraceHubWorker:
         if not await self.is_admin(message.from_user.id):
             await self._send_safe_message(
                 chat_id=message.chat.id,
-                text="❌ Доступ запрещён",
+                text=self.texts.access_denied,
             )
             return
 
@@ -2362,14 +2363,14 @@ class GraceHubWorker:
             await state.clear()
             await self._send_safe_message(
                 chat_id=message.chat.id,
-                text="✅ Приветствие удалено.",
+                text=self.texts.greeting_cleared,
             )
             return
 
         if not message.text:
             await self._send_safe_message(
                 chat_id=message.chat.id,
-                text="Требуется текстовое сообщение с приветствием.",
+                text=self.texts.greeting_need_text,
             )
             return
 
@@ -2378,7 +2379,7 @@ class GraceHubWorker:
         await state.clear()
         await self._send_safe_message(
             chat_id=message.chat.id,
-            text="✅ Новое приветствие сохранено.",
+            text=self.texts.greeting_saved,
         )
 
     async def handle_admin_autoreply(self, message: Message, state: FSMContext) -> None:

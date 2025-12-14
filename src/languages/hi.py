@@ -87,7 +87,6 @@ TEXTS_HI = Texts(
     ticket_btn_spam="स्पैम",
     ticket_btn_close="बंद करें",
     ticket_btn_compact="⬅️ समेटें",
-    ticket_not_found="टिकट नहीं मिला",
     ticket_taken_in_work="टिकट को काम के लिए ले लिया गया है",
     ticket_assign_nobody="किसी को असाइन करने के लिए नहीं है",
     ticket_assign_cancel="रद्द किया गया",
@@ -96,6 +95,7 @@ TEXTS_HI = Texts(
     ticket_restored_from_spam="टिकट को स्पैम से वापस लाया गया है",
     ticket_closed="टिकट बंद कर दिया गया है",
     ticket_reopened="टिकट को फिर से खोला गया है",
+    ticket_not_found="टिकट नहीं मिला",
 
     ticket_closed_rating_request="आपका अनुरोध बंद कर दिया गया है। कृपया विशेषज्ञ की रेटिंग दें:",
     rating_topic_message="उपयोगकर्ता रेटिंग: {emoji}",
@@ -300,5 +300,6 @@ TEXTS_HI = Texts(
     too_many_messages="संदेश बहुत अधिक हैं। कृपया थोड़ा इंतज़ार करें और फिर से प्रयास करें।",
     billing_plans_title="अपने खाते के लिए टैरिफ चुनें:",
     billing_plan_line="• <b>{plan_name}</b>: {price_stars} ⭐ / {period_days} दिन, सीमा {tickets_limit} टिकट",
+
 )
 

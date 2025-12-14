@@ -88,7 +88,6 @@ TEXTS_EN = Texts(
     ticket_btn_spam="Spam",
     ticket_btn_close="Close",
     ticket_btn_compact="⬅️ Collapse",
-    ticket_not_found="Ticket not found",
     ticket_taken_in_work="Ticket has been taken in work",
     ticket_assign_nobody="There is no one to assign",
     ticket_assign_cancel="Cancelled",
@@ -97,6 +96,7 @@ TEXTS_EN = Texts(
     ticket_restored_from_spam="Ticket has been restored from spam",
     ticket_closed="Ticket has been closed",
     ticket_reopened="Ticket has been reopened",
+    ticket_not_found="Ticket not found",
 
     ticket_closed_rating_request="Your request has been closed. Please rate the specialist:",
     rating_topic_message="User rating: {emoji}",
@@ -301,7 +301,5 @@ TEXTS_EN = Texts(
     too_many_messages="Too many messages. Please wait a bit and try again.",
     billing_plans_title="Choose a plan for your account:",
     billing_plan_line="• <b>{plan_name}</b>: {price_stars} ⭐ / {period_days} days, limit {tickets_limit} tickets",
-
-
 )
 

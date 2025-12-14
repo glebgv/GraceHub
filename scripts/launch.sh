@@ -10,26 +10,51 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 FRONTEND_DIR="$ROOT_DIR/frontend/miniapp_frontend"
 VENV_DIR="$ROOT_DIR/venv"
+ENV_FILE="$ROOT_DIR/.env"
 
 MASTER_SERVICE="gracehub-master.service"
 API_SERVICE="gracehub-api.service"
-FRONT_SERVICE="gracehub-frontend.service"
 
 mkdir -p "$ROOT_DIR/data" "$ROOT_DIR/logs" "$ROOT_DIR/data/instances" "$ROOT_DIR/ssl"
 
 cd "$ROOT_DIR"
 
-# Проверка env
-if [ -z "$MASTER_BOT_TOKEN" ]; then
-    echo "❌ MASTER_BOT_TOKEN not set"
-    exit 1
-fi
+load_env() {
+    if [ ! -f "$ENV_FILE" ]; then
+        echo "❌ .env file not found at: $ENV_FILE"
+        echo "   Create .env with at least: MASTER_BOT_TOKEN, WEBHOOK_DOMAIN, DATABASE_URL"
+        exit 1
+    fi
 
-if [ -z "$WEBHOOK_DOMAIN" ]; then
-    echo "❌ WEBHOOK_DOMAIN not set"
-    exit 1
-fi
+    # Загружаем пары KEY=VALUE, игнорируя комментарии и пустые строки
+    set -a
+    # shellcheck disable=SC1090
+    source <(grep -Ev '^\s*#' "$ENV_FILE" | grep -E '^\s*[A-Za-z_][A-Za-z0-9_]*=' || true)
+    set +a
+}
 
+check_required_env() {
+    local missing=0
+
+    for var in MASTER_BOT_TOKEN WEBHOOK_DOMAIN DATABASE_URL; do
+        if [ -z "${!var:-}" ]; then
+            echo "❌ Required variable $var is not set or empty (check $ENV_FILE)"
+            missing=1
+        fi
+    done
+
+    if [ "$missing" -ne 0 ]; then
+        echo "   Make sure .env contains non-empty values for:"
+        echo "   MASTER_BOT_TOKEN, WEBHOOK_DOMAIN, DATABASE_URL"
+        exit 1
+    fi
+}
+
+# --- загружаем и проверяем .env при любом запуске ---
+load_env
+check_required_env
+
+echo "✅ .env loaded and required variables are set"
 echo "✅ Configuration OK"
 
 MODE="$1"
@@ -40,6 +65,11 @@ run_dev() {
     export PYTHONPATH="$ROOT_DIR/src"
 
     # активируем venv относительно корня
+    if [ ! -d "$VENV_DIR" ]; then
+        echo "❌ venv not found at $VENV_DIR"
+        exit 1
+    fi
+
     source "$VENV_DIR/bin/activate"
 
     REQ_FILE="$ROOT_DIR/requirements.txt"
@@ -63,6 +93,11 @@ run_dev() {
 
     # frontend dev server
     cd "$FRONTEND_DIR"
+    if ! command -v npm >/dev/null 2>&1; then
+        echo "❌ npm not found in PATH. Install Node.js/npm first."
+        exit 1
+    fi
+
     npm install
     nohup npm run dev -- --host 0.0.0.0 >> "$ROOT_DIR/logs/frontend-dev.log" 2>&1 &
 
@@ -77,15 +112,7 @@ run_dev() {
 }
 
 create_systemd_units() {
-    echo "📝 Creating systemd units..."
-
-    # Находим реальный путь к npm
-    NPM_BIN="$(command -v npm || true)"
-    if [ -z "$NPM_BIN" ]; then
-        echo "❌ npm not found in PATH. Install Node.js/npm first."
-        exit 1
-    fi
-    NPM_DIR="$(dirname "$NPM_BIN")"
+    echo "📝 Creating systemd units for backend..."
 
     cat >/etc/systemd/system/$MASTER_SERVICE <<EOF
 [Unit]
@@ -123,41 +150,102 @@ Restart=always
 WantedBy=multi-user.target
 EOF
 
-    cat >/etc/systemd/system/$FRONT_SERVICE <<EOF
-[Unit]
-Description=GraceHub Frontend Dev Server
-After=network.target
-
-[Service]
-Type=simple
-WorkingDirectory=$FRONTEND_DIR
-ExecStart=$NPM_BIN run dev -- --host 0.0.0.0
-Restart=always
-Environment=NODE_ENV=production
-Environment=PATH=$NPM_DIR:/usr/bin:/bin
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
     systemctl daemon-reload
 }
 
 run_prod() {
-    echo "🏭 Setting up production services..."
+    echo "🏭 Setting up production (backend + frontend build + nginx checks)..."
+
+    # --- backend deps ---
+    if [ ! -d "$VENV_DIR" ]; then
+        echo "❌ venv not found at $VENV_DIR"
+        exit 1
+    fi
 
     source "$VENV_DIR/bin/activate"
     pip install -r "$ROOT_DIR/requirements.txt"
 
-    cd "$FRONTEND_DIR"
-    npm install
+    # --- frontend build ---
+    if [ ! -d "$FRONTEND_DIR" ]; then
+        echo "❌ FRONTEND_DIR not found: $FRONTEND_DIR"
+        exit 1
+    fi
 
+    cd "$FRONTEND_DIR"
+
+    if ! command -v npm >/dev/null 2>&1; then
+        echo "❌ npm not found in PATH. Install Node.js/npm first."
+        exit 1
+    fi
+
+    echo "📦 Installing frontend deps..."
+    if [ -f package-lock.json ]; then
+        npm ci
+    else
+        npm install
+    fi
+
+    echo "🏗  Building frontend (npm run build)..."
+    npm run build
+
+    # --- deploy static build ---
+    BUILD_DIR="$FRONTEND_DIR/dist"   # для Vite; замени на build при CRA
+    TARGET_DIR="/var/www/gracehub-frontend"
+
+    if [ ! -d "$BUILD_DIR" ]; then
+        echo "❌ Build directory not found: $BUILD_DIR"
+        exit 1
+    fi
+
+    echo "📂 Deploying static files to $TARGET_DIR ..."
+    mkdir -p "$TARGET_DIR"
+    rsync -a --delete "$BUILD_DIR"/ "$TARGET_DIR"/
+
+    # --- nginx checks ---
+    echo "🔍 Checking nginx installation..."
+    if ! command -v nginx >/dev/null 2>&1; then
+        echo "❌ nginx is not installed (nginx binary not found in PATH)."
+        echo "   Install nginx (e.g. apt install nginx) and configure it to serve $TARGET_DIR."
+        exit 1
+    fi
+
+    echo "🔍 Checking nginx service status..."
+    if ! systemctl -q is-enabled nginx >/dev/null 2>&1; then
+        echo "⚠️  nginx service is not enabled (will not start on boot)."
+    fi
+
+    if ! systemctl -q is-active nginx >/dev/null 2>&1; then
+        echo "⚠️  nginx service is not active. Trying to start..."
+        if ! systemctl start nginx; then
+            echo "❌ Failed to start nginx service. Check: systemctl status nginx"
+            exit 1
+        fi
+    fi
+
+    echo "🔍 Testing nginx configuration (nginx -t)..."
+    if ! nginx -t >/dev/null 2>&1; then
+        echo "❌ nginx configuration test failed. Fix config and run again."
+        nginx -t  # показать ошибки пользователю
+        exit 1
+    fi
+
+    # --- check backend listener on 8001 (или поменяй на свой) ---
+    BACKEND_PORT=8001
+    echo "🔍 Checking backend listener on port $BACKEND_PORT ..."
+    if ! ss -tuln | grep -q ":$BACKEND_PORT"; then
+        echo "⚠️  No process is listening on port $BACKEND_PORT."
+        echo "   Make sure your backend (api_server) is configured to listen on this port and nginx reverse-proxy points to it."
+    fi
+
+    # --- systemd units for backend only ---
     create_systemd_units
 
-    systemctl enable $MASTER_SERVICE $API_SERVICE $FRONT_SERVICE
-    systemctl restart $MASTER_SERVICE $API_SERVICE $FRONT_SERVICE
+    echo "🔁 Enabling & restarting backend services..."
+    systemctl enable $MASTER_SERVICE $API_SERVICE
+    systemctl restart $MASTER_SERVICE $API_SERVICE
 
-    systemctl --no-pager status $MASTER_SERVICE $API_SERVICE $FRONT_SERVICE
+    systemctl --no-pager status $MASTER_SERVICE $API_SERVICE
+    echo "✅ Production setup finished."
 }
 
 case "$MODE" in
