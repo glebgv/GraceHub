@@ -290,12 +290,14 @@ TEXTS_ES = Texts(
     billing_button_pay_stars="💳 Pagar con Stars",
     billing_button_back_plans="⬅️ Volver a los planes",
 
-    billing_expiring_title = "🔔 <b>Recordatorio del plan</b>\n\n"
-    billing_expiring_body = (
+    billing_expiring_title="🔔 <b>Recordatorio del plan</b>\n\n",
+    billing_expiring_body=(
         "Para la instancia @{bot_username} quedan {days_left} días antes de que termine el período.\n"
         "Renueva el plan para que el bot siga funcionando sin limitaciones."
     ),
+
     master_remove_owner_only="Acceso permitido solo al propietario",
+
     master_remove_not_yours="❌ Este bot no es tuyo",
     master_remove_confirm_title="🤖 <b>{bot_name}</b> (@{bot_username})",
     master_remove_confirm_question="¿Realmente quieres eliminar este bot?",

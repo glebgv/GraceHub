@@ -288,8 +288,9 @@ TEXTS_EN = Texts(
 
     billing_button_pay_stars="💳 Pay with Stars",
     billing_button_back_plans="⬅️ Back to plans",
-    billing_expiring_title = "🔔 <b>Plan reminder</b>\n\n"
-    billing_expiring_body = (
+
+    billing_expiring_title="🔔 <b>Plan reminder</b>\n\n",
+    billing_expiring_body=(
         "Instance @{bot_username} has {days_left} days left before the billing period ends.\n"
         "Extend your plan to keep the bot running without limitations."
     ),
