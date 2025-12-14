@@ -21,6 +21,7 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import CommandStart, Command, StateFilter
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
+from collections import deque
 
 import sys
 PROJECT_ROOT = Path(__file__).resolve().parents[2]  # /root/gracehub
@@ -122,10 +123,33 @@ class GraceHubWorker:
 
         self.max_file_mb: int = getattr(settings, "WORKER_MAX_FILE_MB", 50)
         self.max_file_bytes: int = self.max_file_mb * 1024 * 1024
+        # Храним скользящее окно значений в минуту. Для антифлуда
+        self.user_msg_timestamps: dict[int, deque[datetime]] = {}
 
         # хендлеры можно регать сразу, БД для этого не нужна
         self.register_handlers()
 
+    def _is_user_flooding(self, userid: int) -> bool:
+        limit = getattr(settings, "ANTIFLOOD_MAX_USER_MESSAGES_PER_MINUTE", 0)
+        if not limit or limit <= 0:
+            return False
+
+        now = datetime.now(timezone.utc)
+        window = timedelta(seconds=60)
+
+        dq = self.user_msg_timestamps.get(userid)
+        if dq is None:
+            dq = deque()
+            self.user_msg_timestamps[userid] = dq
+
+        # выкидываем старые записи
+        while dq and now - dq[0] > window:
+            dq.popleft()
+
+        # добавляем текущую
+        dq.append(now)
+
+        return len(dq) > limit
 
     async def load_language(self):
         code = await self.get_setting("lang_code") or "ru"
@@ -146,9 +170,9 @@ class GraceHubWorker:
     async def global_error_handler(update: Update, exception: Exception) -> bool:
         user_id = None
         try:
-            if update.message and update.message.from_user:
+            if getattr(update, "message", None) and update.message.from_user:
                 user_id = update.message.from_user.id
-            elif update.callback_query and update.callback_query.from_user:
+            elif getattr(update, "callback_query", None) and update.callback_query.from_user:
                 user_id = update.callback_query.from_user.id
         except Exception:
             pass
@@ -159,21 +183,11 @@ class GraceHubWorker:
             user_id,
             exception,
         )
-        return True
-
-        logger.exception(
-            "Unhandled error in worker: instance_id=%s update_id=%s user_id=%s exc=%r",
-            self.instance_id,
-            getattr(update, "update_id", None),
-            user_id,
-            exception,
-        )
 
         if isinstance(exception, TelegramBadRequest):
             return True
 
         return True
-
 
     async def init_database(self) -> None:
         # master_db уже инициализирован и передан в конструктор
@@ -2533,6 +2547,14 @@ class GraceHubWorker:
             await self._send_safe_message(
                 chat_id=message.chat.id,
                 text=self.texts.you_are_blocked,
+            )
+            return
+
+        # Антифлуд: сообщения в минуту от пользователя
+        if self._is_user_flooding(user_id):
+            await self._send_safe_message(
+                chat_id=message.chat.id,
+                text=self.texts.too_many_messages,
             )
             return
 

@@ -297,7 +297,9 @@ TEXTS_ES = Texts(
     master_remove_confirm_yes="✅ Sí, eliminar",
     master_remove_confirm_cancel="❌ Cancelar",
     master_menu_billing="💳 Planes y pago",
-    attachment_too_big = "El archivo es demasiado grande. Por favor, envía un archivo más pequeño."
+    attachment_too_big = "El archivo es demasiado grande. Por favor, envía un archivo más pequeño.",
+    too_many_messages="Demasiados mensajes. Espera un momento y vuelve a intentarlo.",
+
 
 )
 
