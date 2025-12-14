@@ -208,3 +208,4 @@ class Texts:
     master_remove_confirm_irreversible: str  
     master_remove_confirm_yes: str
     master_remove_confirm_cancel: str
+    attachment_too_big: str

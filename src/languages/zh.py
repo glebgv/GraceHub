@@ -294,5 +294,7 @@ TEXTS_ZH = Texts(
     master_remove_confirm_yes="✅ 是的，删除",
     master_remove_confirm_cancel="❌ 取消",
     master_menu_billing="💳 套餐与支付",
+    attachment_too_big = "文件太大。请发送一个更小的文件。"
+
 )
 

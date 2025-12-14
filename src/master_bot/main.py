@@ -131,11 +131,12 @@ class MasterBot:
     # ====================== БИЛЛИНГ: CRON-ЗАДАЧИ ======================
 
     async def _billing_notify_expiring(self) -> None:
-        rows = await self.db.get_instances_expiring_in_7_days()
+        # новый метод БД с учётом last_expiring_notice_date
+        rows = await self.db.get_instances_expiring_in_7_days_for_notify()
         if not rows:
             return
 
-        logger.info("BillingCron: %d instances expiring in 7 days", len(rows))
+        logger.info("BillingCron: %d instances expiring in 7 days (fresh)", len(rows))
 
         for r in rows:
             owner_id = r["owner_user_id"]
@@ -158,9 +159,11 @@ class MasterBot:
             if admin_chat:
                 targets.add(admin_chat)
 
+            sent_ok = False
             for chat_id in targets:
                 try:
                     await self.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
+                    sent_ok = True
                 except Exception as e:
                     logger.exception(
                         "BillingCron: failed to send expiring notification to %s: %s",
@@ -168,12 +171,24 @@ class MasterBot:
                         e,
                     )
 
+            if sent_ok:
+                try:
+                    await self.db.mark_expiring_notified_today(r["instance_id"])
+                except Exception as e:
+                    logger.exception(
+                        "BillingCron: failed to mark expiring notified for %s: %s",
+                        r["instance_id"],
+                        e,
+                    )
+
+
     async def _billing_notify_paused(self) -> None:
-        rows = await self.db.get_recently_paused_instances()
+        # новый метод БД с учётом last_paused_notice_at
+        rows = await self.db.get_recently_paused_instances_for_notify()
         if not rows:
             return
 
-        logger.info("BillingCron: %d instances just paused", len(rows))
+        logger.info("BillingCron: %d instances just paused (fresh)", len(rows))
 
         for r in rows:
             owner_id = r["owner_user_id"]
@@ -201,15 +216,28 @@ class MasterBot:
             if admin_chat:
                 targets.add(admin_chat)
 
+            sent_ok = False
             for chat_id in targets:
                 try:
                     await self.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
+                    sent_ok = True
                 except Exception as e:
                     logger.exception(
                         "BillingCron: failed to send paused notification to %s: %s",
                         chat_id,
                         e,
                     )
+
+            if sent_ok:
+                try:
+                    await self.db.mark_paused_notified_now(r["instance_id"])
+                except Exception as e:
+                    logger.exception(
+                        "BillingCron: failed to mark paused notified for %s: %s",
+                        r["instance_id"],
+                        e,
+                    )
+
 
     async def _run_billing_cycle(self) -> None:
         """

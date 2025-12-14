@@ -77,6 +77,34 @@ class MasterDatabase:
         return key
 
 
+    async def mark_expiring_notified_today(self, instance_id: str) -> None:
+        """
+        Помечает, что для инстанса сегодня уже отправлено напоминание о скором окончании.
+        """
+        await self.execute(
+            """
+            UPDATE instance_billing
+               SET last_expiring_notice_date = CURRENT_DATE,
+                   updated_at = NOW()
+             WHERE instance_id = %s
+            """,
+            (instance_id,),
+        )
+
+    async def mark_paused_notified_now(self, instance_id: str) -> None:
+        """
+        Помечает, что для инстанса только что отправлено уведомление о паузе тарифа.
+        """
+        await self.execute(
+            """
+            UPDATE instance_billing
+               SET last_paused_notice_at = NOW(),
+                   updated_at = NOW()
+             WHERE instance_id = %s
+            """,
+            (instance_id,),
+        )
+
     async def update_billing_flags(self) -> None:
         """
         Пересчитывает days_left / over_limit / service_paused для всех instance_billing.
@@ -94,13 +122,14 @@ class MasterDatabase:
             OR (tickets_used >= tickets_limit)
           ),
           updated_at = NOW()
-        ;
+        WHERE TRUE;
         """
         await self.execute(sql)
 
-    async def get_instances_expiring_in_7_days(self) -> list[dict]:
+    async def get_instances_expiring_in_7_days_for_notify(self) -> list[dict]:
         """
-        Инстансы, у которых осталось ровно 7 дней и service_paused = FALSE.
+        Инстансы, у которых осталось ровно 7 дней, service_paused = FALSE
+        и которым ещё не отправляли напоминание сегодня.
         """
         sql = """
         SELECT ib.instance_id,
@@ -108,20 +137,26 @@ class MasterDatabase:
                ib.days_left,
                ib.tickets_used,
                ib.tickets_limit,
+               ib.last_expiring_notice_date,
                bi.owner_user_id,
                bi.admin_private_chat_id,
                bi.bot_username
         FROM instance_billing ib
         JOIN bot_instances bi ON bi.instance_id = ib.instance_id
         WHERE ib.service_paused = FALSE
-          AND ib.days_left = 7;
+          AND ib.days_left = 7
+          AND (
+                ib.last_expiring_notice_date IS NULL
+                OR ib.last_expiring_notice_date < CURRENT_DATE
+          );
         """
         rows = await self.fetchall(sql)
         return [dict(r) for r in rows]
 
-    async def get_recently_paused_instances(self) -> list[dict]:
+    async def get_recently_paused_instances_for_notify(self) -> list[dict]:
         """
-        Инстансы, которые недавно (за сутки) ушли в паузу.
+        Инстансы, которые за последние сутки ушли в паузу,
+        и которым ещё не отправляли уведомление (или отправляли давно).
         """
         sql = """
         SELECT ib.instance_id,
@@ -130,13 +165,18 @@ class MasterDatabase:
                ib.tickets_used,
                ib.tickets_limit,
                ib.over_limit,
+               ib.last_paused_notice_at,
                bi.owner_user_id,
                bi.admin_private_chat_id,
                bi.bot_username
         FROM instance_billing ib
         JOIN bot_instances bi ON bi.instance_id = ib.instance_id
         WHERE ib.service_paused = TRUE
-          AND ib.updated_at >= (NOW() - INTERVAL '1 day');
+          AND ib.updated_at >= (NOW() - INTERVAL '1 day')
+          AND (
+                ib.last_paused_notice_at IS NULL
+                OR ib.last_paused_notice_at < (NOW() - INTERVAL '1 hour')
+          );
         """
         rows = await self.fetchall(sql)
         return [dict(r) for r in rows]
@@ -379,7 +419,9 @@ class MasterDatabase:
                 period_end,
                 tickets_used,
                 tickets_limit,
-                over_limit
+                over_limit,
+                last_expiring_notice_date,
+                last_paused_notice_at
             )
             VALUES (
                 %(instance_id)s,
@@ -388,7 +430,9 @@ class MasterDatabase:
                 NOW() + (%(period_days)s || ' days')::interval,
                 0,
                 %(tickets_limit)s,
-                FALSE
+                FALSE,
+                NULL,
+                NULL
             )
             ON CONFLICT (instance_id) DO UPDATE SET
                 plan_id = EXCLUDED.plan_id,
@@ -404,7 +448,11 @@ class MasterDatabase:
                             END,
                 tickets_used = 0,
                 tickets_limit = EXCLUDED.tickets_limit,
-                over_limit = FALSE
+                over_limit = FALSE,
+                -- при новом периоде очищаем отметки уведомлений
+                last_expiring_notice_date = NULL,
+                last_paused_notice_at     = NULL,
+                updated_at = NOW()
             """,
             {
                 "instance_id": instance_id,
@@ -420,7 +468,6 @@ class MasterDatabase:
             data["plan_code"],
             period_days,
         )
-
 
 
     async def create_tables(self) -> None:
@@ -473,22 +520,6 @@ class MasterDatabase:
                 language   TEXT DEFAULT 'ru',
                 created_at TIMESTAMPTZ DEFAULT NOW()
             )
-            """
-        )
-        cur.execute(
-            """
-            DO $$
-            BEGIN
-                IF NOT EXISTS (
-                    SELECT 1
-                    FROM information_schema.columns
-                    WHERE table_name = 'user_states'
-                      AND column_name = 'language'
-                ) THEN
-                    ALTER TABLE user_states
-                        ADD COLUMN language TEXT DEFAULT 'ru';
-                END IF;
-            END$$;
             """
         )
 
@@ -843,20 +874,22 @@ class MasterDatabase:
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS instance_billing (
-                instance_id    TEXT PRIMARY KEY,
-                plan_id        INTEGER NOT NULL
+                instance_id                 TEXT PRIMARY KEY,
+                plan_id                     INTEGER NOT NULL
                     REFERENCES saas_plans(plan_id)
                     ON DELETE RESTRICT,
-                period_start   TIMESTAMPTZ NOT NULL,
-                period_end     TIMESTAMPTZ NOT NULL,
-                tickets_used   INTEGER NOT NULL DEFAULT 0,
-                tickets_limit  INTEGER NOT NULL,
-                last_billed_at TIMESTAMPTZ,
-                over_limit     BOOLEAN NOT NULL DEFAULT FALSE,
-                days_left      INTEGER NOT NULL DEFAULT 0,
-                service_paused BOOLEAN NOT NULL DEFAULT FALSE,
-                created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                period_start               TIMESTAMPTZ NOT NULL,
+                period_end                 TIMESTAMPTZ NOT NULL,
+                tickets_used               INTEGER NOT NULL DEFAULT 0,
+                tickets_limit              INTEGER NOT NULL,
+                last_billed_at             TIMESTAMPTZ,
+                over_limit                 BOOLEAN NOT NULL DEFAULT FALSE,
+                days_left                  INTEGER NOT NULL DEFAULT 0,
+                service_paused             BOOLEAN NOT NULL DEFAULT FALSE,
+                last_expiring_notice_date  DATE,
+                last_paused_notice_at      TIMESTAMPTZ,
+                created_at                 TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at                 TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 CONSTRAINT fk_instance_billing_instance
                     FOREIGN KEY (instance_id)
                     REFERENCES bot_instances(instance_id)
@@ -1374,6 +1407,10 @@ class MasterDatabase:
     async def get_instance_billing(self, instance_id: str) -> Optional[dict]:
         """
         Возвращает запись instance_billing для инстанса или None.
+        Включает поля:
+        - period_start / period_end / days_left / service_paused
+        - tickets_used / tickets_limit / over_limit
+        - last_expiring_notice_date / last_paused_notice_at
         """
         assert self.conn is not None
         with self.conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
@@ -1387,6 +1424,7 @@ class MasterDatabase:
             )
             row = cur.fetchone()
         return dict(row) if row else None
+
 
     async def increment_tickets_used(self, instance_id: str) -> Tuple[bool, Optional[str]]:
         """
@@ -1589,10 +1627,12 @@ class MasterDatabase:
                     tickets_used,
                     tickets_limit,
                     over_limit,
+                    last_expiring_notice_date,
+                    last_paused_notice_at,
                     created_at,
                     updated_at
                 )
-                VALUES (%s, %s, %s, %s, 0, %s, FALSE, %s, %s)
+                VALUES (%s, %s, %s, %s, 0, %s, FALSE, NULL, NULL, %s, %s)
                 """,
                 (
                     instance_id,

@@ -61,26 +61,24 @@
   <script>
     (function () {
       try {
-        // 1) Читаем тему с главного сайта и синхронизируем палитру Material
-        var stored = localStorage.getItem('theme');  // 'light' / 'dark'
-        if (stored) {
-          var scheme = stored === 'dark' ? 'slate' : 'default';
-          document.documentElement.setAttribute('data-md-color-scheme', scheme);
+        var stored = localStorage.getItem('theme');
+        var prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        var theme = stored || (prefersDark ? 'dark' : 'light');
+        var scheme = theme === 'dark' ? 'slate' : 'default';
+        document.documentElement.setAttribute('data-md-color-scheme', scheme);
 
+        document.addEventListener('DOMContentLoaded', function () {
           var paletteInput = document.querySelector(
             'input[data-md-color-scheme][value="' + scheme + '"]'
           );
           if (paletteInput && !paletteInput.checked) {
             paletteInput.checked = true;
           }
-        }
 
-        // 2) Двусторонняя связь: при переключении темы в MkDocs обновляем localStorage.theme
-        document.addEventListener('DOMContentLoaded', function () {
           var inputs = document.querySelectorAll('input[data-md-color-scheme]');
           inputs.forEach(function (input) {
             input.addEventListener('change', function () {
-              var scheme = this.value;         // 'default' или 'slate'
+              var scheme = this.value;
               var theme = scheme === 'slate' ? 'dark' : 'light';
               localStorage.setItem('theme', theme);
             });

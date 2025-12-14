@@ -17,6 +17,7 @@ from aiogram.types import (
     MessageEntity,
     BufferedInputFile,
 )
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import CommandStart, Command, StateFilter
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
@@ -82,13 +83,28 @@ class GraceHubWorker:
     """
 
     STATUS_EMOJI: Dict[str, str] = {
-        "new": "⬜️",        # только пришел запрос
-        "inprogress": "🟨",  # запрос в работе
-        "answered": "🟩",    # сотрудник ответил на вопрос
-        "escalated": "🟥",   # эскалация
-        "closed": "🟦",      # вопрос закрыт
-        "spam": "⬛️",        # спам
+        "new": "⬜️",
+        "inprogress": "🟨",
+        "answered": "🟩",
+        "escalated": "🟥",
+        "closed": "🟦",
+        "spam": "⬛️",
     }
+
+    # допустимые статусы тикетов
+    ALLOWED_TICKET_STATUSES = {"new", "inprogress", "answered", "escalated", "closed", "spam"}
+
+    # верхние лимиты
+    MAX_USER_TEXT = 4096     # сообщения в Telegram
+    MAX_DB_TEXT = 2000       # тексты, которые пишем в БД
+
+    @staticmethod
+    def _safe_trim(text: str, limit: int) -> str:
+        if text is None:
+            return text
+        if len(text) <= limit:
+            return text
+        return text[: limit - 1] + "…"
 
     def __init__(self, instance_id: str, token: str, db: MasterDatabase):
         self.instance_id = instance_id
@@ -98,9 +114,12 @@ class GraceHubWorker:
         self.db: MasterDatabase = db
         self.ratelimiter = BotRateLimiter(self.token)
         self.shutdown_event = asyncio.Event()
-        self.lang_code = "ru" # язык по умолчанию до загрузки из БД
+        self.lang_code = "ru"
         self.texts = LANGS[self.lang_code]
-        self.register_handlers()
+
+        # Лимит вложений (из .env / settings)
+        self.max_file_mb: int = getattr(settings, "WORKER_MAX_FILE_MB", 50)
+        self.max_file_bytes: int = self.max_file_mb * 1024 * 1024
 
     async def load_language(self):
         code = await self.get_setting("lang_code") or "ru"
@@ -108,6 +127,46 @@ class GraceHubWorker:
             code = "ru"
         self.lang_code = code
         self.texts = LANGS[code]
+
+
+    async def _check_file_size(self, file_id: str) -> bool:
+        tg_file = await self.bot.get_file(file_id)
+        size = getattr(tg_file, "file_size", None) or 0
+        if size > self.max_file_bytes:
+            return False
+        return True
+
+    @staticmethod
+    async def global_error_handler(update: Update, exception: Exception) -> bool:
+        user_id = None
+        try:
+            if update.message and update.message.from_user:
+                user_id = update.message.from_user.id
+            elif update.callback_query and update.callback_query.from_user:
+                user_id = update.callback_query.from_user.id
+        except Exception:
+            pass
+
+        logger.exception(
+            "Unhandled error in worker update_id=%s user_id=%s exc=%r",
+            getattr(update, "update_id", None),
+            user_id,
+            exception,
+        )
+        return True
+
+        logger.exception(
+            "Unhandled error in worker: instance_id=%s update_id=%s user_id=%s exc=%r",
+            self.instance_id,
+            getattr(update, "update_id", None),
+            user_id,
+            exception,
+        )
+
+        if isinstance(exception, TelegramBadRequest):
+            return True
+
+        return True
 
 
     async def init_database(self) -> None:
@@ -343,6 +402,7 @@ class GraceHubWorker:
 
         if total == 0:
             text = self.texts.blacklist_list_empty
+            text = self._safe_trim(text, self.MAX_USER_TEXT)
             kb = self.get_blacklist_menu()
             await cb.message.edit_text(text, reply_markup=kb)
             return
@@ -365,6 +425,8 @@ class GraceHubWorker:
                 total=total_pages,
             )
         )
+
+        text = self._safe_trim(text, self.MAX_USER_TEXT)
 
         nav_row: list[InlineKeyboardButton] = []
         if page > 0:
@@ -405,6 +467,7 @@ class GraceHubWorker:
 
         kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
         await cb.message.edit_text(text, reply_markup=kb)
+
 
 
     async def is_user_blacklisted(self, user_id: int) -> bool:
@@ -783,6 +846,15 @@ class GraceHubWorker:
         assigned_username: Optional[str] = None,
         assigned_user_id: Optional[int] = None,
     ) -> None:
+        if status not in self.ALLOWED_TICKET_STATUSES:
+            logger.warning(
+                "Attempt to set invalid ticket status: %s (ticket_id=%s, instance_id=%s)",
+                status,
+                ticket_id,
+                self.instance_id,
+            )
+            return
+
         now = datetime.now(timezone.utc)
         set_parts = ["status = %s", "updated_at = %s"]
         params: List[Any] = [status, now]
@@ -827,8 +899,6 @@ class GraceHubWorker:
                         ticket_id,
                         e,
                     )
-
-
 
     async def handle_rating_callback(self, cb: CallbackQuery) -> None:
         data = cb.data or ""
@@ -1196,9 +1266,9 @@ class GraceHubWorker:
     async def store_forwarded_message(self, chat_id: int, message: Message, user_id: int) -> None:
         text_content = None
         if message.text:
-            text_content = message.text
+            text_content = self._safe_trim(message.text, self.MAX_DB_TEXT)
         elif message.caption:
-            text_content = message.caption
+            text_content = self._safe_trim(message.caption, self.MAX_DB_TEXT)
 
         try:
             await self.db.execute(
@@ -2146,7 +2216,6 @@ class GraceHubWorker:
             import io
             import csv
             from datetime import datetime as _dt
-            from aiogram.types import BufferedInputFile
 
             buf = io.StringIO()
             writer = csv.writer(buf)
@@ -2284,7 +2353,8 @@ class GraceHubWorker:
             )
             return
 
-        await self.set_setting("greeting_text", message.text)
+        greeting = self._safe_trim(message.text, self.MAX_DB_TEXT)
+        await self.set_setting("greeting_text", greeting)
         await state.clear()
         await self._send_safe_message(
             chat_id=message.chat.id,
@@ -2300,7 +2370,7 @@ class GraceHubWorker:
             return
 
         if message.text and message.text.strip() == "/autoreply_off":
-            awaitself.set_setting("autoreply_enabled", "False")
+            await self.set_setting("autoreply_enabled", "False")
             await self.set_setting("autoreply_text", "")
             await state.clear()
             await self._send_safe_message(
@@ -2316,8 +2386,9 @@ class GraceHubWorker:
             )
             return
 
+        autoreply = self._safe_trim(message.text, self.MAX_DB_TEXT)
         await self.set_setting("autoreply_enabled", "True")
-        await self.set_setting("autoreply_text", message.text)
+        await self.set_setting("autoreply_text", autoreply)
         await state.clear()
         await self._send_safe_message(
             chat_id=message.chat.id,
@@ -2470,7 +2541,54 @@ class GraceHubWorker:
             await self._send_safe_message(
                 chat_id=message.chat.id,
                 text=self.texts.admin_panel_title,
-                reply_markup= await self.get_admin_menu(),
+                reply_markup=await self.get_admin_menu(),
+            )
+            return
+
+        # Валидация размеров вложений
+        too_big = False
+        max_bytes = self.max_file_bytes  # задаётся в __init__ из settings.WORKER_MAX_FILE_MB
+
+        # Фото (берём максимально крупное)
+        if message.photo:
+            photo = message.photo[-1]
+            if photo.file_size and photo.file_size > max_bytes:
+                too_big = True
+
+        # Документы
+        if message.document and message.document.file_size and message.document.file_size > max_bytes:
+            too_big = True
+
+        # Видео
+        if message.video and message.video.file_size and message.video.file_size > max_bytes:
+            too_big = True
+
+        # Аудио
+        if message.audio and message.audio.file_size and message.audio.file_size > max_bytes:
+            too_big = True
+
+        # Голосовые
+        if message.voice and message.voice.file_size and message.voice.file_size > max_bytes:
+            too_big = True
+
+        # Видео-заметки
+        if message.video_note and message.video_note.file_size and message.video_note.file_size > max_bytes:
+            too_big = True
+
+        # Стикеры (если хочешь ограничивать и их)
+        if message.sticker and message.sticker.file_size and message.sticker.file_size > max_bytes:
+            too_big = True
+
+        if too_big:
+            logger.warning(
+                "Attachment too large from user %s in private chat %s (limit %s bytes)",
+                user_id,
+                message.chat.id,
+                max_bytes,
+            )
+            await self._send_safe_message(
+                chat_id=message.chat.id,
+                text=self.texts.attachment_too_big,  # строка должна быть в языковых файлах
             )
             return
 
@@ -2503,6 +2621,7 @@ class GraceHubWorker:
             text=self.texts.support_not_configured,
         )
 
+
     # ====================== OPENCHAT: СОБЩЕНИЯ И РЕПЛАИ ======================
 
     async def handle_openchat_message(self, message: Message) -> None:
@@ -2522,7 +2641,57 @@ class GraceHubWorker:
         if message.from_user and message.from_user.is_bot:
             return
 
+        # Валидация размеров вложений от админов/операторов в OpenChat
+        too_big = False
+        max_bytes = self.max_file_bytes  # задаётся в __init__ из settings.WORKER_MAX_FILE_MB
+
+        # Фото
+        if message.photo:
+            photo = message.photo[-1]
+            if photo.file_size and photo.file_size > max_bytes:
+                too_big = True
+
+        # Документы
+        if message.document and message.document.file_size and message.document.file_size > max_bytes:
+            too_big = True
+
+        # Видео
+        if message.video and message.video.file_size and message.video.file_size > max_bytes:
+            too_big = True
+
+        # Аудио
+        if message.audio and message.audio.file_size and message.audio.file_size > max_bytes:
+            too_big = True
+
+        # Голосовые
+        if message.voice and message.voice.file_size and message.voice.file_size > max_bytes:
+            too_big = True
+
+        # Видео-заметки
+        if message.video_note and message.video_note.file_size and message.video_note.file_size > max_bytes:
+            too_big = True
+
+        # Стикеры (если тоже ограничиваем)
+        if message.sticker and message.sticker.file_size and message.sticker.file_size > max_bytes:
+            too_big = True
+
+        if too_big:
+            logger.warning(
+                "Attachment too large from openchat user %s in chat %s (limit %s bytes)",
+                message.from_user.id if message.from_user else None,
+                message.chat.id,
+                max_bytes,
+            )
+            # В OpenChat обычно отвечаем только оператору, без текста пользователю
+            # Можно отправить сервисное сообщение в этот же топик
+            await self._send_safe_message(
+                chat_id=message.chat.id,
+                text=self.texts.attachment_too_big,
+            )
+            return
+
         await self.handle_openchat_reply(message, message.reply_to_message, oc)
+
 
     async def handle_openchat_reply(
         self, message: Message, reply_msg: Message, oc: Dict[str, Any]
@@ -2754,6 +2923,8 @@ class GraceHubWorker:
             self.handle_private_message,
             F.chat.type == ChatType.PRIVATE,
         )
+        # Общий для ошибок
+        self.dp.errors.register(GraceHubWorker.global_error_handler)
 
     # ====================== ЗАПУСК / ИНТЕГРАЦИЯ ======================
 
@@ -2769,12 +2940,11 @@ class GraceHubWorker:
         Старт воркера: инициализация БД, запуск автозакрытия и polling.
         """
         await self.init_database()
+        self.register_handlers()  # <<< ВОТ ЭТОГО СЕЙЧАС НЕ ХВАТАЕТ
         logger.info(f"Worker started for instance {self.instance_id}")
 
-        # Фоновая задача авто‑закрытия тикетов
         asyncio.create_task(self.auto_close_tickets_loop())
 
-        # Гарантированно убираем webhook, чтобы не конфликтовать с polling
         try:
             await self.bot.delete_webhook(drop_pending_updates=True)
         except Exception as e:
@@ -2787,6 +2957,7 @@ class GraceHubWorker:
             await self.bot.session.close()
             if self.db:
                 self.db.close()
+
 
 
 async def main() -> None:
