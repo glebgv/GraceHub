@@ -109,7 +109,10 @@ class GraceHubWorker:
     def __init__(self, instance_id: str, token: str, db: MasterDatabase):
         self.instance_id = instance_id
         self.token = token
-        self.bot = Bot(token=self.token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+        self.bot = Bot(
+            token=self.token,
+            default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+        )
         self.dp = Dispatcher()
         self.db: MasterDatabase = db
         self.ratelimiter = BotRateLimiter(self.token)
@@ -117,9 +120,12 @@ class GraceHubWorker:
         self.lang_code = "ru"
         self.texts = LANGS[self.lang_code]
 
-        # Лимит вложений (из .env / settings)
         self.max_file_mb: int = getattr(settings, "WORKER_MAX_FILE_MB", 50)
         self.max_file_bytes: int = self.max_file_mb * 1024 * 1024
+
+        # хендлеры можно регать сразу, БД для этого не нужна
+        self.register_handlers()
+
 
     async def load_language(self):
         code = await self.get_setting("lang_code") or "ru"
@@ -2940,7 +2946,7 @@ class GraceHubWorker:
         Старт воркера: инициализация БД, запуск автозакрытия и polling.
         """
         await self.init_database()
-        self.register_handlers()  # <<< ВОТ ЭТОГО СЕЙЧАС НЕ ХВАТАЕТ
+
         logger.info(f"Worker started for instance {self.instance_id}")
 
         asyncio.create_task(self.auto_close_tickets_loop())
@@ -2957,7 +2963,6 @@ class GraceHubWorker:
             await self.bot.session.close()
             if self.db:
                 self.db.close()
-
 
 
 async def main() -> None:
