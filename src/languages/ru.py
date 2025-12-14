@@ -308,6 +308,12 @@ TEXTS_RU = Texts(
 
     billing_button_pay_stars="💳 Оплатить Stars",
     billing_button_back_plans="⬅️ Назад к тарифам",
+
+    billing_expiring_title = "🔔 <b>Напоминание по тарифу</b>\n\n"
+    billing_expiring_body = (
+        "Для инстанса @{bot_username} осталось {days_left} дней до окончания периода.\n"
+        "Продлите тариф, чтобы бот продолжил работать без ограничений."
+    )
     master_remove_owner_only="Доступ только владельцу",
     master_remove_not_yours="❌ Не ваш бот",
     master_remove_confirm_title="🤖 <b>{bot_name}</b> (@{bot_username})",

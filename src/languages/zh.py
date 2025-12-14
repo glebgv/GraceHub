@@ -286,6 +286,12 @@ TEXTS_ZH = Texts(
 
     billing_button_pay_stars="💳 使用 Stars 支付",
     billing_button_back_plans="⬅️ 返回套餐列表",
+
+    billing_expiring_title = "🔔 <b>套餐到期提醒</b>\n\n"
+    billing_expiring_body = (
+        "实例 @{bot_username} 的计费周期还剩 {days_left} 天到期。\n"
+        "请及时续费，以保证机器人持续正常运行。"
+    ),    
     master_remove_owner_only="仅限拥有者访问",
     master_remove_not_yours="❌ 该机器人不属于你",
     master_remove_confirm_title="🤖 <b>{bot_name}</b> (@{bot_username})",

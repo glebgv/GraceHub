@@ -131,7 +131,6 @@ class MasterBot:
     # ====================== БИЛЛИНГ: CRON-ЗАДАЧИ ======================
 
     async def _billing_notify_expiring(self) -> None:
-        # новый метод БД с учётом last_expiring_notice_date
         rows = await self.db.get_instances_expiring_in_7_days_for_notify()
         if not rows:
             return
@@ -147,12 +146,6 @@ class MasterBot:
             if not owner_id and not admin_chat:
                 continue
 
-            text = (
-                "🔔 <b>Напоминание по тарифу</b>\n\n"
-                f"Для инстанса @{bot_username} осталось {days_left} дней до окончания периода.\n"
-                "Продлите тариф, чтобы бот продолжил работать без ограничений."
-            )
-
             targets = set()
             if owner_id:
                 targets.add(owner_id)
@@ -162,7 +155,21 @@ class MasterBot:
             sent_ok = False
             for chat_id in targets:
                 try:
-                    await self.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
+                    texts = await self.t(chat_id)
+
+                    text = (
+                        texts.billing_expiring_title +
+                        texts.billing_expiring_body.format(
+                            bot_username=bot_username,
+                            days_left=days_left,
+                        )
+                    )
+
+                    await self.bot.send_message(
+                        chat_id=chat_id,
+                        text=text,
+                        parse_mode="HTML",
+                    )
                     sent_ok = True
                 except Exception as e:
                     logger.exception(
@@ -180,7 +187,6 @@ class MasterBot:
                         r["instance_id"],
                         e,
                     )
-
 
     async def _billing_notify_paused(self) -> None:
         # новый метод БД с учётом last_paused_notice_at

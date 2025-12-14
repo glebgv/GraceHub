@@ -201,6 +201,13 @@ class Texts:
     billing_button_pay_stars: str
     billing_button_back_plans: str
 
+    billing_plans_title: str
+    billing_plan_line: str
+
+    billing_expiring_title: str
+    billing_expiring_body: str
+
+
     master_remove_owner_only: str
     master_remove_not_yours: str
     master_remove_confirm_title: str
@@ -211,5 +218,3 @@ class Texts:
     attachment_too_big: str
     too_many_messages: str
 
-    billing_plans_title: str
-    billing_plan_line: str
