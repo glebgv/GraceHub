@@ -3,7 +3,11 @@ set -e
 
 echo "🚀 GraceHub Platform..."
 
-ROOT_DIR="/root/gracehub"
+# Абсолютный путь к директории скрипта (gracehub/scripts)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Корень репозитория (gracehub)
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
 FRONTEND_DIR="$ROOT_DIR/frontend/miniapp_frontend"
 VENV_DIR="$ROOT_DIR/venv"
 
@@ -35,8 +39,21 @@ run_dev() {
     echo "🔧 Starting in development mode..."
     export PYTHONPATH="$ROOT_DIR/src"
 
+    # активируем venv относительно корня
     source "$VENV_DIR/bin/activate"
-    pip install -r requirements.txt
+
+    REQ_FILE="$ROOT_DIR/requirements.txt"
+    REQ_HASH_FILE="$ROOT_DIR/.requirements.hash"
+
+    CUR_HASH="$(md5sum "$REQ_FILE" | cut -d' ' -f1)"
+
+    if [ ! -f "$REQ_HASH_FILE" ] || [ "$CUR_HASH" != "$(cat "$REQ_HASH_FILE")" ]; then
+        echo "📦 Installing / updating Python deps (requirements changed)..."
+        pip install -r "$REQ_FILE"
+        echo "$CUR_HASH" > "$REQ_HASH_FILE"
+    else
+        echo "✅ Python deps already up to date"
+    fi
 
     # master bot
     nohup python src/master_bot/main.py >> logs/masterbot.log 2>&1 &
@@ -81,7 +98,7 @@ WorkingDirectory=$ROOT_DIR
 Environment=PYTHONPATH=$ROOT_DIR/src
 Environment=MASTER_BOT_TOKEN=$MASTER_BOT_TOKEN
 Environment=WEBHOOK_DOMAIN=$WEBHOOK_DOMAIN
-ExecStart=$VENV_DIR/bin/python src/master_bot/main.py
+ExecStart=$VENV_DIR/bin/python $ROOT_DIR/src/master_bot/main.py
 Restart=always
 
 [Install]
@@ -99,7 +116,7 @@ WorkingDirectory=$ROOT_DIR
 Environment=PYTHONPATH=$ROOT_DIR/src
 Environment=MASTER_BOT_TOKEN=$MASTER_BOT_TOKEN
 Environment=WEBHOOK_DOMAIN=$WEBHOOK_DOMAIN
-ExecStart=$VENV_DIR/bin/python src/master_bot/api_server.py
+ExecStart=$VENV_DIR/bin/python $ROOT_DIR/src/master_bot/api_server.py
 Restart=always
 
 [Install]
@@ -130,7 +147,7 @@ run_prod() {
     echo "🏭 Setting up production services..."
 
     source "$VENV_DIR/bin/activate"
-    pip install -r requirements.txt
+    pip install -r "$ROOT_DIR/requirements.txt"
 
     cd "$FRONTEND_DIR"
     npm install
