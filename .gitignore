@@ -63,5 +63,6 @@ ssl/
 venv/
 data/instances
 docker/
-
+site/
+mkdocs.yml
 11

@@ -299,6 +299,9 @@ TEXTS_EN = Texts(
     master_menu_billing="💳 Plans & Billing",
     attachment_too_big = "The file is too large. Please send a smaller file.",
     too_many_messages="Too many messages. Please wait a bit and try again.",
+    billing_plans_title="Choose a plan for your account:",
+    billing_plan_line="• <b>{plan_name}</b>: {price_stars} ⭐ / {period_days} days, limit {tickets_limit} tickets",
+
 
 )
 

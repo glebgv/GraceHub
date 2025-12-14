@@ -296,6 +296,7 @@ TEXTS_ZH = Texts(
     master_menu_billing="💳 套餐与支付",
     attachment_too_big = "文件太大。请发送一个更小的文件。",
     too_many_messages="消息发送过于频繁，请稍后再试。",
-
+    billing_plans_title="为你的账户选择套餐：",
+    billing_plan_line="• <b>{plan_name}</b>: {price_stars} ⭐ / {period_days} 天，限 {tickets_limit} 工单",
 )
 

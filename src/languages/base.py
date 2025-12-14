@@ -210,3 +210,6 @@ class Texts:
     master_remove_confirm_cancel: str
     attachment_too_big: str
     too_many_messages: str
+
+    billing_plans_title: str
+    billing_plan_line: str

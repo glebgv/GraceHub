@@ -493,25 +493,28 @@ class MasterBot:
 
         texts = await self.t(user_id)
 
-        # берём все публичные планы (как для мини‑аппы)
         plans = await self.db.get_saas_plans_for_billing()
 
         if not plans:
             await callback.message.edit_text(
-                "Тарифы пока не настроены.",
+                texts.master_billing_no_plans if hasattr(texts, "master_billing_no_plans") else "Тарифы пока не настроены.",
                 reply_markup=self.get_main_menu_for_lang(texts),
             )
             await callback.answer()
             return
 
-        text = "Выберите тариф для вашего аккаунта:\n\n"
+        text = texts.billing_plans_title + "\n\n"
+
         keyboard_rows: list[list[InlineKeyboardButton]] = []
 
         for p in plans:
-            text += (
-                f"• <b>{p['plan_name']}</b>: {p['price_stars']} ⭐ / {p['period_days']} д., "
-                f"лимит {p['tickets_limit']} тикетов\n"
-            )
+            text += texts.billing_plan_line.format(
+                plan_name=p["plan_name"],
+                price_stars=p["price_stars"],
+                period_days=p["period_days"],
+                tickets_limit=p["tickets_limit"],
+            ) + "\n"
+
             if p["product_code"]:
                 keyboard_rows.append(
                     [
