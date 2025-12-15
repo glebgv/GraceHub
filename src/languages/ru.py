@@ -342,5 +342,9 @@ TEXTS_RU = Texts(
 
     # {state} — новая строка состояния (on/off)
     rating_toggled = "Состояние запроса оценки изменено.\n\n{state}",
+    master_current_plan_with_expiry = "Текущий тариф: {plan_name} (до {date}), осталось {days_left} дн.",
+    master_current_plan_no_date = "Текущий тариф: {plan_name}, осталось {days_left} дн.",
+    master_current_plan_paused = "Тариф {plan_name} приостановлен (до {date}). Продлите подписку, чтобы возобновить работу.",
+    billing_unknown_plan_name = "Неизвестный тариф",
 )
 

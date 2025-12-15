@@ -225,3 +225,7 @@ class Texts:
     rating_toggle_btn: str
     rating_toggled: str
 
+    master_current_plan_with_expiry: str
+    master_current_plan_no_date: str
+    billing_unknown_plan_name: str
+    master_current_plan_paused: str

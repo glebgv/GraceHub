@@ -1426,6 +1426,29 @@ class MasterDatabase:
         return dict(row) if row else None
 
 
+    async def get_saas_plan_by_id(self, plan_id: int) -> Optional[dict]:
+        """
+        Возвращает saas_plan по plan_id (для отображения текущего тарифа инстанса).
+        """
+        row = await self.fetchone(
+            """
+            SELECT
+                plan_id,
+                code        AS plan_code,
+                name        AS plan_name,
+                period_days,
+                tickets_limit,
+                price_stars,
+                features_json
+            FROM saas_plans
+            WHERE plan_id = %s
+            LIMIT 1
+            """,
+            (plan_id,),
+        )
+        return dict(row) if row else None
+
+
     async def increment_tickets_used(self, instance_id: str) -> Tuple[bool, Optional[str]]:
         """
         Пытается инкрементировать счётчик тикетов у инстанса.

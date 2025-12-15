@@ -318,6 +318,9 @@ TEXTS_ZH = Texts(
     rating_toggle_btn = "切换评分请求",
 
     rating_toggled = "评分请求状态已更新。\n\n{state}",
+    master_current_plan_with_expiry = "当前套餐：{plan_name}（至 {date}），剩余 {days_left} 天。",
+    master_current_plan_no_date = "当前套餐：{plan_name}，剩余 {days_left} 天。",
+    master_current_plan_paused = "套餐 {plan_name} 已暂停（至 {date}）。请续费以继续使用。",
+    billing_unknown_plan_name = "未知套餐",
 
 )
-

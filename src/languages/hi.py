@@ -321,6 +321,10 @@ TEXTS_HI = Texts(
     rating_toggle_btn = "रेटिंग अनुरोध बदलें",
 
     rating_toggled = "रेटिंग अनुरोध की स्थिति बदल दी गई है.\n\n{state}",
+    master_current_plan_with_expiry = "वर्तमान प्लान: {plan_name} (तक {date}), {days_left} दिन बचे हैं.",
+    master_current_plan_no_date = "वर्तमान प्लान: {plan_name}, {days_left} दिन बचे हैं.",
+    master_current_plan_paused = "प्लान {plan_name} रोका गया है (तक {date}). जारी रखने के लिए सब्सक्रिप्शन बढ़ाएँ.",
+    billing_unknown_plan_name = "अज्ञात प्लान",
 
 )
 

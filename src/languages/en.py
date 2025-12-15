@@ -320,5 +320,9 @@ TEXTS_EN = Texts(
     rating_toggle_btn = "Toggle rating request",
 
     rating_toggled = "Rating request state has been changed.\n\n{state}",
+    master_current_plan_with_expiry = "Current plan: {plan_name} (until {date}), {days_left} days left.",
+    master_current_plan_no_date = "Current plan: {plan_name}, {days_left} days left.",
+    master_current_plan_paused = "Plan {plan_name} is paused (until {date}). Renew your subscription to continue.",
+    billing_unknown_plan_name = "Unknown plan",
 )
 

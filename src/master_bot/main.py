@@ -698,10 +698,10 @@ class MasterBot:
 
     async def cmd_start(self, message: Message, user_id: int | None = None):
         """Handle /start command"""
-        # если user_id не передан, берём из message
         if user_id is None:
             user_id = message.from_user.id
 
+        # single-tenant защита
         if settings.SINGLE_TENANT_OWNER_ONLY:
             owner_id = settings.OWNER_TELEGRAM_ID
             if not owner_id or user_id != owner_id:
@@ -709,9 +709,8 @@ class MasterBot:
                 await message.answer(texts.master_owner_only)
                 return
 
-        # Проверяем, выбран ли язык
+        # проверка выбранного языка
         user_lang = await self.db.get_user_language(user_id)
-
         if not user_lang:
             base_texts = LANGS.get(self.default_lang)
 
@@ -739,15 +738,64 @@ class MasterBot:
 
         texts = await self.t(user_id)
 
+        # ---------- Блок «текущий тариф», как в mini app ----------
+        plan_line = ""
+
+        # Берём основной инстанс пользователя (тот же подход уже используется в биллинге)
+        instances = await self.db.get_user_instances(user_id)
+        if instances:
+            instance = instances[0]
+            billing = await self.db.get_instance_billing(instance.instance_id)
+            if billing:
+                plan_id = billing.get("plan_id")
+                period_end = billing.get("period_end")
+                days_left = billing.get("days_left")
+                service_paused = billing.get("service_paused")
+
+                plan = await self.db.get_saas_plan_by_id(plan_id) if plan_id is not None else None
+                plan_name = (plan or {}).get("plan_name", texts.billing_unknown_plan_name)
+
+                date_str = ""
+                if isinstance(period_end, datetime):
+                    # mini app тоже показывает только дату без времени
+                    date_str = period_end.strftime("%d.%m.%Y")
+
+                # Можно варьировать текст в зависимости от паузы/истечения, как в mini app
+                if service_paused:
+                    plan_line = texts.master_current_plan_paused.format(
+                        plan_name=plan_name,
+                        date=date_str or "—",
+                    )
+                else:
+                    if date_str:
+                        plan_line = texts.master_current_plan_with_expiry.format(
+                            plan_name=plan_name,
+                            date=date_str,
+                            days_left=days_left if days_left is not None else 0,
+                        )
+                    else:
+                        plan_line = texts.master_current_plan_no_date.format(
+                            plan_name=plan_name,
+                            days_left=days_left if days_left is not None else 0,
+                        )
+        # ----------------------------------------------------------
+
         text = (
             f"{texts.master_title}\n\n"
             f"{texts.admin_panel_title}\n\n"
+        )
+
+        if plan_line:
+            text += f"{plan_line}\n\n"
+
+        text += (
             f"<b>{texts.admin_panel_choose_section}</b>\n"
             f"{texts.master_start_howto_title}\n"
             f"• {texts.master_start_cmd_add_bot}\n"
             f"• {texts.master_start_cmd_list_bots}\n"
             f"• {texts.master_start_cmd_remove_bot}\n"
         )
+
         await message.answer(text, reply_markup=self.get_main_menu_for_lang(texts))
 
 

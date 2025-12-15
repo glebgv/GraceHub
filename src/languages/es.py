@@ -322,6 +322,10 @@ TEXTS_ES = Texts(
     rating_toggle_btn = "Cambiar solicitud de valoración",
 
     rating_toggled = "El estado de la solicitud de valoración ha cambiado.\n\n{state}",
+    master_current_plan_with_expiry = "Plan actual: {plan_name} (hasta {date}), quedan {days_left} días.",
+    master_current_plan_no_date = "Plan actual: {plan_name}, quedan {days_left} días.",
+    master_current_plan_paused = "El plan {plan_name} está en pausa (hasta {date}). Renueva tu suscripción para continuar.",
+    billing_unknown_plan_name = "Plan desconocido",
 
 )
 
