@@ -297,7 +297,7 @@ TEXTS_ES = Texts(
     ),
 
     master_remove_owner_only="Acceso permitido solo al propietario",
-
+    
     master_remove_not_yours="❌ Este bot no es tuyo",
     master_remove_confirm_title="🤖 <b>{bot_name}</b> (@{bot_username})",
     master_remove_confirm_question="¿Realmente quieres eliminar este bot?",
@@ -309,6 +309,19 @@ TEXTS_ES = Texts(
     too_many_messages="Demasiados mensajes. Espera un momento y vuelve a intentarlo.",
     billing_plans_title="Elige un plan para tu cuenta:",
     billing_plan_line="• <b>{plan_name}</b>: {price_stars} ⭐ / {period_days} días, límite de {tickets_limit} tickets",
+    menu_rating = "Valoración al cerrar",
+    rating_state_on = "Solicitud de valoración: ACTIVADA",
+    rating_state_off = "Solicitud de valoración: DESACTIVADA",
+
+    rating_screen = (
+        "{state}\n\n"
+        "Si está activado, después de cerrar el ticket el usuario recibirá "
+        "una solicitud para valorar la atención."
+    ),
+
+    rating_toggle_btn = "Cambiar solicitud de valoración",
+
+    rating_toggled = "El estado de la solicitud de valoración ha cambiado.\n\n{state}",
 
 )
 

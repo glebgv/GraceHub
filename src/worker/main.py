@@ -166,20 +166,26 @@ class GraceHubWorker:
             return False
         return True
 
-    @staticmethod
-    async def global_error_handler(update: Update, exception: Exception) -> bool:
+    async def global_error_handler(self, exception: Exception) -> bool:
+        """
+        Глобальный обработчик ошибок aiogram.
+        В error-middleware сюда прилетает только exception.
+        """
         user_id = None
+        update = getattr(exception, "update", None)
+
         try:
-            if getattr(update, "message", None) and update.message.from_user:
-                user_id = update.message.from_user.id
-            elif getattr(update, "callback_query", None) and update.callback_query.from_user:
-                user_id = update.callback_query.from_user.id
+            if update:
+                if getattr(update, "message", None) and update.message.from_user:
+                    user_id = update.message.from_user.id
+                elif getattr(update, "callback_query", None) and update.callback_query.from_user:
+                    user_id = update.callback_query.from_user.id
         except Exception:
             pass
 
         logger.exception(
             "Unhandled error in worker update_id=%s user_id=%s exc=%r",
-            getattr(update, "update_id", None),
+            getattr(update, "update_id", None) if update else None,
             user_id,
             exception,
         )
@@ -188,6 +194,7 @@ class GraceHubWorker:
             return True
 
         return True
+
 
     async def init_database(self) -> None:
         # master_db уже инициализирован и передан в конструктор
@@ -201,6 +208,10 @@ class GraceHubWorker:
         # язык по умолчанию
         if await self.get_setting("lang_code") is None:
             await self.set_setting("lang_code", "ru")
+
+        # запрос оценки при закрытии тикета по умолчанию включен
+        if await self.get_setting("rating_enabled") is None:
+            await self.set_setting("rating_enabled", "True")
 
         # подгружаем выбранный язык в self.texts
         await self.load_language()
@@ -692,6 +703,11 @@ class GraceHubWorker:
         privacy_on = await self.is_privacy_enabled()
         privacy_label = f"Privacy Mode: {'🟢' if privacy_on else '🔴'}"
 
+        # Фидбек при закрытии тикета
+        rating_enabled = await self.get_setting("rating_enabled")
+        rating_on = rating_enabled == "True"
+        rating_label = f"{self.texts.menu_rating}: {'🟢' if rating_on else '🔴'}"
+
         # Язык
         lang_code = await self.get_setting("lang_code") or "ru"
         lang_label = f"{self.texts.menu_language}: {lang_code.upper()}"
@@ -720,6 +736,12 @@ class GraceHubWorker:
                     InlineKeyboardButton(
                         text=self.texts.menu_blacklist,
                         callback_data="blacklist",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        text=rating_label,
+                        callback_data="setup_rating",
                     )
                 ],
                 [
@@ -903,16 +925,18 @@ class GraceHubWorker:
             # обновляем заголовок темы
             await self.update_ticket_topic_title(ticket)
 
-            # если только что закрыли — отправляем запрос оценки
+            # если только что закрыли — и включен запрос оценки, отправляем запрос
             if status == "closed":
                 try:
-                    user_id = ticket.get("user_id")
-                    if user_id:
-                        await self._send_safe_message(
-                            chat_id=user_id,
-                            text=self.texts.ticket_closed_rating_request,
-                            reply_markup=self.get_rating_keyboard(ticket_id),
-                        )
+                    rating_enabled = (await self.get_setting("rating_enabled")) == "True"
+                    if rating_enabled:
+                        user_id = ticket.get("user_id")
+                        if user_id:
+                            await self._send_safe_message(
+                                chat_id=user_id,
+                                text=self.texts.ticket_closed_rating_request,
+                                reply_markup=self.get_rating_keyboard(ticket_id),
+                            )
                 except Exception as e:
                     logger.error(
                         "Failed to send rating request for ticket %s: %s",
@@ -2066,7 +2090,11 @@ class GraceHubWorker:
 
         elif data == "setup_openchat":
             openchat = await self.get_openchat_settings()
-            status = self.texts.openchat_status_on if openchat["enabled"] else self.texts.openchat_status_off
+            status = (
+                self.texts.openchat_status_on
+                if openchat["enabled"]
+                else self.texts.openchat_status_off
+            )
 
             if openchat["chat_id"]:
                 current = self.texts.openchat_current_chat_id.format(
@@ -2096,7 +2124,11 @@ class GraceHubWorker:
             )
 
         elif data == "setup_privacy":
-            enabled = self.texts.privacy_state_on if await self.is_privacy_enabled() else self.texts.privacy_state_off
+            enabled = (
+                self.texts.privacy_state_on
+                if await self.is_privacy_enabled()
+                else self.texts.privacy_state_off
+            )
             await cb.message.edit_text(
                 self.texts.privacy_screen.format(state=enabled),
                 reply_markup=InlineKeyboardMarkup(
@@ -2119,9 +2151,13 @@ class GraceHubWorker:
 
         elif data == "toggle_privacy":
             current = await self.is_privacy_enabled()
-            await self.set_setting("privacy_mode_enabled", "False" if current else "True")
+            await self.set_setting(
+                "privacy_mode_enabled", "False" if current else "True"
+            )
             new_state = (
-                self.texts.privacy_state_on if not current else self.texts.privacy_state_off
+                self.texts.privacy_state_on
+                if not current
+                else self.texts.privacy_state_off
             )
             await cb.answer(
                 self.texts.privacy_toggled.format(state=new_state),
@@ -2129,7 +2165,9 @@ class GraceHubWorker:
             )
 
             enabled = (
-                self.texts.privacy_state_on if await self.is_privacy_enabled() else self.texts.privacy_state_off
+                self.texts.privacy_state_on
+                if await self.is_privacy_enabled()
+                else self.texts.privacy_state_off
             )
             await cb.message.edit_text(
                 self.texts.privacy_screen.format(state=enabled),
@@ -2139,6 +2177,71 @@ class GraceHubWorker:
                             InlineKeyboardButton(
                                 text=self.texts.privacy_toggle_btn,
                                 callback_data="toggle_privacy",
+                            )
+                        ],
+                        [
+                            InlineKeyboardButton(
+                                text=self.texts.back,
+                                callback_data="main_menu",
+                            )
+                        ],
+                    ]
+                ),
+            )
+
+        elif data == "setup_rating":
+            rating_enabled = (await self.get_setting("rating_enabled")) == "True"
+            enabled_text = (
+                self.texts.rating_state_on
+                if rating_enabled
+                else self.texts.rating_state_off
+            )
+            await cb.message.edit_text(
+                self.texts.rating_screen.format(state=enabled_text),
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [
+                            InlineKeyboardButton(
+                                text=self.texts.rating_toggle_btn,
+                                callback_data="toggle_rating",
+                            )
+                        ],
+                        [
+                            InlineKeyboardButton(
+                                text=self.texts.back,
+                                callback_data="main_menu",
+                            )
+                        ],
+                    ]
+                ),
+            )
+
+        elif data == "toggle_rating":
+            current = (await self.get_setting("rating_enabled")) == "True"
+            await self.set_setting("rating_enabled", "False" if current else "True")
+            new_state_text = (
+                self.texts.rating_state_on if not current else self.texts.rating_state_off
+            )
+
+            await cb.answer(
+                self.texts.rating_toggled.format(state=new_state_text),
+                show_alert=False,
+            )
+
+            rating_enabled = (await self.get_setting("rating_enabled")) == "True"
+            enabled_text = (
+                self.texts.rating_state_on
+                if rating_enabled
+                else self.texts.rating_state_off
+            )
+            await cb.message.edit_text(
+                self.texts.rating_screen.format(state=enabled_text),
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [
+                            InlineKeyboardButton(
+                                text=self.texts.rating_toggle_btn,
+                                callback_data="toggle_rating",
                             )
                         ],
                         [
@@ -2295,7 +2398,6 @@ class GraceHubWorker:
 
         else:
             await cb.answer()
-
 
     # ====================== ОБРАБОТКА СОСТОЯНИЙ АДМИНА ======================
 
@@ -2953,7 +3055,7 @@ class GraceHubWorker:
             F.chat.type == ChatType.PRIVATE,
         )
         # Общий для ошибок
-        self.dp.errors.register(GraceHubWorker.global_error_handler)
+        self.dp.errors.register(self.global_error_handler)
 
     # ====================== ЗАПУСК / ИНТЕГРАЦИЯ ======================
 

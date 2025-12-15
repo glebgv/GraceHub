@@ -307,5 +307,18 @@ TEXTS_EN = Texts(
     too_many_messages="Too many messages. Please wait a bit and try again.",
     billing_plans_title="Choose a plan for your account:",
     billing_plan_line="• <b>{plan_name}</b>: {price_stars} ⭐ / {period_days} days, limit {tickets_limit} tickets",
+    menu_rating = "Rating on close",
+    rating_state_on = "Rating request: ENABLED",
+    rating_state_off = "Rating request: DISABLED",
+
+    rating_screen = (
+        "{state}\n\n"
+        "When enabled, after a ticket is closed the user will receive "
+        "a request to rate the support quality."
+    ),
+
+    rating_toggle_btn = "Toggle rating request",
+
+    rating_toggled = "Rating request state has been changed.\n\n{state}",
 )
 

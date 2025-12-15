@@ -306,6 +306,18 @@ TEXTS_ZH = Texts(
     too_many_messages="消息发送过于频繁，请稍后再试。",
     billing_plans_title="为你的账户选择套餐：",
     billing_plan_line="• <b>{plan_name}</b>: {price_stars} ⭐ / {period_days} 天，限 {tickets_limit} 工单",
+    menu_rating = "工单关闭评分",
+    rating_state_on = "评分请求：已开启",
+    rating_state_off = "评分请求：已关闭",
+
+    rating_screen = (
+        "{state}\n\n"
+        "开启后，在工单关闭后会向用户发送消息，邀请其对支持质量进行评分。"
+    ),
+
+    rating_toggle_btn = "切换评分请求",
+
+    rating_toggled = "评分请求状态已更新。\n\n{state}",
 
 )
 

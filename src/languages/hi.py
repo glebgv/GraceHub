@@ -308,6 +308,19 @@ TEXTS_HI = Texts(
     too_many_messages="संदेश बहुत अधिक हैं। कृपया थोड़ा इंतज़ार करें और फिर से प्रयास करें।",
     billing_plans_title="अपने खाते के लिए टैरिफ चुनें:",
     billing_plan_line="• <b>{plan_name}</b>: {price_stars} ⭐ / {period_days} दिन, सीमा {tickets_limit} टिकट",
+    menu_rating = "बंद होने पर रेटिंग",
+    rating_state_on = "रेटिंग अनुरोध: चालू",
+    rating_state_off = "रेटिंग अनुरोध: बंद",
+
+    rating_screen = (
+        "{state}\n\n"
+        "सक्रिय होने पर, टिकट बंद होने के बाद उपयोगकर्ता से "
+        "सपोर्ट की गुणवत्ता की रेटिंग मांगी जाएगी."
+    ),
+
+    rating_toggle_btn = "रेटिंग अनुरोध बदलें",
+
+    rating_toggled = "रेटिंग अनुरोध की स्थिति बदल दी गई है.\n\n{state}",
 
 )
 

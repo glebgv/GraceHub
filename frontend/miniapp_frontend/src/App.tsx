@@ -494,7 +494,7 @@ const App: React.FC<AppProps> = ({
               {!billing?.unlimited && (
                 <>
                   <div className="tariff-row">
-                    <span className="tariff-label">До какого числа:</span>
+                    <span className="tariff-label">До:</span>
                     <span className="tariff-value">
                       {billing
                         ? new Date(billing.periodEnd).toLocaleDateString()

@@ -218,3 +218,10 @@ class Texts:
     attachment_too_big: str
     too_many_messages: str
 
+    menu_rating: str
+    rating_state_on: str
+    rating_state_off: str
+    rating_screen: str
+    rating_toggle_btn: str
+    rating_toggled: str
+
