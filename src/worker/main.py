@@ -1009,6 +1009,7 @@ class GraceHubWorker:
         message_id: int,
         *,
         compact: bool = True,
+        target_user_id: int | None = None,  # НОВЫЙ аргумент
     ) -> None:
         ticket = await self.fetch_ticket(ticket_id)
         if not ticket or not self.db:
@@ -1045,15 +1046,51 @@ class GraceHubWorker:
                 message_id=message_id,
                 reply_markup=kb,
             )
-        except Exception as e:
-            if "message is not modified" in str(e).lower():
+        except TelegramBadRequest as e:
+            err = str(e).lower()
+            if "message is not modified" in err:
                 return
+
+            logger.warning(
+                "Failed to edit ticket keyboard for ticket %s message %s: %s; sending new message",
+                ticket_id,
+                message_id,
+                e,
+            )
+            try:
+                sent = await self.sendsafemessage(
+                    chatid=chat_id,
+                    text=self.texts.ticket_admin_prompt,
+                    reply_markup=kb,
+                )
+                if target_user_id is not None:
+                    try:
+                        await self.save_reply_mapping_v2(
+                            chat_id=chat_id,
+                            message_id=sent.message_id,
+                            target_user_id=target_user_id,
+                        )
+                    except Exception as e3:
+                        logger.error(
+                            "Failed to update reply mapping for ticket %s new message %s: %s",
+                            ticket_id,
+                            sent.message_id,
+                            e3,
+                        )
+            except Exception as e2:
+                logger.error(
+                    "Failed to send fallback ticket keyboard message for ticket %s: %s",
+                    ticket_id,
+                    e2,
+                )
+        except Exception as e:
             logger.error(
                 "Failed to attach ticket keyboard to message %s: %s",
                 message_id,
                 e,
             )
 
+            
     def _build_full_ticket_keyboard(
         self,
         ticket_id: int,
@@ -1853,9 +1890,28 @@ class GraceHubWorker:
                 is_spam=is_spam,
                 is_closed=is_closed,
             )
-            if cb.message:
-                await cb.message.edit_reply_markup(reply_markup=kb)
 
+            if cb.message:
+                try:
+                    await cb.message.edit_reply_markup(reply_markup=kb)
+                except TelegramBadRequest as e:
+                    err = str(e).lower()
+                    if "message is not modified" in err:
+                        await cb.answer()
+                        return
+                    # сообщение протухло → шлём новое
+                    try:
+                        await self.sendsafemessage(
+                            chatid=cb.message.chat.id,
+                            text=self.texts.ticket_admin_prompt,
+                            reply_markup=kb,
+                        )
+                    except Exception as e2:
+                        logger.error(
+                            "Failed to send fallback ticket menu message for ticket %s: %s",
+                            ticket_id,
+                            e2,
+                        )
             await cb.answer()
             return
 
@@ -1868,6 +1924,7 @@ class GraceHubWorker:
                 return
 
             if cb.message:
+                # put_ticket_keyboard внутри уже умеет делать fallback
                 await self.put_ticket_keyboard(
                     ticket_id,
                     cb.message.message_id,
@@ -1910,7 +1967,6 @@ class GraceHubWorker:
                 assigned_username=assignee_username,
                 assigned_user_id=user.id,
             )
-            # после действия сворачиваем меню
             await self.put_ticket_keyboard(ticket_id, message.message_id, compact=True)
             await cb.answer(self.texts.ticket_taken_self)
             return
@@ -1949,9 +2005,25 @@ class GraceHubWorker:
                 ]
             )
 
-            await message.edit_reply_markup(
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=rows)
-            )
+            try:
+                await message.edit_reply_markup(
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=rows)
+                )
+            except TelegramBadRequest as e:
+                err = str(e).lower()
+                if "message is not modified" not in err:
+                    try:
+                        await self.sendsafemessage(
+                            chatid=message.chat.id,
+                            text=self.texts.ticket_admin_prompt,
+                            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+                        )
+                    except Exception as e2:
+                        logger.error(
+                            "Failed to send fallback assign keyboard for ticket %s: %s",
+                            ticket_id,
+                            e2,
+                        )
             await cb.answer()
             return
 
@@ -1989,8 +2061,7 @@ class GraceHubWorker:
             await cb.answer(self.texts.ticket_assignment_cancelled)
             return
 
-        # 3) "Спам" — пометить тикет как спам,
-        # убрать возможность "Себе"/"Назначить", показать "Не спам"
+        # 3) "Спам"
         if action == "spam":
             await self.set_ticket_status(
                 ticket_id,
@@ -2002,7 +2073,7 @@ class GraceHubWorker:
             await cb.answer(self.texts.ticket_marked_spam)
             return
 
-        # 3a) "Не спам" — вернуть тикет из спама в работу с текущим админом
+        # 3a) "Не спам"
         if action == "not_spam":
             await self.set_ticket_status(
                 ticket_id,

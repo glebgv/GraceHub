@@ -1,6 +1,9 @@
 #!/bin/bash
 set -e
 
+# При любом выходе (в т.ч. Ctrl+C) гасим всю процесс-группу скрипта
+trap 'echo "🔻 Stopping GraceHub dev/prod stack..."; kill -- -$$ 2>/dev/null || true' INT TERM EXIT  # [web:2][web:24]
+
 echo "🚀 GraceHub Platform..."
 
 # Абсолютный путь к директории скрипта (gracehub/scripts)
@@ -85,11 +88,11 @@ run_dev() {
         echo "✅ Python deps already up to date"
     fi
 
-    # master bot
-    nohup python src/master_bot/main.py >> logs/masterbot.log 2>&1 &
+    # master bot (без nohup, обычный фон)
+    python src/master_bot/main.py >> logs/masterbot.log 2>&1 &
 
     # api backend
-    nohup python src/master_bot/api_server.py >> logs/api_server.log 2>&1 &
+    python src/master_bot/api_server.py >> logs/api_server.log 2>&1 &
 
     # frontend dev server
     cd "$FRONTEND_DIR"
@@ -99,12 +102,12 @@ run_dev() {
     fi
 
     npm install
-    nohup npm run dev -- --host 0.0.0.0 >> "$ROOT_DIR/logs/frontend-dev.log" 2>&1 &
+    npm run dev -- --host 0.0.0.0 >> "$ROOT_DIR/logs/frontend-dev.log" 2>&1 &
 
     echo "✅ Dev processes started (master, api, frontend)"
 
     if [ "$DETACH" != "--detach" ]; then
-        echo "ℹ️  Press Ctrl+C to stop tailing logs"
+        echo "ℹ️  Press Ctrl+C to stop tailing logs (and stop all dev processes)"
         tail -F "$ROOT_DIR/logs/masterbot.log" \
                "$ROOT_DIR/logs/api_server.log" \
                "$ROOT_DIR/logs/frontend-dev.log"
