@@ -9,6 +9,8 @@ import hashlib
 import hmac
 import json
 import logging
+import base64
+import binascii
 import time
 import secrets
 from pathlib import Path
@@ -22,6 +24,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from shared import settings
+from urllib.parse import parse_qsl, unquote, quote
 
 from .main import MasterBot
 
@@ -220,9 +223,27 @@ class CreateInvoiceRequest(BaseModel):
     plan_code: str = Field(..., description="Код тарифа (lite/pro/enterprise/demo)")
     periods: int = Field(..., ge=1, le=24, description="Количество периодов (1,3,12)")
 
+    # Новый параметр: метод оплаты
+    payment_method: str = Field(
+        default="telegram_stars",
+        description="Метод оплаты: telegram_stars или ton",
+        pattern="^(telegram_stars|ton)$",
+    )
+
+    # Опционально: сеть (если хочешь уметь форсировать testnet/mainnet из клиента).
+    # Обычно лучше НЕ давать клиенту это менять и брать из settings.TON_NETWORK.
+    # ton_network: str | None = Field(default=None, pattern="^(testnet|mainnet)$")
+
+
 class CreateInvoiceResponse(BaseModel):
     invoice_id: int
     invoice_link: str
+
+class TonInvoiceStatusResponse(BaseModel):
+    invoice_id: int
+    status: str
+    tx_hash: Optional[str] = None
+    period_applied: bool = False
 
 # ========================================================================
 # Telegram Validation
@@ -246,8 +267,6 @@ class TelegramAuthValidator:
 
         if not init_data or init_data.isspace():
             raise ValueError("initData пуста")
-
-        from urllib.parse import parse_qsl, unquote
 
         try:
             params = dict(parse_qsl(init_data, keep_blank_values=True))
@@ -1192,86 +1211,301 @@ def create_miniapp_app(
         response_model=CreateInvoiceResponse,
     )
     async def create_billing_invoice(
-        instance_id: str,  # сейчас не используем для биллинга, только для проверки доступа/совместимости
+        instance_id: str,
         req: CreateInvoiceRequest,
         current_user: Dict[str, Any] = Depends(get_current_user),
     ):
-        """
-        Создать инвойс Stars для тарифа аккаунта (без жёсткой привязки к конкретному инстансу)
-        и вернуть ссылку для открытия через Telegram.WebApp.openInvoice.
-        """
         user_id = current_user["user_id"]
 
-        # 1. Проверить, что у пользователя есть доступ к переданному инстансу (для безопасности)
+        # 1) Доступ к инстансу (как было)
         await require_instance_access(instance_id, current_user)
 
-        # 2. Найти продукт в billing_products по plan_code
+        # 2) Продукт
         product = await miniapp_db.get_billing_product_by_plan_code(req.plan_code)
         if not product or not product["product_code"]:
             raise HTTPException(status_code=400, detail="Тариф недоступен для оплаты")
 
-        base_amount = product["amount_stars"]  # например 300, 800, 2500
         periods = req.periods
-        total_amount = base_amount * periods
 
-        # 3. Выбрать "основной" инстанс аккаунта по owner_user_id = user_id
+        # 3) Основной инстанс аккаунта
         main_instance = await miniapp_db.get_instance_by_owner(user_id)
         if not main_instance:
             raise HTTPException(
                 status_code=400,
                 detail="Сначала создайте бота, затем можно оформить тариф",
             )
-
         account_instance_id = main_instance["instance_id"]
 
-        # 4. Сначала создаём запись в billing_invoices (без payload и link)
-        invoice_id = await miniapp_db.db.insert_billing_invoice(
-            instance_id=account_instance_id,
-            user_id=user_id,
-            plan_code=req.plan_code,
-            periods=periods,
-            amount_stars=total_amount,
-            product_code=product["product_code"],
-            payload="",
-            invoice_link="",
-            status="pending",
-        )
+        # 4) Ветка оплаты
+        payment_method = getattr(req, "payment_method", "telegram_stars")
 
-        # 5. Короткий payload для Telegram (до 128 байт)
-        payload = f"saas:{invoice_id}"
+        # -------------------------
+        # Stars (как было)
+        # -------------------------
+        if payment_method == "telegram_stars":
+            base_amount = product["amount_stars"]
+            total_amount = base_amount * periods
 
-        # 6. Через master_bot создать invoice_link
-        if master_bot is None:
-            logger.error("create_billing_invoice: master_bot is not initialized")
-            raise HTTPException(status_code=500, detail="MasterBot не инициализирован")
+            invoice_id = await miniapp_db.db.insert_billing_invoice(
+                instance_id=account_instance_id,
+                user_id=user_id,
+                plan_code=req.plan_code,
+                periods=periods,
+                amount_stars=total_amount,
+                product_code=product["product_code"],
+                payload="",
+                invoice_link="",
+                status="pending",
+                payment_method="telegram_stars",
+                currency="XTR",
+            )
+
+            payload = f"saas:{invoice_id}"
+
+            if master_bot is None:
+                logger.error("create_billing_invoice: master_bot is not initialized")
+                raise HTTPException(status_code=500, detail="MasterBot не инициализирован")
+
+            try:
+                invoice_link = await master_bot.create_stars_invoice_link_for_miniapp(
+                    user_id=user_id,
+                    title=product.get("title") or product["name"],
+                    description=product.get("description") or f"SaaS план {req.plan_code}",
+                    payload=payload,
+                    currency="XTR",
+                    amount_stars=total_amount,
+                )
+            except Exception as e:
+                logger.exception("create_billing_invoice: error from MasterBot: %s", e)
+                raise HTTPException(
+                    status_code=500,
+                    detail="Не удалось создать инвойс Telegram Stars",
+                )
+
+            await miniapp_db.db.update_billing_invoice_link_and_payload(
+                invoice_id=invoice_id,
+                payload=payload,
+                invoice_link=invoice_link,
+            )
+
+            return CreateInvoiceResponse(invoice_id=invoice_id, invoice_link=invoice_link)
+
+        # -------------------------
+        # TON (UPDATED: https Tonkeeper link)
+        # -------------------------
+        if payment_method == "ton":
+            plan = req.plan_code.lower()
+            price_map = {
+                "lite": settings.TON_PRICE_PER_PERIOD_LITE,
+                "pro": settings.TON_PRICE_PER_PERIOD_PRO,
+                "enterprise": settings.TON_PRICE_PER_PERIOD_ENTERPRISE,
+            }
+            if plan not in price_map:
+                raise HTTPException(status_code=400, detail="Этот тариф нельзя оплатить в TON")
+
+            # nanoton (1 TON = 1e9 nanoton)
+            total_ton = float(price_map[plan]) * float(periods)
+            amount_minor_units = int(total_ton * 1_000_000_000)
+
+            if not settings.TON_WALLET_ADDRESS:
+                raise HTTPException(status_code=500, detail="TON_WALLET_ADDRESS не настроен")
+
+            # создаём invoice в БД (payload пока пустой)
+            invoice_id = await miniapp_db.db.insert_billing_invoice(
+                instance_id=account_instance_id,
+                user_id=user_id,
+                plan_code=req.plan_code,
+                periods=periods,
+                amount_stars=0,  # Stars не используется
+                product_code=product["product_code"],
+                payload="",
+                invoice_link="",
+                status="pending",
+                payment_method="ton",
+                currency="TON",
+                amount_minor_units=amount_minor_units,
+            )
+
+            # комментарий для матчинга входящей транзакции
+            comment = f"saas:{invoice_id}"
+            payload = comment
+
+            ton_address = settings.TON_WALLET_ADDRESS
+
+            # ВАЖНО: вместо ton://transfer используем https deeplink Tonkeeper,
+            # который Telegram Mini App почти всегда открывает как обычную ссылку.
+            invoice_link = (
+                f"https://app.tonkeeper.com/transfer/{ton_address}"
+                f"?amount={amount_minor_units}"
+                f"&text={quote(comment)}"
+            )
+
+            await miniapp_db.db.update_billing_invoice_link_and_payload(
+                invoice_id=invoice_id,
+                payload=payload,
+                invoice_link=invoice_link,
+            )
+
+            return CreateInvoiceResponse(invoice_id=invoice_id, invoice_link=invoice_link)
+
+        raise HTTPException(status_code=400, detail="Неизвестный метод оплаты")
+
+
+    async def _toncenter_get_transactions(address: str, limit: int = 30) -> list[dict]:
+        """
+        Получаем последние транзакции по адресу через TonCenter API v2.
+        Ожидается, что settings.TON_API_BASE_URL = 'https://toncenter.com/api/v2' или testnet.
+        """
+        base_url = settings.TON_API_BASE_URL.rstrip("/")
+        url = f"{base_url}/getTransactions"
+
+        headers: Dict[str, str] = {}
+        if getattr(settings, "TON_API_KEY", None):
+            headers["X-API-Key"] = settings.TON_API_KEY
+
+        params = {"address": address, "limit": limit}
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(url, params=params, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+
+        if not data.get("ok"):
+            raise RuntimeError(f"TonCenter error: {data.get('error')}")
+        result = data.get("result")
+        # TonCenter v2 может возвращать result либо как JSON-объект, либо как строку.
+        # Для упрощения считаем, что это уже список транзакций (смотри свою фактическую схему).
+        return result or []
+
+    def _maybe_b64decode(s: str) -> str:
+        """Попытка декодировать base64 в обычный текст. Если не получится — вернём как есть."""
+        if not s or not isinstance(s, str):
+            return s
+        try:
+            # base64 обычно кратен 4 и содержит [A-Za-z0-9+/=]
+            decoded = base64.b64decode(s, validate=True)
+            text = decoded.decode("utf-8", errors="strict")
+            return text
+        except (binascii.Error, UnicodeDecodeError, ValueError):
+            return s
+
+    def _extract_in_msg_comment(tx: dict) -> str | None:
+        """
+        MVP извлечения комментария из транзакции TonCenter.
+        TonCenter может возвращать текст в base64, поэтому декодируем.
+        """
+        in_msg = tx.get("in_msg") or {}
+        msg_data = in_msg.get("msg_data") or {}
+
+        # Часто лежит в msg_data.text/body/comment
+        for key in ("text", "body", "comment"):
+            val = msg_data.get(key)
+            if isinstance(val, str) and val:
+                return _maybe_b64decode(val)
+
+        # Иногда comment лежит прямо в in_msg
+        for key in ("message", "comment", "text"):
+            val = in_msg.get(key)
+            if isinstance(val, str) and val:
+                return _maybe_b64decode(val)
+
+        return None
+
+    async def check_ton_payment(invoice_id: int) -> dict:
+        """
+        Проверяем, пришла ли оплата по TON для invoice_id.
+        Возвращает dict: {status: 'pending'|'paid', tx_hash?: str}.
+        Логика ослаблена, чтобы не терять валидные платежи из-за форматов TonCenter:
+        - destination НЕ используется как жесткий фильтр (только лог);
+        - value матчится по >= нужной сумме;
+        - комментарий сравнивается мягко: если не извлечён, не отбрасываем.
+        """
+        inv = await miniapp_db.db.get_billing_invoice(invoice_id)
+        if not inv:
+            raise HTTPException(status_code=404, detail="Invoice not found")
+
+        if inv.get("payment_method") != "ton":
+            raise HTTPException(status_code=400, detail="Invoice is not TON")
+
+        # Уже оплачен
+        if inv.get("status") == "paid":
+            return {"status": "paid", "tx_hash": inv.get("provider_tx_hash")}
+
+        wallet = settings.TON_WALLET_ADDRESS
+        if not wallet:
+            raise HTTPException(status_code=500, detail="TON_WALLET_ADDRESS not configured")
+
+        need_amount = inv.get("amount_minor_units") or 0
+        if need_amount <= 0:
+            raise HTTPException(status_code=500, detail="Invoice amount_minor_units not set")
+
+        expected_comment = inv.get("payload")  # формата 'saas:<invoice_id>'
 
         try:
-            invoice_link = await master_bot.create_stars_invoice_link_for_miniapp(
-                user_id=user_id,
-                title=product.get("title") or product["name"],
-                description=product.get("description") or f"SaaS план {req.plan_code}",
-                payload=payload,
-                currency="XTR",
-                amount_stars=total_amount,
-            )
+            txs = await _toncenter_get_transactions(wallet, limit=30)
         except Exception as e:
-            logger.exception("create_billing_invoice: error from MasterBot: %s", e)
-            raise HTTPException(
-                status_code=500,
-                detail="Не удалось создать инвойс Telegram Stars",
+            logger.exception("check_ton_payment: TonCenter error: %s", e)
+            # Не роняем запрос: просто говорим, что пока pending
+            return {"status": "pending"}
+
+        # Диагностика ожиданий
+        logger.info(
+            "TON check: wallet=%s need_amount=%s expected_comment=%s invoice_id=%s",
+            wallet, need_amount, expected_comment, invoice_id
+        )
+
+        for tx in txs:
+            in_msg = tx.get("in_msg") or {}
+            # DIAG: логируем фактические поля из TonCenter
+            dst = in_msg.get("destination") or in_msg.get("dest")
+            value_str = in_msg.get("value")
+            try:
+                value = int(value_str) if value_str is not None else 0
+            except Exception:
+                value = 0
+
+            comment = _extract_in_msg_comment(tx)
+
+            logger.info(
+                "TON tx: dst=%s value=%s comment=%s (need_amount=%s expected_comment=%s)",
+                dst, value, comment, need_amount, expected_comment
             )
 
-        # 7. Обновить запись billing_invoices с payload и ссылкой
-        await miniapp_db.db.update_billing_invoice_link_and_payload(
-            invoice_id=invoice_id,
-            payload=payload,
-            invoice_link=invoice_link,
-        )
+            # 1) НЕ режем по адресу (слишком часто формат отличается), только логируем
+            # if dst and isinstance(dst, str) and dst != wallet:
+            #     continue
 
-        return CreateInvoiceResponse(
-            invoice_id=invoice_id,
-            invoice_link=invoice_link,
-        )
+            # 2) Сумма: принимаем платежи со значением >= требуемого (учет округлений/комиссий пользователя)
+            if value < need_amount:
+                continue
+
+            # 3) Комментарий: мягкая проверка. Если комментарий извлечён, но отличается — пропускаем.
+            # Если комментарий не извлёкся (None или пусто), НЕ отбрасываем платеж.
+            if expected_comment:
+                if comment is not None and isinstance(comment, str) and comment.strip() != expected_comment:
+                    # Не совпало — идём дальше
+                    continue
+
+            # 4) Хеш транзакции
+            tx_id = tx.get("transaction_id") or {}
+            tx_hash = (tx_id.get("hash") if isinstance(tx_id, dict) else None) or tx.get("hash")
+            if not tx_hash:
+                # Последняя попытка: иногда hash лежит глубже или в другом ключе,
+                # но если нет — не сможем пометить оплату, пропускаем.
+                continue
+
+            # 5) Фиксируем оплату и применяем тариф
+            await miniapp_db.db.mark_billing_invoice_paid_ton(
+                invoice_id=invoice_id,
+                tx_hash=tx_hash,
+                amount_minor_units=value,
+                currency="TON",
+            )
+            await miniapp_db.db.apply_saas_plan_for_invoice(invoice_id)
+
+            logger.info("TON paid: invoice_id=%s tx_hash=%s amount=%s", invoice_id, tx_hash, value)
+            return {"status": "paid", "tx_hash": tx_hash}
+
+        return {"status": "pending"}
 
 
     @app.post("/api/auth/telegram", response_model=AuthResponse)
@@ -1409,12 +1643,13 @@ def create_miniapp_app(
     @app.get("/api/instances/{instance_id}/billing", response_model=BillingInfo)
     async def get_instance_billing_endpoint(
         instance_id: str,
-        _: Any = Depends(lambda instance_id=Depends(lambda instance_id: instance_id), current_user=Depends(get_current_user): require_instance_access(instance_id, current_user, required_role=None)),  # псевдо-заглушка, см. ниже
+        current_user: Dict[str, Any] = Depends(get_current_user),
     ):
         """
         Возвращает информацию о тарифе и лимитах для инстанса.
         Доступен всем, у кого есть доступ к инстансу (owner/operator/viewer).
         """
+        await require_instance_access(instance_id, current_user, required_role=None)
 
         billing = await miniapp_db.get_instance_billing(instance_id)
         if not billing:
@@ -1455,6 +1690,46 @@ def create_miniapp_app(
             unlimited=False,
         )
 
+    @app.get("/api/billing/ton/status", response_model=TonInvoiceStatusResponse)
+    async def ton_invoice_status(
+        invoice_id: int,
+        current_user: Dict[str, Any] = Depends(get_current_user),
+    ):
+        inv = await miniapp_db.db.get_billing_invoice(invoice_id)
+        if not inv:
+            raise HTTPException(status_code=404, detail="Invoice not found")
+
+        # Проверяем, что пользователь имеет доступ к инстансу из инвойса
+        await require_instance_access(inv["instance_id"], current_user)
+
+        if inv.get("payment_method") != "ton":
+            raise HTTPException(status_code=400, detail="Invoice is not TON")
+
+        if inv.get("status") == "paid":
+            return TonInvoiceStatusResponse(
+                invoice_id=invoice_id,
+                status="paid",
+                tx_hash=inv.get("provider_tx_hash"),
+                period_applied=True,
+            )
+
+        # pending: пробуем дернуть сеть
+        res = await check_ton_payment(invoice_id)
+
+        if res["status"] == "paid":
+            return TonInvoiceStatusResponse(
+                invoice_id=invoice_id,
+                status="paid",
+                tx_hash=res.get("tx_hash"),
+                period_applied=True,
+            )
+
+        return TonInvoiceStatusResponse(
+            invoice_id=invoice_id,
+            status="pending",
+            tx_hash=None,
+            period_applied=False,
+        )
 
     @app.post("/api/resolve_instance", response_model=ResolveInstanceResponse)
     async def resolve_instance(

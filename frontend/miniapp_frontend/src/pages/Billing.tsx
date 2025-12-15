@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { apiClient } from '../api/client';
+import { apiClient, type PaymentMethod } from '../api/client';
 import { useTranslation } from 'react-i18next';
 
 type SaasPlanDTO = {
@@ -18,7 +18,7 @@ interface BillingProps {
 type PeriodOption = {
   id: string;
   multiplier: number;
-  labelKey: string; // ключ i18n, например billing.period_1m
+  labelKey: string;
 };
 
 const periodOptions: PeriodOption[] = [
@@ -27,6 +27,20 @@ const periodOptions: PeriodOption[] = [
   { id: '12', multiplier: 12, labelKey: 'billing.period_12x' },
 ];
 
+// Соотношение Stars → TON (можно вынести в env или получать с backend)
+const TON_PRICE_LITE = 0.3;
+const TON_PRICE_PRO = 0.8;
+const TON_PRICE_ENTERPRISE = 2.5;
+
+const getTonPrice = (planCode: string): number => {
+  const map: Record<string, number> = {
+    lite: TON_PRICE_LITE,
+    pro: TON_PRICE_PRO,
+    enterprise: TON_PRICE_ENTERPRISE,
+  };
+  return map[planCode.toLowerCase()] || 0;
+};
+
 const Billing: React.FC<BillingProps> = ({ instanceId }) => {
   const { t } = useTranslation();
   const [plans, setPlans] = useState<SaasPlanDTO[]>([]);
@@ -34,15 +48,14 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
   const [error, setError] = useState<string | null>(null);
 
   const [selectedPlan, setSelectedPlan] = useState<SaasPlanDTO | null>(null);
-  const [selectedPeriod, setSelectedPeriod] = useState<PeriodOption | null>(
-    periodOptions[0],
-  );
+  const [selectedPeriod, setSelectedPeriod] = useState<PeriodOption | null>(periodOptions[0]);
   const [isModalOpen, setIsModalOpen] = useState(false);
+
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('telegram_stars');
 
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
-  // результат успешной оплаты
   const [paymentResult, setPaymentResult] = useState<{
     planName: string;
     months: number;
@@ -68,6 +81,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
   const openPlanModal = (plan: SaasPlanDTO) => {
     setSelectedPlan(plan);
     setSelectedPeriod(periodOptions[0]);
+    setPaymentMethod('telegram_stars');
     setSubmitError(null);
     setIsModalOpen(true);
   };
@@ -76,6 +90,54 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
     setIsModalOpen(false);
     setSelectedPlan(null);
     setSubmitError(null);
+  };
+
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  const pollTonStatus = async (invoiceId: number, timeoutMs: number = 120000) => {
+    const started = Date.now();
+    while (Date.now() - started < timeoutMs) {
+      const st = await apiClient.getTonInvoiceStatus(invoiceId);
+
+      if (st.status === 'paid' && st.period_applied) return st;
+      if (st.status === 'failed') throw new Error(t('billing.payment_failed'));
+
+      await sleep(2500);
+    }
+    throw new Error(t('billing.payment_failed'));
+  };
+
+  // UPDATED: prefer opening Tonkeeper link via external browser on Android Telegram
+  // because Telegram in-app browser may lose deeplink query params.
+  const openTonLink = (link: string) => {
+    const tg = window.Telegram?.WebApp;
+
+    // 1) Try Telegram openLink with "no instant view" option (some clients support it)
+    try {
+      (tg as any)?.openLink?.(link, { try_instant_view: false });
+      return;
+    } catch (e) {
+      // ignore and fallback
+    }
+
+    // 2) Try plain tg.openLink
+    try {
+      tg?.openLink?.(link);
+      return;
+    } catch (e) {
+      // ignore and fallback
+    }
+
+    // 3) Fallback: open new tab/window (often triggers external browser on Android)
+    try {
+      window.open(link, '_blank', 'noopener,noreferrer');
+      return;
+    } catch (e) {
+      // ignore and fallback
+    }
+
+    // 4) Last resort
+    window.location.href = link;
   };
 
   const handleCreateInvoice = async () => {
@@ -89,37 +151,51 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
       const resp = await apiClient.createBillingInvoice(instanceId, {
         plan_code: selectedPlan.planCode,
         periods: selectedPeriod.multiplier,
+        payment_method: paymentMethod,
       });
 
       console.log('createBillingInvoice resp =', resp);
       console.log('Telegram.WebApp object =', window.Telegram?.WebApp);
 
-      const tg = window.Telegram?.WebApp;
+      // Stars
+      if (paymentMethod === 'telegram_stars') {
+        const tg = window.Telegram?.WebApp;
 
-      if (tg?.openInvoice) {
-        tg.openInvoice(resp.invoice_link, (status: string) => {
-          console.log('openInvoice status =', status); // 'paid' | 'cancelled' | 'failed' | 'pending'
+        if (tg?.openInvoice) {
+          tg.openInvoice(resp.invoice_link, (status: string) => {
+            console.log('openInvoice status =', status);
 
-          if (status === 'paid') {
-            // 1) закрываем модалку выбора тарифа
-            closeModal();
+            if (status === 'paid') {
+              closeModal();
+              setPaymentResult({
+                planName: selectedPlan.planName,
+                months: selectedPeriod.multiplier,
+              });
+            } else if (status === 'failed') {
+              setSubmitError(t('billing.payment_failed'));
+            } else if (status === 'cancelled') {
+              // пользователь закрыл окно оплаты — ничего не делаем
+            }
+          });
+        } else {
+          console.warn('Telegram.WebApp.openInvoice is not available, fallback to window.open');
+          window.open(resp.invoice_link, '_blank', 'noopener,noreferrer');
+        }
 
-            // 2) показываем нашу модалку успеха
-            setPaymentResult({
-              planName: selectedPlan.planName,
-              months: selectedPeriod.multiplier,
-            });
-          } else if (status === 'failed') {
-            setSubmitError(t('billing.payment_failed'));
-          } else if (status === 'cancelled') {
-            // пользователь закрыл окно оплаты — ничего не делаем
-          }
+        return;
+      }
+
+      // TON
+      openTonLink(resp.invoice_link);
+
+      const st = await pollTonStatus(resp.invoice_id, 120000);
+
+      if (st.status === 'paid') {
+        closeModal();
+        setPaymentResult({
+          planName: selectedPlan.planName,
+          months: selectedPeriod.multiplier,
         });
-      } else {
-        console.warn(
-          'Telegram.WebApp.openInvoice is not available, fallback to window.open',
-        );
-        window.open(resp.invoice_link, '_blank');
       }
     } catch (e: any) {
       console.error('createBillingInvoice error', e);
@@ -172,17 +248,10 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
                     limit: plan.ticketsLimit,
                   })}
                 </div>
-                <div style={{ marginTop: '4px', fontSize: '13px' }}>
-                  {plan.priceStars} ⭐
-                </div>
+                <div style={{ marginTop: '4px', fontSize: '13px' }}>{plan.priceStars} ⭐</div>
               </div>
-              <button
-                className="btn"
-                disabled={!plan.productCode}
-                onClick={() => openPlanModal(plan)}
-              >
-                {t('billing.button_details')}{' '}
-                {/* "Подробнее" */}
+              <button className="btn" disabled={!plan.productCode} onClick={() => openPlanModal(plan)}>
+                {t('billing.button_details')}
               </button>
             </div>
           </div>
@@ -190,30 +259,20 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
       </div>
 
       {isModalOpen && selectedPlan && selectedPeriod && (
-        <div
-          className="modal-backdrop"
-          onClick={closeModal}
-        >
+        <div className="modal-backdrop" onClick={closeModal}>
           <div
             className="modal"
             onClick={(e) => e.stopPropagation()}
             style={{ maxWidth: 420 }}
           >
             <div className="modal-header">
-              <h3 className="modal-title">
-                {t('billing.modal_title', { name: selectedPlan.planName })}
-              </h3>
-              <button
-                type="button"
-                className="modal-close"
-                onClick={closeModal}
-              >
+              <h3 className="modal-title">{t('billing.modal_title', { name: selectedPlan.planName })}</h3>
+              <button type="button" className="modal-close" onClick={closeModal}>
                 ✕
               </button>
             </div>
 
             <div className="modal-body">
-              {/* Краткое описание тарифа */}
               <p style={{ marginBottom: 8 }}>
                 {t('billing.modal_description', {
                   name: selectedPlan.planName,
@@ -221,7 +280,6 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
                 })}
               </p>
 
-              {/* Базовый период */}
               <p style={{ marginBottom: 4, fontSize: 13, opacity: 0.8 }}>
                 {t('billing.base_period', {
                   days: selectedPlan.periodDays,
@@ -229,39 +287,60 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
                 })}
               </p>
 
+              {/* Способ оплаты */}
+              <div style={{ marginTop: 12 }}>
+                <div style={{ marginBottom: 8, fontSize: 13, fontWeight: 500 }}>
+                  {t('billing.payment_method_label', 'Способ оплаты')}
+                </div>
+
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    onClick={() => setPaymentMethod('telegram_stars')}
+                    className={paymentMethod === 'telegram_stars' ? 'btn btn--secondary' : 'btn btn--ghost'}
+                    style={{ flex: '1 1 0' }}
+                    disabled={submitting}
+                  >
+                    {t('billing.payment_method_stars', 'Telegram Stars')}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setPaymentMethod('ton')}
+                    className={paymentMethod === 'ton' ? 'btn btn--secondary' : 'btn btn--ghost'}
+                    style={{ flex: '1 1 0' }}
+                    disabled={submitting}
+                  >
+                    {t('billing.payment_method_ton', 'TON')}
+                  </button>
+                </div>
+
+                {paymentMethod === 'ton' && (
+                  <p style={{ marginTop: 8, fontSize: 12, opacity: 0.8 }}>
+                    {t(
+                      'billing.ton_hint',
+                      'После нажатия "Выбрать" откроется браузер/кошелёк. Подтвердите перевод и вернитесь в Telegram.',
+                    )}
+                  </p>
+                )}
+              </div>
+
               {/* Выбор периода */}
               <div style={{ marginTop: 12 }}>
-                <div
-                  style={{
-                    marginBottom: 8,
-                    fontSize: 13,
-                    fontWeight: 500,
-                  }}
-                >
+                <div style={{ marginBottom: 8, fontSize: 13, fontWeight: 500 }}>
                   {t('billing.choose_period_label')}
                 </div>
-                <div
-                  style={{
-                    display: 'flex',
-                    gap: 8,
-                    flexWrap: 'wrap',
-                  }}
-                >
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                   {periodOptions.map((opt) => (
                     <button
                       key={opt.id}
                       type="button"
                       onClick={() => setSelectedPeriod(opt)}
-                      className={
-                        opt.id === selectedPeriod.id
-                          ? 'btn btn--secondary'
-                          : 'btn btn--ghost'
-                      }
+                      className={opt.id === selectedPeriod.id ? 'btn btn--secondary' : 'btn btn--ghost'}
                       style={{ flex: '1 1 0' }}
+                      disabled={submitting}
                     >
-                      {t(opt.labelKey, {
-                        months: opt.multiplier,
-                      })}
+                      {t(opt.labelKey, { months: opt.multiplier })}
                     </button>
                   ))}
                 </div>
@@ -269,20 +348,22 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
 
               {/* Итоговая цена и длительность */}
               <div style={{ marginTop: 16 }}>
-                <div style={{ fontSize: 13, opacity: 0.8 }}>
-                  {t('billing.final_period_label')}
-                </div>
+                <div style={{ fontSize: 13, opacity: 0.8 }}>{t('billing.final_period_label')}</div>
                 <div style={{ fontSize: 14, fontWeight: 500 }}>
                   {t('billing.period_and_limit', {
                     days: selectedPlan.periodDays * selectedPeriod.multiplier,
                     limit: selectedPlan.ticketsLimit,
                   })}
                 </div>
+
                 <div style={{ marginTop: 8, fontSize: 13, opacity: 0.8 }}>
                   {t('billing.final_price_label')}
                 </div>
+
                 <div style={{ fontSize: 16, fontWeight: 600 }}>
-                  {selectedPlan.priceStars * selectedPeriod.multiplier} ⭐
+                  {paymentMethod === 'telegram_stars'
+                    ? `${selectedPlan.priceStars * selectedPeriod.multiplier} ⭐`
+                    : `${(getTonPrice(selectedPlan.planCode) * selectedPeriod.multiplier).toFixed(2)} TON`}
                 </div>
 
                 {submitError && (
@@ -304,6 +385,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
                 type="button"
                 className="btn btn--secondary"
                 onClick={closeModal}
+                disabled={submitting}
               >
                 {t('billing.button_cancel')}
               </button>
@@ -313,9 +395,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
                 disabled={!selectedPlan.productCode || submitting}
                 onClick={handleCreateInvoice}
               >
-                {submitting
-                  ? t('billing.button_processing')
-                  : t('billing.button_choose')}
+                {submitting ? t('billing.button_processing') : t('billing.button_choose')}
               </button>
             </div>
           </div>
@@ -336,9 +416,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
             style={{ maxWidth: 420 }}
           >
             <div className="modal-header">
-              <h3 className="modal-title">
-                {t('billing.payment_success_title', 'Оплата успешна')}
-              </h3>
+              <h3 className="modal-title">{t('billing.payment_success_title', 'Оплата успешна')}</h3>
               <button
                 type="button"
                 className="modal-close"

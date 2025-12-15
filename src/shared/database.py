@@ -324,6 +324,33 @@ class MasterDatabase:
             (telegram_invoice_id, total_amount, currency, invoice_id),
         )
 
+    async def get_billing_invoice(self, invoice_id: int) -> dict | None:
+        row = await self.fetchone(
+            """
+            SELECT
+                invoice_id,
+                instance_id,
+                user_id,
+                product_id,
+                payload,
+                invoice_link,
+                stars_amount,
+                amount_minor_units,
+                currency,
+                payment_method,
+                provider_tx_hash,
+                status,
+                created_at,
+                updated_at,
+                paid_at
+            FROM billing_invoices
+            WHERE invoice_id = %s
+            LIMIT 1
+            """,
+            (invoice_id,),
+        )
+        return dict(row) if row else None
+
     async def get_saas_plans_for_billing(self) -> list[dict]:
         """
         Список тарифов для витрины биллинга:
@@ -346,6 +373,78 @@ class MasterDatabase:
             """
         )
         return [dict(r) for r in rows]
+
+
+    async def mark_billing_invoice_paid_ton(
+        self,
+        invoice_id: int,
+        tx_hash: str,
+        amount_minor_units: int,
+        currency: str = "TON",
+    ) -> None:
+        """
+        Помечает TON-инвойс оплаченным.
+        Записывает хеш транзакции, сумму (в nanoton), валюту, paid_at и updated_at.
+        Не трогает stars_amount, он остаётся как 0/старое значение.
+        """
+        await self.execute(
+            """
+            UPDATE billing_invoices
+               SET status = 'paid',
+                   provider_tx_hash = %s,
+                   amount_minor_units = %s,
+                   currency = %s,
+                   paid_at = NOW(),
+                   updated_at = NOW()
+             WHERE invoice_id = %s
+            """,
+            (tx_hash, amount_minor_units, currency, invoice_id),
+        )
+
+    async def set_billing_invoice_ton_failed(
+        self,
+        invoice_id: int,
+        error_code: str | None,
+        error_message: str | None,
+    ) -> None:
+        """
+        Помечает TON-инвойс как failed и сохраняет диагностическую информацию.
+        Подходит для случаев, когда проверка транзакции не удалась/просрочена/найден конфликт.
+        """
+        await self.execute(
+            """
+            UPDATE billing_invoices
+               SET status = 'failed',
+                   error_code = %s,
+                   error_message = %s,
+                   updated_at = NOW()
+             WHERE invoice_id = %s
+            """,
+            (error_code, error_message, invoice_id),
+        )
+
+    async def upsert_billing_invoice_ton_tx(
+        self,
+        invoice_id: int,
+        tx_hash: str | None,
+        amount_minor_units: int | None,
+        currency: str = "TON",
+    ) -> None:
+        """
+        Обновляет служебные поля TON-инвойса без смены статуса.
+        Удобно вызывать при промежуточных событиях (нашли tx, но ждём подтверждений).
+        """
+        await self.execute(
+            """
+            UPDATE billing_invoices
+               SET provider_tx_hash = COALESCE(%s, provider_tx_hash),
+                   amount_minor_units = COALESCE(%s, amount_minor_units),
+                   currency = %s,
+                   updated_at = NOW()
+             WHERE invoice_id = %s
+            """,
+            (tx_hash, amount_minor_units, currency, invoice_id),
+        )
 
 
     async def get_saas_plan_with_product_by_code(self, plan_code: str) -> dict | None:
@@ -903,13 +1002,13 @@ class MasterDatabase:
             """
             CREATE TABLE IF NOT EXISTS billing_products (
                 product_id     SERIAL PRIMARY KEY,
-                code           TEXT NOT NULL UNIQUE, -- например: plan_lite_30d
+                code           TEXT NOT NULL UNIQUE, 
                 plan_id        INTEGER NOT NULL
                     REFERENCES saas_plans(plan_id)
                     ON DELETE RESTRICT,
                 title          TEXT NOT NULL,
                 description    TEXT,
-                amount_stars   INTEGER NOT NULL,   -- стоимость в XTR (целое)
+                amount_stars   INTEGER NOT NULL,  
                 is_active      BOOLEAN NOT NULL DEFAULT TRUE,
                 created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -917,27 +1016,42 @@ class MasterDatabase:
             """
         )
 
-        # billing_invoices: сессии оплаты через Telegram Stars
+        # billing_invoices: сессии оплаты (Telegram Stars + TON)
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS billing_invoices (
                 invoice_id          BIGSERIAL PRIMARY KEY,
                 instance_id         TEXT NOT NULL,
-                user_id             BIGINT,              -- кто платит (Telegram user_id)
+                user_id             BIGINT,              
+
                 product_id          INTEGER NOT NULL
                     REFERENCES billing_products(product_id)
                     ON DELETE RESTRICT,
-                payload             TEXT NOT NULL,       -- то, что передаём в createInvoiceLink
-                telegram_invoice_id TEXT,                -- если будешь сохранять id из успешного платежа
-                invoice_link        TEXT,                -- URL вида https://t.me/...
-                stars_amount        INTEGER NOT NULL,
+
+                -- Универсальное поле для любых методов:
+                payload             TEXT NOT NULL,      
+
+                -- Telegram Stars:
+                telegram_invoice_id TEXT,              
+                invoice_link        TEXT,              
+
+                -- Суммы:
+                stars_amount        INTEGER NOT NULL,    
+                amount_minor_units  BIGINT,           
+
                 currency            TEXT NOT NULL DEFAULT 'XTR',
-                status              TEXT NOT NULL DEFAULT 'pending', -- pending/paid/expired/canceled/failed
+                payment_method      TEXT NOT NULL DEFAULT 'telegram_stars',
+
+                -- Для TON (или внешних платёжных провайдеров):
+                provider_tx_hash    TEXT,               
+                status              TEXT NOT NULL DEFAULT 'pending',
                 error_code          TEXT,
                 error_message       TEXT,
+
                 created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 paid_at             TIMESTAMPTZ,
+
                 CONSTRAINT fk_billing_invoices_instance
                     FOREIGN KEY (instance_id)
                     REFERENCES bot_instances(instance_id)
@@ -946,6 +1060,29 @@ class MasterDatabase:
             """
         )
 
+        # ----------------------------------------------------------------
+        # Миграции для уже созданной таблицы (если проект уже развёрнут)
+        # ----------------------------------------------------------------
+        cur.execute(
+            """
+            ALTER TABLE billing_invoices
+                ADD COLUMN IF NOT EXISTS payment_method TEXT NOT NULL DEFAULT 'telegram_stars'
+            """
+        )
+        cur.execute(
+            """
+            ALTER TABLE billing_invoices
+                ADD COLUMN IF NOT EXISTS amount_minor_units BIGINT
+            """
+        )
+        cur.execute(
+            """
+            ALTER TABLE billing_invoices
+                ADD COLUMN IF NOT EXISTS provider_tx_hash TEXT
+            """
+        )
+
+        # Индексы (можно расширить под TON)
         cur.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_billing_invoices_instance
@@ -956,6 +1093,18 @@ class MasterDatabase:
             """
             CREATE INDEX IF NOT EXISTS idx_billing_invoices_status
             ON billing_invoices(status)
+            """
+        )
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_billing_invoices_method_status
+            ON billing_invoices(payment_method, status)
+            """
+        )
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_billing_invoices_provider_tx_hash
+            ON billing_invoices(provider_tx_hash)
             """
         )
 
@@ -1090,13 +1239,17 @@ class MasterDatabase:
         self,
         instance_id: str,
         user_id: int,
-        plan_code: str,      # можно не использовать, но оставим для совместимости
+        plan_code: str,      # для совместимости, можно не использовать
         periods: int,
-        amount_stars: int,
+        amount_stars: int,   # Stars сумма (XTR), оставляем для совместимости
         product_code: str,
         payload: str,
         invoice_link: str,
         status: str = "pending",
+        *,
+        payment_method: str = "telegram_stars",  # telegram_stars | ton
+        currency: str = "XTR",                   # XTR | TON
+        amount_minor_units: int | None = None,   # для TON: nanoton
     ) -> int:
         # product_code = billing_products.code → достаём product_id
         product_row = await self.fetchone(
@@ -1113,6 +1266,22 @@ class MasterDatabase:
 
         product_id = product_row["product_id"]
 
+        # Нормализация под метод
+        if payment_method == "telegram_stars":
+            payment_method = "telegram_stars"
+            currency = "XTR"
+            stars_amount_val = int(amount_stars)
+            amount_minor_val = None
+        elif payment_method == "ton":
+            payment_method = "ton"
+            currency = "TON"
+            stars_amount_val = 0  # stars_amount NOT NULL
+            if amount_minor_units is None or int(amount_minor_units) <= 0:
+                raise ValueError("TON invoice requires amount_minor_units > 0 (nanoton)")
+            amount_minor_val = int(amount_minor_units)
+        else:
+            raise ValueError(f"Unsupported payment_method={payment_method}")
+
         row = await self.fetchone(
             """
             INSERT INTO billing_invoices (
@@ -1123,10 +1292,12 @@ class MasterDatabase:
                 telegram_invoice_id,
                 invoice_link,
                 stars_amount,
+                amount_minor_units,
                 currency,
+                payment_method,
                 status
             )
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             RETURNING invoice_id
             """,
             (
@@ -1134,14 +1305,17 @@ class MasterDatabase:
                 user_id,
                 product_id,
                 payload,
-                None,             
+                None,
                 invoice_link,
-                amount_stars,     
-                "XTR",
+                stars_amount_val,
+                amount_minor_val,
+                currency,
+                payment_method,
                 status,
             ),
         )
         return row["invoice_id"]
+
 
 
     async def get_instance(self, instance_id: str) -> Optional[BotInstance]:

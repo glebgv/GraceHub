@@ -55,14 +55,24 @@ export interface SaasPlanDTO {
 
 // --- Billing invoices ---
 
+export type PaymentMethod = 'telegram_stars' | 'ton';
+
 export interface CreateInvoiceRequest {
   plan_code: string;
   periods: number;
+  payment_method?: PaymentMethod; // NEW
 }
 
 export interface CreateInvoiceResponse {
   invoice_id: number;
   invoice_link: string;
+}
+
+export interface TonInvoiceStatusResponse {
+  invoice_id: number;
+  status: 'pending' | 'paid' | 'failed';
+  tx_hash?: string | null;
+  period_applied: boolean;
 }
 
 class ApiClient {
@@ -204,11 +214,9 @@ class ApiClient {
       tokenPreview: payload.token?.slice(0, 10),
     });
 
-    return this.request<InstanceDto>(
-      'POST',
-      '/api/instances',
-      { token: payload.token },
-    );
+    return this.request<InstanceDto>('POST', '/api/instances', {
+      token: payload.token,
+    });
   }
 
   async deleteInstance(instanceId: string): Promise<void> {
@@ -274,17 +282,11 @@ class ApiClient {
   // === Billing ===
 
   async getInstanceBilling(instanceId: string) {
-    return this.request(
-      'GET',
-      `/api/instances/${instanceId}/billing`,
-    );
+    return this.request('GET', `/api/instances/${instanceId}/billing`);
   }
 
   async getSaasPlans(): Promise<SaasPlanDTO[]> {
-    return this.request<SaasPlanDTO[]>(
-      'GET',
-      '/api/saas/plans',
-    );
+    return this.request<SaasPlanDTO[]>('GET', '/api/saas/plans');
   }
 
   async createBillingInvoice(
@@ -295,6 +297,19 @@ class ApiClient {
       'POST',
       `/api/instances/${instanceId}/billing/create_invoice`,
       payload,
+    );
+  }
+
+  // NEW: TON invoice status polling
+  async getTonInvoiceStatus(
+    invoiceId: number,
+  ): Promise<TonInvoiceStatusResponse> {
+    const params = new URLSearchParams();
+    params.append('invoice_id', String(invoiceId));
+
+    return this.request<TonInvoiceStatusResponse>(
+      'GET',
+      `/api/billing/ton/status?${params.toString()}`,
     );
   }
 }
