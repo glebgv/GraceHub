@@ -49,7 +49,6 @@ GraceHub — это SaaS платформа, которая позволяет �
       <td align="center"><em>Дашборд</em></td>
       <td align="center"><em>Добавление бота</em></td>
     </tr>
-    
     <tr>
       <td align="center"><img src="./images/gracehub4.png" width="180" alt="Раздел оплаты"></td>
       <td align="center"><img src="./images/gracehub5.png" width="180" alt="Скриншот 5"></td>
@@ -57,19 +56,18 @@ GraceHub — это SaaS платформа, которая позволяет �
     </tr>
     <tr>
       <td align="center"><em>Раздел оплаты</em></td>
-      <td align="center"><em>Скриншот 5</em></td>
-      <td align="center"><em>Скриншот 6</em></td>
+      <td align="center"><em><!-- добавьте описание --></em></td>
+      <td align="center"><em><!-- добавьте описание --></em></td>
     </tr>
-    
     <tr>
       <td align="center"><img src="./images/gracehub7.png" width="180" alt="Скриншот 7"></td>
       <td align="center"><img src="./images/gracehub8.png" width="180" alt="Скриншот 8"></td>
       <td align="center"><img src="./images/gracehub9.png" width="180" alt="Скриншот 9"></td>
     </tr>
     <tr>
-      <td align="center"><em>Скриншот 7</em></td>
-      <td align="center"><em>Скриншот 8</em></td>
-      <td align="center"><em>Скриншот 9</em></td>
+      <td align="center"><em><!-- добавьте описание --></em></td>
+      <td align="center"><em><!-- добавьте описание --></em></td>
+      <td align="center"><em><!-- добавьте описание --></em></td>
     </tr>
   </table>
 </div>
