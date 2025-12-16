@@ -40,20 +40,36 @@ GraceHub — это SaaS платформа, которая позволяет �
   <h3>📱 Скриншоты интерфейса</h3>
   <table>
     <tr>
-      <td align="center"><img src="./images/gracehub1.png" width="200" alt="Скриншот 1"></td>
-      <td align="center"><img src="./images/gracehub2.png" width="200" alt="Скриншот 2"></td>
+      <td align="center"><img src="./images/gracehub1.png" width="180" alt="Стартовая страница"></td>
+      <td align="center"><img src="./images/gracehub2.png" width="180" alt="Дашборд"></td>
+      <td align="center"><img src="./images/gracehub3.png" width="180" alt="Добавление бота"></td>
     </tr>
     <tr>
-      <td align="center"><em>Личный кабинет</em></td>
-      <td align="center"><em>Управление ботами</em></td>
+      <td align="center"><em>Стартовая страница</em></td>
+      <td align="center"><em>Дашборд</em></td>
+      <td align="center"><em>Добавление бота</em></td>
+    </tr>
+    
+    <tr>
+      <td align="center"><img src="./images/gracehub4.png" width="180" alt="Раздел оплаты"></td>
+      <td align="center"><img src="./images/gracehub5.png" width="180" alt="Скриншот 5"></td>
+      <td align="center"><img src="./images/gracehub6.png" width="180" alt="Скриншот 6"></td>
     </tr>
     <tr>
-      <td align="center"><img src="./images/gracehub3.png" width="200" alt="Скриншот 3"></td>
-      <td align="center"><img src="./images/gracehub4.png" width="200" alt="Скриншот 4"></td>
+      <td align="center"><em>Раздел оплаты</em></td>
+      <td align="center"><em>Скриншот 5</em></td>
+      <td align="center"><em>Скриншот 6</em></td>
+    </tr>
+    
+    <tr>
+      <td align="center"><img src="./images/gracehub7.png" width="180" alt="Скриншот 7"></td>
+      <td align="center"><img src="./images/gracehub8.png" width="180" alt="Скриншот 8"></td>
+      <td align="center"><img src="./images/gracehub9.png" width="180" alt="Скриншот 9"></td>
     </tr>
     <tr>
-      <td align="center"><em>Статистика</em></td>
-      <td align="center"><em>Настройки</em></td>
+      <td align="center"><em>Скриншот 7</em></td>
+      <td align="center"><em>Скриншот 8</em></td>
+      <td align="center"><em>Скриншот 9</em></td>
     </tr>
   </table>
 </div>
