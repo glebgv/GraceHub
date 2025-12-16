@@ -1,9 +1,6 @@
 #!/bin/bash
 set -e
 
-# При любом выходе (в т.ч. Ctrl+C) гасим всю процесс-группу скрипта
-trap 'echo "🔻 Stopping GraceHub dev/prod stack..."; kill -- -$$ 2>/dev/null || true' INT TERM EXIT  # [web:2][web:24]
-
 echo "🚀 GraceHub Platform..."
 
 # Абсолютный путь к директории скрипта (gracehub/scripts)
@@ -21,6 +18,27 @@ API_SERVICE="gracehub-api.service"
 mkdir -p "$ROOT_DIR/data" "$ROOT_DIR/logs" "$ROOT_DIR/data/instances" "$ROOT_DIR/ssl"
 
 cd "$ROOT_DIR"
+
+# --- аккуратный stop в одну "динамическую" строку и строго один раз ---
+_cleanup_done=0
+cleanup() {
+    # защита от повторного вызова (INT + EXIT, повторные сигналы, killpg и т.п.)
+    if [ "${_cleanup_done}" -eq 1 ]; then
+        return 0
+    fi
+    _cleanup_done=1
+
+    # снимаем трапы, чтобы не было рекурсии/повторов
+    trap - EXIT INT TERM
+
+    # "динамическая" строка: \r (carriage return) + очистка до конца строки \033[K
+    # это убирает спам и перерисовывает строку на месте [web:22][web:25]
+    printf "\r\033[K🔻 Stopping GraceHub dev/prod stack..."
+    kill -- -$$ 2>/dev/null || true
+    printf "\r\033[K✅ Stopped.\n"
+}
+
+trap cleanup EXIT INT TERM
 
 load_env() {
     if [ ! -f "$ENV_FILE" ]; then

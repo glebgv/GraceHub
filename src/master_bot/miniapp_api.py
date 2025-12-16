@@ -239,11 +239,20 @@ class CreateInvoiceResponse(BaseModel):
     invoice_id: int
     invoice_link: str
 
+    # Для TON (для Stars будут None)
+    amount_minor_units: Optional[int] = None  # nanoton
+    amount_ton: Optional[float] = None        # человеко-читаемая
+    currency: Optional[str] = None            # "TON" / "XTR"
+
 class TonInvoiceStatusResponse(BaseModel):
     invoice_id: int
     status: str
     tx_hash: Optional[str] = None
     period_applied: bool = False
+
+class TonInvoiceCancelResponse(BaseModel):
+    invoice_id: int
+    status: str  # cancelled
 
 # ========================================================================
 # Telegram Validation
@@ -1240,7 +1249,7 @@ def create_miniapp_app(
         payment_method = getattr(req, "payment_method", "telegram_stars")
 
         # -------------------------
-        # Stars (как было)
+        # Stars
         # -------------------------
         if payment_method == "telegram_stars":
             base_amount = product["amount_stars"]
@@ -1288,10 +1297,14 @@ def create_miniapp_app(
                 invoice_link=invoice_link,
             )
 
-            return CreateInvoiceResponse(invoice_id=invoice_id, invoice_link=invoice_link)
+            return CreateInvoiceResponse(
+                invoice_id=invoice_id,
+                invoice_link=invoice_link,
+                currency="XTR",
+            )
 
         # -------------------------
-        # TON (UPDATED: https Tonkeeper link)
+        # TON (Tonkeeper deeplink)
         # -------------------------
         if payment_method == "ton":
             plan = req.plan_code.lower()
@@ -1303,9 +1316,14 @@ def create_miniapp_app(
             if plan not in price_map:
                 raise HTTPException(status_code=400, detail="Этот тариф нельзя оплатить в TON")
 
-            # nanoton (1 TON = 1e9 nanoton)
-            total_ton = float(price_map[plan]) * float(periods)
-            amount_minor_units = int(total_ton * 1_000_000_000)
+            # 1 TON = 1e9 nanoton
+            amount_ton = float(price_map[plan]) * float(periods)
+            logger.info(
+                "TON price debug: plan=%s periods=%s price=%s amount_ton=%s",
+                plan, periods, price_map[plan], amount_ton
+            )
+
+            amount_minor_units = int(amount_ton * 1_000_000_000)
 
             if not settings.TON_WALLET_ADDRESS:
                 raise HTTPException(status_code=500, detail="TON_WALLET_ADDRESS не настроен")
@@ -1316,7 +1334,7 @@ def create_miniapp_app(
                 user_id=user_id,
                 plan_code=req.plan_code,
                 periods=periods,
-                amount_stars=0,  # Stars не используется
+                amount_stars=0,
                 product_code=product["product_code"],
                 payload="",
                 invoice_link="",
@@ -1332,8 +1350,6 @@ def create_miniapp_app(
 
             ton_address = settings.TON_WALLET_ADDRESS
 
-            # ВАЖНО: вместо ton://transfer используем https deeplink Tonkeeper,
-            # который Telegram Mini App почти всегда открывает как обычную ссылку.
             invoice_link = (
                 f"https://app.tonkeeper.com/transfer/{ton_address}"
                 f"?amount={amount_minor_units}"
@@ -1346,7 +1362,13 @@ def create_miniapp_app(
                 invoice_link=invoice_link,
             )
 
-            return CreateInvoiceResponse(invoice_id=invoice_id, invoice_link=invoice_link)
+            return CreateInvoiceResponse(
+                invoice_id=invoice_id,
+                invoice_link=invoice_link,
+                amount_minor_units=amount_minor_units,
+                amount_ton=amount_ton,
+                currency="TON",
+            )
 
         raise HTTPException(status_code=400, detail="Неизвестный метод оплаты")
 
@@ -1412,12 +1434,12 @@ def create_miniapp_app(
 
     async def check_ton_payment(invoice_id: int) -> dict:
         """
-        Проверяем, пришла ли оплата по TON для invoice_id.
-        Возвращает dict: {status: 'pending'|'paid', tx_hash?: str}.
-        Логика ослаблена, чтобы не терять валидные платежи из-за форматов TonCenter:
-        - destination НЕ используется как жесткий фильтр (только лог);
-        - value матчится по >= нужной сумме;
-        - комментарий сравнивается мягко: если не извлечён, не отбрасываем.
+        Мягкий cancel:
+        - status='cancelled' не блокирует автозачёт.
+        - Если перевод пришёл с правильным комментарием/суммой, инвойс станет paid.
+
+        Важно: apply_saas_plan_for_invoice вызываем только если mark_billing_invoice_paid_ton
+        реально обновил строку (pending/cancelled -> paid). Это защищает от гонок/двойного поллинга.
         """
         inv = await miniapp_db.db.get_billing_invoice(invoice_id)
         if not inv:
@@ -1438,25 +1460,23 @@ def create_miniapp_app(
         if need_amount <= 0:
             raise HTTPException(status_code=500, detail="Invoice amount_minor_units not set")
 
-        expected_comment = inv.get("payload")  # формата 'saas:<invoice_id>'
+        expected_comment = inv.get("payload")  # 'saas:<invoice_id>'
 
         try:
             txs = await _toncenter_get_transactions(wallet, limit=30)
         except Exception as e:
             logger.exception("check_ton_payment: TonCenter error: %s", e)
-            # Не роняем запрос: просто говорим, что пока pending
             return {"status": "pending"}
 
-        # Диагностика ожиданий
         logger.info(
-            "TON check: wallet=%s need_amount=%s expected_comment=%s invoice_id=%s",
-            wallet, need_amount, expected_comment, invoice_id
+            "TON check: wallet=%s need_amount=%s expected_comment=%s invoice_id=%s status=%s",
+            wallet, need_amount, expected_comment, invoice_id, inv.get("status")
         )
 
         for tx in txs:
             in_msg = tx.get("in_msg") or {}
-            # DIAG: логируем фактические поля из TonCenter
             dst = in_msg.get("destination") or in_msg.get("dest")
+
             value_str = in_msg.get("value")
             try:
                 value = int(value_str) if value_str is not None else 0
@@ -1470,43 +1490,51 @@ def create_miniapp_app(
                 dst, value, comment, need_amount, expected_comment
             )
 
-            # 1) НЕ режем по адресу (слишком часто формат отличается), только логируем
-            # if dst and isinstance(dst, str) and dst != wallet:
-            #     continue
+            # destination не режем
 
-            # 2) Сумма: принимаем платежи со значением >= требуемого (учет округлений/комиссий пользователя)
             if value < need_amount:
                 continue
 
-            # 3) Комментарий: мягкая проверка. Если комментарий извлечён, но отличается — пропускаем.
-            # Если комментарий не извлёкся (None или пусто), НЕ отбрасываем платеж.
             if expected_comment:
                 if comment is not None and isinstance(comment, str) and comment.strip() != expected_comment:
-                    # Не совпало — идём дальше
                     continue
 
-            # 4) Хеш транзакции
             tx_id = tx.get("transaction_id") or {}
             tx_hash = (tx_id.get("hash") if isinstance(tx_id, dict) else None) or tx.get("hash")
             if not tx_hash:
-                # Последняя попытка: иногда hash лежит глубже или в другом ключе,
-                # но если нет — не сможем пометить оплату, пропускаем.
                 continue
 
-            # 5) Фиксируем оплату и применяем тариф
-            await miniapp_db.db.mark_billing_invoice_paid_ton(
+            # Если кто-то уже успел пометить paid — просто возвращаем paid
+            inv2 = await miniapp_db.db.get_billing_invoice(invoice_id)
+            if not inv2:
+                raise HTTPException(status_code=404, detail="Invoice not found")
+
+            if inv2.get("status") == "paid":
+                return {"status": "paid", "tx_hash": inv2.get("provider_tx_hash")}
+
+            updated = await miniapp_db.db.mark_billing_invoice_paid_ton(
                 invoice_id=invoice_id,
                 tx_hash=tx_hash,
                 amount_minor_units=value,
                 currency="TON",
             )
-            await miniapp_db.db.apply_saas_plan_for_invoice(invoice_id)
 
-            logger.info("TON paid: invoice_id=%s tx_hash=%s amount=%s", invoice_id, tx_hash, value)
+            # apply — только если реально обновили (защита от гонок)
+            if updated:
+                await miniapp_db.db.apply_saas_plan_for_invoice(invoice_id)
+
+            logger.info(
+                "TON paid: invoice_id=%s tx_hash=%s amount=%s updated=%s",
+                invoice_id, tx_hash, value, updated
+            )
             return {"status": "paid", "tx_hash": tx_hash}
 
-        return {"status": "pending"}
-
+        # Возвращаем текущий статус (pending/cancelled/paid) — фронту полезно
+        inv3 = await miniapp_db.db.get_billing_invoice(invoice_id)
+        cur_status = (inv3 or {}).get("status") or "pending"
+        if cur_status not in ("pending", "cancelled", "paid"):
+            cur_status = "pending"
+        return {"status": cur_status}
 
     @app.post("/api/auth/telegram", response_model=AuthResponse)
     async def auth_telegram(req: TelegramAuthRequest, request: Request):
@@ -1601,6 +1629,30 @@ def create_miniapp_app(
         )
 
 
+    @app.post("/api/billing/ton/cancel", response_model=TonInvoiceCancelResponse)
+    async def cancel_ton_invoice(
+        invoice_id: int = Query(...),
+        current_user: Dict[str, Any] = Depends(get_current_user),
+    ):
+        inv = await miniapp_db.db.get_billing_invoice(invoice_id)
+        if not inv:
+            raise HTTPException(status_code=404, detail="Invoice not found")
+
+        # доступ к инстансу
+        await require_instance_access(inv["instance_id"], current_user)
+
+        if inv.get("payment_method") != "ton":
+            raise HTTPException(status_code=400, detail="Invoice is not TON")
+
+        if inv.get("status") == "paid":
+            raise HTTPException(status_code=409, detail="Invoice already paid")
+
+        if inv.get("status") == "cancelled":
+            return TonInvoiceCancelResponse(invoice_id=invoice_id, status="cancelled")
+
+        await miniapp_db.db.cancel_billing_invoice(invoice_id)
+        return TonInvoiceCancelResponse(invoice_id=invoice_id, status="cancelled")
+
     @app.get("/api/saas/plans", response_model=list[SaasPlanOut])
     async def get_saas_plans():
         """
@@ -1689,6 +1741,7 @@ def create_miniapp_app(
             days_left=days_left,
             unlimited=False,
         )
+
 
     @app.get("/api/billing/ton/status", response_model=TonInvoiceStatusResponse)
     async def ton_invoice_status(

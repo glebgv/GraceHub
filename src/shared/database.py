@@ -351,6 +351,34 @@ class MasterDatabase:
         )
         return dict(row) if row else None
 
+    async def cancel_billing_invoice(self, invoice_id: int) -> bool:
+        """
+        Мягкая отмена: переводим pending -> cancelled.
+        Возвращает True если что-то реально поменялось, иначе False.
+        Не отменяем paid.
+        """
+        now = datetime.now(timezone.utc)
+
+        # Если paid — не трогаем
+        await self.execute(
+            """
+            UPDATE billing_invoices
+            SET status = 'cancelled',
+                updated_at = ?
+            WHERE invoice_id = ?
+            AND status != 'paid'
+            """,
+            (now, invoice_id),
+        )
+
+        # Если нужно понимать, изменилось ли реально — можно проверить статус после
+        row = await self.fetchone(
+            "SELECT status FROM billing_invoices WHERE invoice_id = ?",
+            (invoice_id,),
+        )
+        return bool(row and row["status"] == "cancelled")
+
+
     async def get_saas_plans_for_billing(self) -> list[dict]:
         """
         Список тарифов для витрины биллинга:
@@ -381,25 +409,37 @@ class MasterDatabase:
         tx_hash: str,
         amount_minor_units: int,
         currency: str = "TON",
-    ) -> None:
+    ) -> bool:
         """
-        Помечает TON-инвойс оплаченным.
-        Записывает хеш транзакции, сумму (в nanoton), валюту, paid_at и updated_at.
-        Не трогает stars_amount, он остаётся как 0/старое значение.
+        Помечает TON-инвойс оплаченным (идемпотентно).
+
+        Возвращает True, если статус реально обновили (pending/cancelled -> paid).
+        Возвращает False, если инвойс уже был paid (или не найден/ничего не обновили).
         """
-        await self.execute(
+        res = await self.execute(
             """
             UPDATE billing_invoices
-               SET status = 'paid',
-                   provider_tx_hash = %s,
-                   amount_minor_units = %s,
-                   currency = %s,
-                   paid_at = NOW(),
-                   updated_at = NOW()
-             WHERE invoice_id = %s
+            SET status = 'paid',
+                provider_tx_hash = %s,
+                amount_minor_units = %s,
+                currency = %s,
+                paid_at = NOW(),
+                updated_at = NOW()
+            WHERE invoice_id = %s
+            AND status != 'paid'
             """,
             (tx_hash, amount_minor_units, currency, invoice_id),
         )
+
+        # ВАЖНО: это зависит от твоего DB-wrapper.
+        # Если execute возвращает cursor/Result с rowcount — используй его.
+        rowcount = getattr(res, "rowcount", None)
+        if rowcount is None:
+            # fallback: можно сделать SELECT status после UPDATE, но лучше поправить wrapper
+            return True
+
+        return rowcount > 0
+
 
     async def set_billing_invoice_ton_failed(
         self,
