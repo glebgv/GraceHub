@@ -33,8 +33,44 @@ GraceHub is a SaaS platform that allows you to deploy your support directly in T
 
 **🌐 Website:** [gracehub.ru](https://gracehub.ru)  
 **📢 Telegram Channel:** [@gracehubru](https://t.me/gracehubru)  
-**👨‍💻 Developer:** [@Gribson_Micro](https://t.me/Gribson_Micro)
+**👨‍💻 Developer:** [@Gribson_Micro](https://t.me/Gribson_Micro)  
 **🗺️ Roadmap:** [ROADMAP.md](./ROADMAP.md)
+
+<div align="center">
+  <h3>📱 Interface Screenshots</h3>
+  <table>
+    <tr>
+      <td align="center"><img src="./images/gracehub1.png" width="180" alt="Start Page"></td>
+      <td align="center"><img src="./images/gracehub2.png" width="180" alt="Dashboard"></td>
+      <td align="center"><img src="./images/gracehub3.png" width="180" alt="Adding a Bot"></td>
+    </tr>
+    <tr>
+      <td align="center"><em>Start Page</em></td>
+      <td align="center"><em>Dashboard</em></td>
+      <td align="center"><em>Adding a Bot</em></td>
+    </tr>
+    <tr>
+      <td align="center"><img src="./images/gracehub4.png" width="180" alt="Payment Section"></td>
+      <td align="center"><img src="./images/gracehub5.png" width="180" alt="Screenshot 5"></td>
+      <td align="center"><img src="./images/gracehub6.png" width="180" alt="Screenshot 6"></td>
+    </tr>
+    <tr>
+      <td align="center"><em>Payment Section</em></td>
+      <td align="center"><em>Main Bot Where You Can Bind Support Bot</em></td>
+      <td align="center"><em>Support Bot Admin Menu</em></td>
+    </tr>
+    <tr>
+      <td align="center"><img src="./images/gracehub7.png" width="180" alt="Screenshot 7"></td>
+      <td align="center"><img src="./images/gracehub8.png" width="180" alt="Screenshot 8"></td>
+      <td align="center"><img src="./images/gracehub9.png" width="180" alt="Screenshot 9"></td>
+    </tr>
+    <tr>
+      <td align="center"><em>Customer Request Received</em></td>
+      <td align="center"><em>Ticket Management Menu</em></td>
+      <td align="center"><em>Reply to Customer</em></td>
+    </tr>
+  </table>
+</div>
 
 ## Core Features
 
@@ -78,6 +114,16 @@ gracehub/
 ├── logs/                           # Application logs
 └── .env                            # Environment variables
 ```
+
+### 💳 Supported Payment Systems
+
+The platform is integrated with the following payment systems to accept payments for support services:
+
+| System | Payment Method | Technical Features |
+| :--- | :--- | :--- |
+| **Telegram Stars** | Telegram Native Currency | Direct integration with [Telegram Mini Apps Billing](https://core.telegram.org/bots/payments). Payments are processed within the Telegram platform. |
+| **TON Coin** | Cryptocurrency (Toncoin) | Direct transfers to TON wallet. Transactions are processed on the TON blockchain without using smart contracts on the platform side. |
+| **YooKassa** | Payment Aggregator (RU) | Payment acceptance under law 54-FZ (bank cards, SBP, e-wallets). REST API with webhooks for payment confirmation. |
 
 ## 📋 Requirements
 
@@ -240,4 +286,3 @@ Your support system in Telegram is fully configured. Your business customers wil
 ## 📄 License
 
 MIT
-

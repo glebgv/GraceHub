@@ -32,6 +32,7 @@ from shared.models import BotInstance, InstanceStatus
 from shared.webhook_manager import WebhookManager
 from shared.security import SecurityManager
 from shared import settings
+from dotenv import load_dotenv
 
 # Configure logging
 logging.basicConfig(
@@ -44,6 +45,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("master_bot")
 
+load_dotenv(override=False)
 
 class MasterBot:
     def __init__(self, token: str, webhook_domain: str, webhook_port: int = 8443, db: MasterDatabase | None = None):
@@ -131,11 +133,11 @@ class MasterBot:
     # ====================== БИЛЛИНГ: CRON-ЗАДАЧИ ======================
 
     async def _billing_notify_expiring(self) -> None:
-        rows = await self.db.get_instances_expiring_in_7_days()
+        rows = await self.db.get_instances_expiring_in_7_days_for_notify()
         if not rows:
             return
 
-        logger.info("BillingCron: %d instances expiring in 7 days", len(rows))
+        logger.info("BillingCron: %d instances expiring in 7 days (fresh)", len(rows))
 
         for r in rows:
             owner_id = r["owner_user_id"]
@@ -146,21 +148,31 @@ class MasterBot:
             if not owner_id and not admin_chat:
                 continue
 
-            text = (
-                "🔔 <b>Напоминание по тарифу</b>\n\n"
-                f"Для инстанса @{bot_username} осталось {days_left} дней до окончания периода.\n"
-                "Продлите тариф, чтобы бот продолжил работать без ограничений."
-            )
-
             targets = set()
             if owner_id:
                 targets.add(owner_id)
             if admin_chat:
                 targets.add(admin_chat)
 
+            sent_ok = False
             for chat_id in targets:
                 try:
-                    await self.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
+                    texts = await self.t(chat_id)
+
+                    text = (
+                        texts.billing_expiring_title +
+                        texts.billing_expiring_body.format(
+                            bot_username=bot_username,
+                            days_left=days_left,
+                        )
+                    )
+
+                    await self.bot.send_message(
+                        chat_id=chat_id,
+                        text=text,
+                        parse_mode="HTML",
+                    )
+                    sent_ok = True
                 except Exception as e:
                     logger.exception(
                         "BillingCron: failed to send expiring notification to %s: %s",
@@ -168,12 +180,23 @@ class MasterBot:
                         e,
                     )
 
+            if sent_ok:
+                try:
+                    await self.db.mark_expiring_notified_today(r["instance_id"])
+                except Exception as e:
+                    logger.exception(
+                        "BillingCron: failed to mark expiring notified for %s: %s",
+                        r["instance_id"],
+                        e,
+                    )
+
     async def _billing_notify_paused(self) -> None:
-        rows = await self.db.get_recently_paused_instances()
+        # новый метод БД с учётом last_paused_notice_at
+        rows = await self.db.get_recently_paused_instances_for_notify()
         if not rows:
             return
 
-        logger.info("BillingCron: %d instances just paused", len(rows))
+        logger.info("BillingCron: %d instances just paused (fresh)", len(rows))
 
         for r in rows:
             owner_id = r["owner_user_id"]
@@ -201,15 +224,28 @@ class MasterBot:
             if admin_chat:
                 targets.add(admin_chat)
 
+            sent_ok = False
             for chat_id in targets:
                 try:
                     await self.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
+                    sent_ok = True
                 except Exception as e:
                     logger.exception(
                         "BillingCron: failed to send paused notification to %s: %s",
                         chat_id,
                         e,
                     )
+
+            if sent_ok:
+                try:
+                    await self.db.mark_paused_notified_now(r["instance_id"])
+                except Exception as e:
+                    logger.exception(
+                        "BillingCron: failed to mark paused notified for %s: %s",
+                        r["instance_id"],
+                        e,
+                    )
+
 
     async def _run_billing_cycle(self) -> None:
         """
@@ -465,25 +501,28 @@ class MasterBot:
 
         texts = await self.t(user_id)
 
-        # берём все публичные планы (как для мини‑аппы)
         plans = await self.db.get_saas_plans_for_billing()
 
         if not plans:
             await callback.message.edit_text(
-                "Тарифы пока не настроены.",
+                texts.master_billing_no_plans if hasattr(texts, "master_billing_no_plans") else "Тарифы пока не настроены.",
                 reply_markup=self.get_main_menu_for_lang(texts),
             )
             await callback.answer()
             return
 
-        text = "Выберите тариф для вашего аккаунта:\n\n"
+        text = texts.billing_plans_title + "\n\n"
+
         keyboard_rows: list[list[InlineKeyboardButton]] = []
 
         for p in plans:
-            text += (
-                f"• <b>{p['plan_name']}</b>: {p['price_stars']} ⭐ / {p['period_days']} д., "
-                f"лимит {p['tickets_limit']} тикетов\n"
-            )
+            text += texts.billing_plan_line.format(
+                plan_name=p["plan_name"],
+                price_stars=p["price_stars"],
+                period_days=p["period_days"],
+                tickets_limit=p["tickets_limit"],
+            ) + "\n"
+
             if p["product_code"]:
                 keyboard_rows.append(
                     [
@@ -661,10 +700,10 @@ class MasterBot:
 
     async def cmd_start(self, message: Message, user_id: int | None = None):
         """Handle /start command"""
-        # если user_id не передан, берём из message
         if user_id is None:
             user_id = message.from_user.id
 
+        # single-tenant защита
         if settings.SINGLE_TENANT_OWNER_ONLY:
             owner_id = settings.OWNER_TELEGRAM_ID
             if not owner_id or user_id != owner_id:
@@ -672,9 +711,8 @@ class MasterBot:
                 await message.answer(texts.master_owner_only)
                 return
 
-        # Проверяем, выбран ли язык
+        # проверка выбранного языка
         user_lang = await self.db.get_user_language(user_id)
-
         if not user_lang:
             base_texts = LANGS.get(self.default_lang)
 
@@ -702,15 +740,64 @@ class MasterBot:
 
         texts = await self.t(user_id)
 
+        # ---------- Блок «текущий тариф», как в mini app ----------
+        plan_line = ""
+
+        # Берём основной инстанс пользователя (тот же подход уже используется в биллинге)
+        instances = await self.db.get_user_instances(user_id)
+        if instances:
+            instance = instances[0]
+            billing = await self.db.get_instance_billing(instance.instance_id)
+            if billing:
+                plan_id = billing.get("plan_id")
+                period_end = billing.get("period_end")
+                days_left = billing.get("days_left")
+                service_paused = billing.get("service_paused")
+
+                plan = await self.db.get_saas_plan_by_id(plan_id) if plan_id is not None else None
+                plan_name = (plan or {}).get("plan_name", texts.billing_unknown_plan_name)
+
+                date_str = ""
+                if isinstance(period_end, datetime):
+                    # mini app тоже показывает только дату без времени
+                    date_str = period_end.strftime("%d.%m.%Y")
+
+                # Можно варьировать текст в зависимости от паузы/истечения, как в mini app
+                if service_paused:
+                    plan_line = texts.master_current_plan_paused.format(
+                        plan_name=plan_name,
+                        date=date_str or "—",
+                    )
+                else:
+                    if date_str:
+                        plan_line = texts.master_current_plan_with_expiry.format(
+                            plan_name=plan_name,
+                            date=date_str,
+                            days_left=days_left if days_left is not None else 0,
+                        )
+                    else:
+                        plan_line = texts.master_current_plan_no_date.format(
+                            plan_name=plan_name,
+                            days_left=days_left if days_left is not None else 0,
+                        )
+        # ----------------------------------------------------------
+
         text = (
             f"{texts.master_title}\n\n"
             f"{texts.admin_panel_title}\n\n"
+        )
+
+        if plan_line:
+            text += f"{plan_line}\n\n"
+
+        text += (
             f"<b>{texts.admin_panel_choose_section}</b>\n"
             f"{texts.master_start_howto_title}\n"
             f"• {texts.master_start_cmd_add_bot}\n"
             f"• {texts.master_start_cmd_list_bots}\n"
             f"• {texts.master_start_cmd_remove_bot}\n"
         )
+
         await message.answer(text, reply_markup=self.get_main_menu_for_lang(texts))
 
 

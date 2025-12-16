@@ -1,17 +1,35 @@
-/* Светлая схема */
+/* Светлая схема (scheme: default) — белый, кремовый, синий, чёрный текст */
 [data-md-color-scheme="default"] {
-  /* Графитный фон с градиентом */
-  --md-default-bg-color: #15171a;
-  --md-default-fg-color: #e5e7eb;
+  /* Фон: полностью белый, чтобы явно увидеть светлую тему */
+  --md-default-bg-color: #ffffff;
+  --md-default-fg-color: #111111;
 
-  background: radial-gradient(circle at top, #2a2f37 0, #111318 55%, #050608 100%);
+  background: #ffffff !important;
+
+  /* Хедер/футер в светлой теме — синий градиент (переменные темы) */
+  --md-primary-fg-color: #1d4ed8;
+  --md-primary-bg-color: #ffffff;
 }
 
-/* Синие акценты и подчёркивания */
+/* Тёмная рабочая схема (scheme: slate) — графитовый фон */
+[data-md-color-scheme="slate"] {
+  --md-default-bg-color: #1f2227;
+  --md-default-fg-color: #e5e7eb;
+
+  background: radial-gradient(
+    circle at top,
+    #343944 0,
+    #1b1e24 55%,
+    #101218 100%
+  );
+}
+
+/* Общий синий акцент */
 :root {
   --gracehub-accent: #2f6fff;
 }
 
+/* Ссылки */
 .md-typeset a,
 .md-nav__link--active,
 .md-nav__link:focus,
@@ -30,23 +48,38 @@
   border-color: var(--gracehub-accent);
 }
 
-/* Хедер/футер под графит */
+/* Хедер/футер по умолчанию — графитовый, хорошо смотрится в обоих режимах */
 .md-header,
 .md-footer {
   background: linear-gradient(90deg, #181b20, #0f1114);
 }
 
-/* Левая колонка навигации: текст и заголовки белые */
-.md-nav,
-.md-nav__title,
-.md-nav__link {
+/* Контейнер контента: фон и цвет текста под каждую схему */
+[data-md-color-scheme="default"] .md-main,
+[data-md-color-scheme="default"] .md-content,
+[data-md-color-scheme="default"] .md-main__inner {
+  background-color: #ffffff;
+  color: #111111;
+}
+
+[data-md-color-scheme="slate"] .md-main,
+[data-md-color-scheme="slate"] .md-content,
+[data-md-color-scheme="slate"] .md-main__inner {
+  background-color: #1f2227;
+  color: #e5e7eb;
+}
+
+/* Навигация: в тёмной теме — белый текст */
+[data-md-color-scheme="slate"] .md-nav,
+[data-md-color-scheme="slate"] .md-nav__title,
+[data-md-color-scheme="slate"] .md-nav__link {
   color: #ffffff;
 }
 
-/* Активный и ховерные пункты навигации тоже белые */
-.md-nav__link--active,
-.md-nav__link:focus,
-.md-nav__link:hover {
+/* Активные/hover элементы навигации в тёмной теме */
+[data-md-color-scheme="slate"] .md-nav__link--active,
+[data-md-color-scheme="slate"] .md-nav__link:focus,
+[data-md-color-scheme="slate"] .md-nav__link:hover {
   color: #ffffff;
 }
 
@@ -63,3 +96,4 @@
 .md-header__title .md-header__topic {
   color: #ffffff;
 }
+

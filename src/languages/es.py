@@ -289,7 +289,15 @@ TEXTS_ES = Texts(
 
     billing_button_pay_stars="💳 Pagar con Stars",
     billing_button_back_plans="⬅️ Volver a los planes",
+
+    billing_expiring_title="🔔 <b>Recordatorio del plan</b>\n\n",
+    billing_expiring_body=(
+        "Para la instancia @{bot_username} quedan {days_left} días antes de que termine el período.\n"
+        "Renueva el plan para que el bot siga funcionando sin limitaciones."
+    ),
+
     master_remove_owner_only="Acceso permitido solo al propietario",
+    
     master_remove_not_yours="❌ Este bot no es tuyo",
     master_remove_confirm_title="🤖 <b>{bot_name}</b> (@{bot_username})",
     master_remove_confirm_question="¿Realmente quieres eliminar este bot?",
@@ -297,5 +305,27 @@ TEXTS_ES = Texts(
     master_remove_confirm_yes="✅ Sí, eliminar",
     master_remove_confirm_cancel="❌ Cancelar",
     master_menu_billing="💳 Planes y pago",
+    attachment_too_big = "El archivo es demasiado grande. Por favor, envía un archivo más pequeño.",
+    too_many_messages="Demasiados mensajes. Espera un momento y vuelve a intentarlo.",
+    billing_plans_title="Elige un plan para tu cuenta:",
+    billing_plan_line="• <b>{plan_name}</b>: {price_stars} ⭐ / {period_days} días, límite de {tickets_limit} tickets",
+    menu_rating = "Valoración al cerrar",
+    rating_state_on = "Solicitud de valoración: ACTIVADA",
+    rating_state_off = "Solicitud de valoración: DESACTIVADA",
+
+    rating_screen = (
+        "{state}\n\n"
+        "Si está activado, después de cerrar el ticket el usuario recibirá "
+        "una solicitud para valorar la atención."
+    ),
+
+    rating_toggle_btn = "Cambiar solicitud de valoración",
+
+    rating_toggled = "El estado de la solicitud de valoración ha cambiado.\n\n{state}",
+    master_current_plan_with_expiry = "Plan actual: {plan_name} (hasta {date}), quedan {days_left} días.",
+    master_current_plan_no_date = "Plan actual: {plan_name}, quedan {days_left} días.",
+    master_current_plan_paused = "El plan {plan_name} está en pausa (hasta {date}). Renueva tu suscripción para continuar.",
+    billing_unknown_plan_name = "Plan desconocido",
+
 )
 

@@ -17,9 +17,11 @@ from aiogram.types import (
     MessageEntity,
     BufferedInputFile,
 )
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import CommandStart, Command, StateFilter
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
+from collections import deque
 
 import sys
 PROJECT_ROOT = Path(__file__).resolve().parents[2]  # /root/gracehub
@@ -82,25 +84,72 @@ class GraceHubWorker:
     """
 
     STATUS_EMOJI: Dict[str, str] = {
-        "new": "⬜️",        # только пришел запрос
-        "inprogress": "🟨",  # запрос в работе
-        "answered": "🟩",    # сотрудник ответил на вопрос
-        "escalated": "🟥",   # эскалация
-        "closed": "🟦",      # вопрос закрыт
-        "spam": "⬛️",        # спам
+        "new": "⬜️",
+        "inprogress": "🟨",
+        "answered": "🟩",
+        "escalated": "🟥",
+        "closed": "🟦",
+        "spam": "⬛️",
     }
+
+    # допустимые статусы тикетов
+    ALLOWED_TICKET_STATUSES = {"new", "inprogress", "answered", "escalated", "closed", "spam"}
+
+    # верхние лимиты
+    MAX_USER_TEXT = 4096     # сообщения в Telegram
+    MAX_DB_TEXT = 2000       # тексты, которые пишем в БД
+
+    @staticmethod
+    def _safe_trim(text: str, limit: int) -> str:
+        if text is None:
+            return text
+        if len(text) <= limit:
+            return text
+        return text[: limit - 1] + "…"
 
     def __init__(self, instance_id: str, token: str, db: MasterDatabase):
         self.instance_id = instance_id
         self.token = token
-        self.bot = Bot(token=self.token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+        self.bot = Bot(
+            token=self.token,
+            default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+        )
         self.dp = Dispatcher()
         self.db: MasterDatabase = db
         self.ratelimiter = BotRateLimiter(self.token)
         self.shutdown_event = asyncio.Event()
-        self.lang_code = "ru" # язык по умолчанию до загрузки из БД
+        self.lang_code = "ru"
         self.texts = LANGS[self.lang_code]
+
+        self.max_file_mb: int = getattr(settings, "WORKER_MAX_FILE_MB", 50)
+        self.max_file_bytes: int = self.max_file_mb * 1024 * 1024
+        # Храним скользящее окно значений в минуту. Для антифлуда
+        self.user_msg_timestamps: dict[int, deque[datetime]] = {}
+
+        # хендлеры можно регать сразу, БД для этого не нужна
         self.register_handlers()
+
+    def _is_user_flooding(self, userid: int) -> bool:
+        limit = getattr(settings, "ANTIFLOOD_MAX_USER_MESSAGES_PER_MINUTE", 0)
+        if not limit or limit <= 0:
+            return False
+
+        now = datetime.now(timezone.utc)
+        window = timedelta(seconds=60)
+
+        dq = self.user_msg_timestamps.get(userid)
+        if dq is None:
+            dq = deque()
+            self.user_msg_timestamps[userid] = dq
+
+        # выкидываем старые записи
+        while dq and now - dq[0] > window:
+            dq.popleft()
+
+        # добавляем текущую
+        dq.append(now)
+
+        return len(dq) > limit
 
     async def load_language(self):
         code = await self.get_setting("lang_code") or "ru"
@@ -108,6 +157,43 @@ class GraceHubWorker:
             code = "ru"
         self.lang_code = code
         self.texts = LANGS[code]
+
+
+    async def _check_file_size(self, file_id: str) -> bool:
+        tg_file = await self.bot.get_file(file_id)
+        size = getattr(tg_file, "file_size", None) or 0
+        if size > self.max_file_bytes:
+            return False
+        return True
+
+    async def global_error_handler(self, exception: Exception) -> bool:
+        """
+        Глобальный обработчик ошибок aiogram.
+        В error-middleware сюда прилетает только exception.
+        """
+        user_id = None
+        update = getattr(exception, "update", None)
+
+        try:
+            if update:
+                if getattr(update, "message", None) and update.message.from_user:
+                    user_id = update.message.from_user.id
+                elif getattr(update, "callback_query", None) and update.callback_query.from_user:
+                    user_id = update.callback_query.from_user.id
+        except Exception:
+            pass
+
+        logger.exception(
+            "Unhandled error in worker update_id=%s user_id=%s exc=%r",
+            getattr(update, "update_id", None) if update else None,
+            user_id,
+            exception,
+        )
+
+        if isinstance(exception, TelegramBadRequest):
+            return True
+
+        return True
 
 
     async def init_database(self) -> None:
@@ -122,6 +208,10 @@ class GraceHubWorker:
         # язык по умолчанию
         if await self.get_setting("lang_code") is None:
             await self.set_setting("lang_code", "ru")
+
+        # запрос оценки при закрытии тикета по умолчанию включен
+        if await self.get_setting("rating_enabled") is None:
+            await self.set_setting("rating_enabled", "True")
 
         # подгружаем выбранный язык в self.texts
         await self.load_language()
@@ -343,6 +433,7 @@ class GraceHubWorker:
 
         if total == 0:
             text = self.texts.blacklist_list_empty
+            text = self._safe_trim(text, self.MAX_USER_TEXT)
             kb = self.get_blacklist_menu()
             await cb.message.edit_text(text, reply_markup=kb)
             return
@@ -365,6 +456,8 @@ class GraceHubWorker:
                 total=total_pages,
             )
         )
+
+        text = self._safe_trim(text, self.MAX_USER_TEXT)
 
         nav_row: list[InlineKeyboardButton] = []
         if page > 0:
@@ -405,6 +498,7 @@ class GraceHubWorker:
 
         kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
         await cb.message.edit_text(text, reply_markup=kb)
+
 
 
     async def is_user_blacklisted(self, user_id: int) -> bool:
@@ -609,6 +703,11 @@ class GraceHubWorker:
         privacy_on = await self.is_privacy_enabled()
         privacy_label = f"Privacy Mode: {'🟢' if privacy_on else '🔴'}"
 
+        # Фидбек при закрытии тикета
+        rating_enabled = await self.get_setting("rating_enabled")
+        rating_on = rating_enabled == "True"
+        rating_label = f"{self.texts.menu_rating}: {'🟢' if rating_on else '🔴'}"
+
         # Язык
         lang_code = await self.get_setting("lang_code") or "ru"
         lang_label = f"{self.texts.menu_language}: {lang_code.upper()}"
@@ -637,6 +736,12 @@ class GraceHubWorker:
                     InlineKeyboardButton(
                         text=self.texts.menu_blacklist,
                         callback_data="blacklist",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        text=rating_label,
+                        callback_data="setup_rating",
                     )
                 ],
                 [
@@ -783,6 +888,15 @@ class GraceHubWorker:
         assigned_username: Optional[str] = None,
         assigned_user_id: Optional[int] = None,
     ) -> None:
+        if status not in self.ALLOWED_TICKET_STATUSES:
+            logger.warning(
+                "Attempt to set invalid ticket status: %s (ticket_id=%s, instance_id=%s)",
+                status,
+                ticket_id,
+                self.instance_id,
+            )
+            return
+
         now = datetime.now(timezone.utc)
         set_parts = ["status = %s", "updated_at = %s"]
         params: List[Any] = [status, now]
@@ -811,24 +925,24 @@ class GraceHubWorker:
             # обновляем заголовок темы
             await self.update_ticket_topic_title(ticket)
 
-            # если только что закрыли — отправляем запрос оценки
+            # если только что закрыли — и включен запрос оценки, отправляем запрос
             if status == "closed":
                 try:
-                    user_id = ticket.get("user_id")
-                    if user_id:
-                        await self._send_safe_message(
-                            chat_id=user_id,
-                            text=self.texts.ticket_closed_rating_request,
-                            reply_markup=self.get_rating_keyboard(ticket_id),
-                        )
+                    rating_enabled = (await self.get_setting("rating_enabled")) == "True"
+                    if rating_enabled:
+                        user_id = ticket.get("user_id")
+                        if user_id:
+                            await self._send_safe_message(
+                                chat_id=user_id,
+                                text=self.texts.ticket_closed_rating_request,
+                                reply_markup=self.get_rating_keyboard(ticket_id),
+                            )
                 except Exception as e:
                     logger.error(
                         "Failed to send rating request for ticket %s: %s",
                         ticket_id,
                         e,
                     )
-
-
 
     async def handle_rating_callback(self, cb: CallbackQuery) -> None:
         data = cb.data or ""
@@ -895,6 +1009,7 @@ class GraceHubWorker:
         message_id: int,
         *,
         compact: bool = True,
+        target_user_id: int | None = None,  # НОВЫЙ аргумент
     ) -> None:
         ticket = await self.fetch_ticket(ticket_id)
         if not ticket or not self.db:
@@ -931,15 +1046,51 @@ class GraceHubWorker:
                 message_id=message_id,
                 reply_markup=kb,
             )
-        except Exception as e:
-            if "message is not modified" in str(e).lower():
+        except TelegramBadRequest as e:
+            err = str(e).lower()
+            if "message is not modified" in err:
                 return
+
+            logger.warning(
+                "Failed to edit ticket keyboard for ticket %s message %s: %s; sending new message",
+                ticket_id,
+                message_id,
+                e,
+            )
+            try:
+                sent = await self.sendsafemessage(
+                    chatid=chat_id,
+                    text=self.texts.ticket_admin_prompt,
+                    reply_markup=kb,
+                )
+                if target_user_id is not None:
+                    try:
+                        await self.save_reply_mapping_v2(
+                            chat_id=chat_id,
+                            message_id=sent.message_id,
+                            target_user_id=target_user_id,
+                        )
+                    except Exception as e3:
+                        logger.error(
+                            "Failed to update reply mapping for ticket %s new message %s: %s",
+                            ticket_id,
+                            sent.message_id,
+                            e3,
+                        )
+            except Exception as e2:
+                logger.error(
+                    "Failed to send fallback ticket keyboard message for ticket %s: %s",
+                    ticket_id,
+                    e2,
+                )
+        except Exception as e:
             logger.error(
                 "Failed to attach ticket keyboard to message %s: %s",
                 message_id,
                 e,
             )
 
+            
     def _build_full_ticket_keyboard(
         self,
         ticket_id: int,
@@ -1196,9 +1347,9 @@ class GraceHubWorker:
     async def store_forwarded_message(self, chat_id: int, message: Message, user_id: int) -> None:
         text_content = None
         if message.text:
-            text_content = message.text
+            text_content = self._safe_trim(message.text, self.MAX_DB_TEXT)
         elif message.caption:
-            text_content = message.caption
+            text_content = self._safe_trim(message.caption, self.MAX_DB_TEXT)
 
         try:
             await self.db.execute(
@@ -1725,7 +1876,7 @@ class GraceHubWorker:
 
             ticket = await self.fetch_ticket(ticket_id)
             if not ticket:
-                await cb.answer("Тикет не найден", show_alert=True)
+                await cb.answer(self.texts.ticket_not_found, show_alert=True)
                 return
 
             status = ticket.get("status") or "new"
@@ -1739,9 +1890,28 @@ class GraceHubWorker:
                 is_spam=is_spam,
                 is_closed=is_closed,
             )
-            if cb.message:
-                await cb.message.edit_reply_markup(reply_markup=kb)
 
+            if cb.message:
+                try:
+                    await cb.message.edit_reply_markup(reply_markup=kb)
+                except TelegramBadRequest as e:
+                    err = str(e).lower()
+                    if "message is not modified" in err:
+                        await cb.answer()
+                        return
+                    # сообщение протухло → шлём новое
+                    try:
+                        await self.sendsafemessage(
+                            chatid=cb.message.chat.id,
+                            text=self.texts.ticket_admin_prompt,
+                            reply_markup=kb,
+                        )
+                    except Exception as e2:
+                        logger.error(
+                            "Failed to send fallback ticket menu message for ticket %s: %s",
+                            ticket_id,
+                            e2,
+                        )
             await cb.answer()
             return
 
@@ -1754,6 +1924,7 @@ class GraceHubWorker:
                 return
 
             if cb.message:
+                # put_ticket_keyboard внутри уже умеет делать fallback
                 await self.put_ticket_keyboard(
                     ticket_id,
                     cb.message.message_id,
@@ -1772,7 +1943,7 @@ class GraceHubWorker:
 
         ticket = await self.fetch_ticket(ticket_id)
         if not ticket:
-            await cb.answer("Тикет не найден", show_alert=True)
+            await cb.answer(self.texts.ticket_not_found, show_alert=True)
             return
 
         message = cb.message
@@ -1796,9 +1967,8 @@ class GraceHubWorker:
                 assigned_username=assignee_username,
                 assigned_user_id=user.id,
             )
-            # после действия сворачиваем меню
             await self.put_ticket_keyboard(ticket_id, message.message_id, compact=True)
-            await cb.answer("Тикет взят в работу")
+            await cb.answer(self.texts.ticket_taken_self)
             return
 
         # 2) "Назначить" — показать список других участников (админов) чата
@@ -1823,21 +1993,37 @@ class GraceHubWorker:
                     ]
                 )
             if not rows:
-                await cb.answer("Некого назначать", show_alert=True)
+                await cb.answer(self.texts.ticket_no_assignees, show_alert=True)
                 return
 
             rows.append(
                 [
                     InlineKeyboardButton(
-                        text="Отмена",
+                        text=self.texts.ticket_cancel,
                         callback_data=f"ticket:cancel_assign:{ticket_id}",
                     )
                 ]
             )
 
-            await message.edit_reply_markup(
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=rows)
-            )
+            try:
+                await message.edit_reply_markup(
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=rows)
+                )
+            except TelegramBadRequest as e:
+                err = str(e).lower()
+                if "message is not modified" not in err:
+                    try:
+                        await self.sendsafemessage(
+                            chatid=message.chat.id,
+                            text=self.texts.ticket_admin_prompt,
+                            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+                        )
+                    except Exception as e2:
+                        logger.error(
+                            "Failed to send fallback assign keyboard for ticket %s: %s",
+                            ticket_id,
+                            e2,
+                        )
             await cb.answer()
             return
 
@@ -1864,17 +2050,18 @@ class GraceHubWorker:
                 assigned_user_id=assignee_id,
             )
             await self.put_ticket_keyboard(ticket_id, message.message_id, compact=True)
-            await cb.answer(f"Назначено {target_username}")
+            await cb.answer(
+                self.texts.ticket_assigned_to.format(username=target_username)
+            )
             return
 
         # 2b) Отмена назначения
         if action == "cancel_assign":
             await self.put_ticket_keyboard(ticket_id, message.message_id, compact=True)
-            await cb.answer("Отменено")
+            await cb.answer(self.texts.ticket_assignment_cancelled)
             return
 
-        # 3) "Спам" — пометить тикет как спам,
-        # убрать возможность "Себе"/"Назначить", показать "Не спам"
+        # 3) "Спам"
         if action == "spam":
             await self.set_ticket_status(
                 ticket_id,
@@ -1883,10 +2070,10 @@ class GraceHubWorker:
                 assigned_user_id=None,
             )
             await self.put_ticket_keyboard(ticket_id, message.message_id, compact=True)
-            await cb.answer("Отмечено как спам")
+            await cb.answer(self.texts.ticket_marked_spam)
             return
 
-        # 3a) "Не спам" — вернуть тикет из спама в работу с текущим админом
+        # 3a) "Не спам"
         if action == "not_spam":
             await self.set_ticket_status(
                 ticket_id,
@@ -1895,7 +2082,7 @@ class GraceHubWorker:
                 assigned_user_id=user.id,
             )
             await self.put_ticket_keyboard(ticket_id, message.message_id, compact=True)
-            await cb.answer("Тикет возвращён из спама")
+            await cb.answer(self.texts.ticket_unspammed)
             return
 
         # 4) "Закрыть"
@@ -1907,7 +2094,7 @@ class GraceHubWorker:
                 assigned_user_id=ticket.get("assigned_user_id"),
             )
             await self.put_ticket_keyboard(ticket_id, message.message_id, compact=True)
-            await cb.answer("Тикет закрыт")
+            await cb.answer(self.texts.ticket_closed)
             return
 
         # 4a) "Переоткрыть"
@@ -1919,11 +2106,10 @@ class GraceHubWorker:
                 assigned_user_id=user.id,
             )
             await self.put_ticket_keyboard(ticket_id, message.message_id, compact=True)
-            await cb.answer("Тикет переоткрыт")
+            await cb.answer(self.texts.ticket_reopened)
             return
 
         await cb.answer()
-
 
     # ====================== CALLBACKS АДМИН-ПАНЕЛИ ======================
 
@@ -1975,7 +2161,11 @@ class GraceHubWorker:
 
         elif data == "setup_openchat":
             openchat = await self.get_openchat_settings()
-            status = self.texts.openchat_status_on if openchat["enabled"] else self.texts.openchat_status_off
+            status = (
+                self.texts.openchat_status_on
+                if openchat["enabled"]
+                else self.texts.openchat_status_off
+            )
 
             if openchat["chat_id"]:
                 current = self.texts.openchat_current_chat_id.format(
@@ -2005,7 +2195,11 @@ class GraceHubWorker:
             )
 
         elif data == "setup_privacy":
-            enabled = self.texts.privacy_state_on if await self.is_privacy_enabled() else self.texts.privacy_state_off
+            enabled = (
+                self.texts.privacy_state_on
+                if await self.is_privacy_enabled()
+                else self.texts.privacy_state_off
+            )
             await cb.message.edit_text(
                 self.texts.privacy_screen.format(state=enabled),
                 reply_markup=InlineKeyboardMarkup(
@@ -2028,9 +2222,13 @@ class GraceHubWorker:
 
         elif data == "toggle_privacy":
             current = await self.is_privacy_enabled()
-            await self.set_setting("privacy_mode_enabled", "False" if current else "True")
+            await self.set_setting(
+                "privacy_mode_enabled", "False" if current else "True"
+            )
             new_state = (
-                self.texts.privacy_state_on if not current else self.texts.privacy_state_off
+                self.texts.privacy_state_on
+                if not current
+                else self.texts.privacy_state_off
             )
             await cb.answer(
                 self.texts.privacy_toggled.format(state=new_state),
@@ -2038,7 +2236,9 @@ class GraceHubWorker:
             )
 
             enabled = (
-                self.texts.privacy_state_on if await self.is_privacy_enabled() else self.texts.privacy_state_off
+                self.texts.privacy_state_on
+                if await self.is_privacy_enabled()
+                else self.texts.privacy_state_off
             )
             await cb.message.edit_text(
                 self.texts.privacy_screen.format(state=enabled),
@@ -2048,6 +2248,71 @@ class GraceHubWorker:
                             InlineKeyboardButton(
                                 text=self.texts.privacy_toggle_btn,
                                 callback_data="toggle_privacy",
+                            )
+                        ],
+                        [
+                            InlineKeyboardButton(
+                                text=self.texts.back,
+                                callback_data="main_menu",
+                            )
+                        ],
+                    ]
+                ),
+            )
+
+        elif data == "setup_rating":
+            rating_enabled = (await self.get_setting("rating_enabled")) == "True"
+            enabled_text = (
+                self.texts.rating_state_on
+                if rating_enabled
+                else self.texts.rating_state_off
+            )
+            await cb.message.edit_text(
+                self.texts.rating_screen.format(state=enabled_text),
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [
+                            InlineKeyboardButton(
+                                text=self.texts.rating_toggle_btn,
+                                callback_data="toggle_rating",
+                            )
+                        ],
+                        [
+                            InlineKeyboardButton(
+                                text=self.texts.back,
+                                callback_data="main_menu",
+                            )
+                        ],
+                    ]
+                ),
+            )
+
+        elif data == "toggle_rating":
+            current = (await self.get_setting("rating_enabled")) == "True"
+            await self.set_setting("rating_enabled", "False" if current else "True")
+            new_state_text = (
+                self.texts.rating_state_on if not current else self.texts.rating_state_off
+            )
+
+            await cb.answer(
+                self.texts.rating_toggled.format(state=new_state_text),
+                show_alert=False,
+            )
+
+            rating_enabled = (await self.get_setting("rating_enabled")) == "True"
+            enabled_text = (
+                self.texts.rating_state_on
+                if rating_enabled
+                else self.texts.rating_state_off
+            )
+            await cb.message.edit_text(
+                self.texts.rating_screen.format(state=enabled_text),
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [
+                            InlineKeyboardButton(
+                                text=self.texts.rating_toggle_btn,
+                                callback_data="toggle_rating",
                             )
                         ],
                         [
@@ -2146,7 +2411,6 @@ class GraceHubWorker:
             import io
             import csv
             from datetime import datetime as _dt
-            from aiogram.types import BufferedInputFile
 
             buf = io.StringIO()
             writer = csv.writer(buf)
@@ -2206,7 +2470,6 @@ class GraceHubWorker:
         else:
             await cb.answer()
 
-
     # ====================== ОБРАБОТКА СОСТОЯНИЙ АДМИНА ======================
 
     async def handle_admin_blacklist_search(self, message: Message, state: FSMContext) -> None:
@@ -2264,7 +2527,7 @@ class GraceHubWorker:
         if not await self.is_admin(message.from_user.id):
             await self._send_safe_message(
                 chat_id=message.chat.id,
-                text="❌ Доступ запрещён",
+                text=self.texts.access_denied,
             )
             return
 
@@ -2273,22 +2536,23 @@ class GraceHubWorker:
             await state.clear()
             await self._send_safe_message(
                 chat_id=message.chat.id,
-                text="✅ Приветствие удалено.",
+                text=self.texts.greeting_cleared,
             )
             return
 
         if not message.text:
             await self._send_safe_message(
                 chat_id=message.chat.id,
-                text="Требуется текстовое сообщение с приветствием.",
+                text=self.texts.greeting_need_text,
             )
             return
 
-        await self.set_setting("greeting_text", message.text)
+        greeting = self._safe_trim(message.text, self.MAX_DB_TEXT)
+        await self.set_setting("greeting_text", greeting)
         await state.clear()
         await self._send_safe_message(
             chat_id=message.chat.id,
-            text="✅ Новое приветствие сохранено.",
+            text=self.texts.greeting_saved,
         )
 
     async def handle_admin_autoreply(self, message: Message, state: FSMContext) -> None:
@@ -2300,7 +2564,7 @@ class GraceHubWorker:
             return
 
         if message.text and message.text.strip() == "/autoreply_off":
-            awaitself.set_setting("autoreply_enabled", "False")
+            await self.set_setting("autoreply_enabled", "False")
             await self.set_setting("autoreply_text", "")
             await state.clear()
             await self._send_safe_message(
@@ -2316,8 +2580,9 @@ class GraceHubWorker:
             )
             return
 
+        autoreply = self._safe_trim(message.text, self.MAX_DB_TEXT)
         await self.set_setting("autoreply_enabled", "True")
-        await self.set_setting("autoreply_text", message.text)
+        await self.set_setting("autoreply_text", autoreply)
         await state.clear()
         await self._send_safe_message(
             chat_id=message.chat.id,
@@ -2459,6 +2724,14 @@ class GraceHubWorker:
             )
             return
 
+        # Антифлуд: сообщения в минуту от пользователя
+        if self._is_user_flooding(user_id):
+            await self._send_safe_message(
+                chat_id=message.chat.id,
+                text=self.texts.too_many_messages,
+            )
+            return
+
         # Rate-limit на отправку ответов
         if not await self.ratelimiter.can_send(chat_id=message.chat.id):
             wait_for = await self.ratelimiter.wait_for_send()
@@ -2470,7 +2743,54 @@ class GraceHubWorker:
             await self._send_safe_message(
                 chat_id=message.chat.id,
                 text=self.texts.admin_panel_title,
-                reply_markup= await self.get_admin_menu(),
+                reply_markup=await self.get_admin_menu(),
+            )
+            return
+
+        # Валидация размеров вложений
+        too_big = False
+        max_bytes = self.max_file_bytes  # задаётся в __init__ из settings.WORKER_MAX_FILE_MB
+
+        # Фото (берём максимально крупное)
+        if message.photo:
+            photo = message.photo[-1]
+            if photo.file_size and photo.file_size > max_bytes:
+                too_big = True
+
+        # Документы
+        if message.document and message.document.file_size and message.document.file_size > max_bytes:
+            too_big = True
+
+        # Видео
+        if message.video and message.video.file_size and message.video.file_size > max_bytes:
+            too_big = True
+
+        # Аудио
+        if message.audio and message.audio.file_size and message.audio.file_size > max_bytes:
+            too_big = True
+
+        # Голосовые
+        if message.voice and message.voice.file_size and message.voice.file_size > max_bytes:
+            too_big = True
+
+        # Видео-заметки
+        if message.video_note and message.video_note.file_size and message.video_note.file_size > max_bytes:
+            too_big = True
+
+        # Стикеры (если хочешь ограничивать и их)
+        if message.sticker and message.sticker.file_size and message.sticker.file_size > max_bytes:
+            too_big = True
+
+        if too_big:
+            logger.warning(
+                "Attachment too large from user %s in private chat %s (limit %s bytes)",
+                user_id,
+                message.chat.id,
+                max_bytes,
+            )
+            await self._send_safe_message(
+                chat_id=message.chat.id,
+                text=self.texts.attachment_too_big,  # строка должна быть в языковых файлах
             )
             return
 
@@ -2503,6 +2823,7 @@ class GraceHubWorker:
             text=self.texts.support_not_configured,
         )
 
+
     # ====================== OPENCHAT: СОБЩЕНИЯ И РЕПЛАИ ======================
 
     async def handle_openchat_message(self, message: Message) -> None:
@@ -2522,7 +2843,57 @@ class GraceHubWorker:
         if message.from_user and message.from_user.is_bot:
             return
 
+        # Валидация размеров вложений от админов/операторов в OpenChat
+        too_big = False
+        max_bytes = self.max_file_bytes  # задаётся в __init__ из settings.WORKER_MAX_FILE_MB
+
+        # Фото
+        if message.photo:
+            photo = message.photo[-1]
+            if photo.file_size and photo.file_size > max_bytes:
+                too_big = True
+
+        # Документы
+        if message.document and message.document.file_size and message.document.file_size > max_bytes:
+            too_big = True
+
+        # Видео
+        if message.video and message.video.file_size and message.video.file_size > max_bytes:
+            too_big = True
+
+        # Аудио
+        if message.audio and message.audio.file_size and message.audio.file_size > max_bytes:
+            too_big = True
+
+        # Голосовые
+        if message.voice and message.voice.file_size and message.voice.file_size > max_bytes:
+            too_big = True
+
+        # Видео-заметки
+        if message.video_note and message.video_note.file_size and message.video_note.file_size > max_bytes:
+            too_big = True
+
+        # Стикеры (если тоже ограничиваем)
+        if message.sticker and message.sticker.file_size and message.sticker.file_size > max_bytes:
+            too_big = True
+
+        if too_big:
+            logger.warning(
+                "Attachment too large from openchat user %s in chat %s (limit %s bytes)",
+                message.from_user.id if message.from_user else None,
+                message.chat.id,
+                max_bytes,
+            )
+            # В OpenChat обычно отвечаем только оператору, без текста пользователю
+            # Можно отправить сервисное сообщение в этот же топик
+            await self._send_safe_message(
+                chat_id=message.chat.id,
+                text=self.texts.attachment_too_big,
+            )
+            return
+
         await self.handle_openchat_reply(message, message.reply_to_message, oc)
+
 
     async def handle_openchat_reply(
         self, message: Message, reply_msg: Message, oc: Dict[str, Any]
@@ -2754,6 +3125,8 @@ class GraceHubWorker:
             self.handle_private_message,
             F.chat.type == ChatType.PRIVATE,
         )
+        # Общий для ошибок
+        self.dp.errors.register(self.global_error_handler)
 
     # ====================== ЗАПУСК / ИНТЕГРАЦИЯ ======================
 
@@ -2769,12 +3142,11 @@ class GraceHubWorker:
         Старт воркера: инициализация БД, запуск автозакрытия и polling.
         """
         await self.init_database()
+
         logger.info(f"Worker started for instance {self.instance_id}")
 
-        # Фоновая задача авто‑закрытия тикетов
         asyncio.create_task(self.auto_close_tickets_loop())
 
-        # Гарантированно убираем webhook, чтобы не конфликтовать с polling
         try:
             await self.bot.delete_webhook(drop_pending_updates=True)
         except Exception as e:

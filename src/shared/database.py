@@ -77,6 +77,34 @@ class MasterDatabase:
         return key
 
 
+    async def mark_expiring_notified_today(self, instance_id: str) -> None:
+        """
+        Помечает, что для инстанса сегодня уже отправлено напоминание о скором окончании.
+        """
+        await self.execute(
+            """
+            UPDATE instance_billing
+               SET last_expiring_notice_date = CURRENT_DATE,
+                   updated_at = NOW()
+             WHERE instance_id = %s
+            """,
+            (instance_id,),
+        )
+
+    async def mark_paused_notified_now(self, instance_id: str) -> None:
+        """
+        Помечает, что для инстанса только что отправлено уведомление о паузе тарифа.
+        """
+        await self.execute(
+            """
+            UPDATE instance_billing
+               SET last_paused_notice_at = NOW(),
+                   updated_at = NOW()
+             WHERE instance_id = %s
+            """,
+            (instance_id,),
+        )
+
     async def update_billing_flags(self) -> None:
         """
         Пересчитывает days_left / over_limit / service_paused для всех instance_billing.
@@ -94,13 +122,14 @@ class MasterDatabase:
             OR (tickets_used >= tickets_limit)
           ),
           updated_at = NOW()
-        ;
+        WHERE TRUE;
         """
         await self.execute(sql)
 
-    async def get_instances_expiring_in_7_days(self) -> list[dict]:
+    async def get_instances_expiring_in_7_days_for_notify(self) -> list[dict]:
         """
-        Инстансы, у которых осталось ровно 7 дней и service_paused = FALSE.
+        Инстансы, у которых осталось ровно 7 дней, service_paused = FALSE
+        и которым ещё не отправляли напоминание сегодня.
         """
         sql = """
         SELECT ib.instance_id,
@@ -108,20 +137,26 @@ class MasterDatabase:
                ib.days_left,
                ib.tickets_used,
                ib.tickets_limit,
+               ib.last_expiring_notice_date,
                bi.owner_user_id,
                bi.admin_private_chat_id,
                bi.bot_username
         FROM instance_billing ib
         JOIN bot_instances bi ON bi.instance_id = ib.instance_id
         WHERE ib.service_paused = FALSE
-          AND ib.days_left = 7;
+          AND ib.days_left = 7
+          AND (
+                ib.last_expiring_notice_date IS NULL
+                OR ib.last_expiring_notice_date < CURRENT_DATE
+          );
         """
         rows = await self.fetchall(sql)
         return [dict(r) for r in rows]
 
-    async def get_recently_paused_instances(self) -> list[dict]:
+    async def get_recently_paused_instances_for_notify(self) -> list[dict]:
         """
-        Инстансы, которые недавно (за сутки) ушли в паузу.
+        Инстансы, которые за последние сутки ушли в паузу,
+        и которым ещё не отправляли уведомление (или отправляли давно).
         """
         sql = """
         SELECT ib.instance_id,
@@ -130,13 +165,18 @@ class MasterDatabase:
                ib.tickets_used,
                ib.tickets_limit,
                ib.over_limit,
+               ib.last_paused_notice_at,
                bi.owner_user_id,
                bi.admin_private_chat_id,
                bi.bot_username
         FROM instance_billing ib
         JOIN bot_instances bi ON bi.instance_id = ib.instance_id
         WHERE ib.service_paused = TRUE
-          AND ib.updated_at >= (NOW() - INTERVAL '1 day');
+          AND ib.updated_at >= (NOW() - INTERVAL '1 day')
+          AND (
+                ib.last_paused_notice_at IS NULL
+                OR ib.last_paused_notice_at < (NOW() - INTERVAL '1 hour')
+          );
         """
         rows = await self.fetchall(sql)
         return [dict(r) for r in rows]
@@ -284,6 +324,101 @@ class MasterDatabase:
             (telegram_invoice_id, total_amount, currency, invoice_id),
         )
 
+    async def find_billing_invoice_by_payload(self, payload: str) -> Optional[Dict[str, Any]]:
+        row = await self.fetchone(
+            """
+            SELECT invoice_id, instance_id, user_id, product_id, payload, invoice_link, stars_amount,
+                amount_minor_units, currency, payment_method, provider_tx_hash, status,
+                created_at, updated_at, paid_at
+            FROM billing_invoices
+            WHERE payload = %s
+            LIMIT 1
+            """,
+            (payload,),
+        )
+        return dict(row) if row else None
+
+    async def mark_billing_invoice_paid_yookassa(
+        self,
+        invoice_id: int,
+        payment_id: str,
+        amount_minor_units: int,
+        currency: str = "RUB",
+    ) -> bool:
+        res = await self.execute(
+            """
+            UPDATE billing_invoices
+            SET status='paid',
+                provider_tx_hash=%s,
+                amount_minor_units=%s,
+                currency=%s,
+                paid_at=NOW(),
+                updated_at=NOW()
+            WHERE invoice_id=%s AND status != 'paid'
+            """,
+            (payment_id, amount_minor_units, currency, invoice_id),
+        )
+        rowcount = getattr(res, "rowcount", None)
+        if rowcount is None:
+            return True
+        return rowcount > 0
+
+
+    async def get_billing_invoice(self, invoice_id: int) -> dict | None:
+        row = await self.fetchone(
+            """
+            SELECT
+                invoice_id,
+                instance_id,
+                user_id,
+                product_id,
+                payload,
+                invoice_link,
+                stars_amount,
+                amount_minor_units,
+                currency,
+                payment_method,
+                provider_tx_hash,
+                status,
+                created_at,
+                updated_at,
+                paid_at
+            FROM billing_invoices
+            WHERE invoice_id = %s
+            LIMIT 1
+            """,
+            (invoice_id,),
+        )
+        return dict(row) if row else None
+
+    async def cancel_billing_invoice(self, invoice_id: int) -> bool:
+        """
+        Мягкая отмена: переводим pending -> cancelled.
+        Возвращает True если что-то реально поменялось, иначе False.
+        Не отменяем paid.
+        """
+        now = datetime.now(timezone.utc)
+
+        # Если paid — не трогаем
+        await self.execute(
+            """
+            UPDATE billing_invoices
+            SET status = 'cancelled',
+                updated_at = ?
+            WHERE invoice_id = ?
+            AND status != 'paid'
+            """,
+            (now, invoice_id),
+        )
+
+        # Если нужно понимать, изменилось ли реально — можно проверить статус после
+        row = await self.fetchone(
+            "SELECT status FROM billing_invoices WHERE invoice_id = ?",
+            (invoice_id,),
+        )
+        return bool(row and row["status"] == "cancelled")
+
+
     async def get_saas_plans_for_billing(self) -> list[dict]:
         """
         Список тарифов для витрины биллинга:
@@ -306,6 +441,90 @@ class MasterDatabase:
             """
         )
         return [dict(r) for r in rows]
+
+
+    async def mark_billing_invoice_paid_ton(
+        self,
+        invoice_id: int,
+        tx_hash: str,
+        amount_minor_units: int,
+        currency: str = "TON",
+    ) -> bool:
+        """
+        Помечает TON-инвойс оплаченным (идемпотентно).
+
+        Возвращает True, если статус реально обновили (pending/cancelled -> paid).
+        Возвращает False, если инвойс уже был paid (или не найден/ничего не обновили).
+        """
+        res = await self.execute(
+            """
+            UPDATE billing_invoices
+            SET status = 'paid',
+                provider_tx_hash = %s,
+                amount_minor_units = %s,
+                currency = %s,
+                paid_at = NOW(),
+                updated_at = NOW()
+            WHERE invoice_id = %s
+            AND status != 'paid'
+            """,
+            (tx_hash, amount_minor_units, currency, invoice_id),
+        )
+
+        # ВАЖНО: это зависит от твоего DB-wrapper.
+        # Если execute возвращает cursor/Result с rowcount — используй его.
+        rowcount = getattr(res, "rowcount", None)
+        if rowcount is None:
+            # fallback: можно сделать SELECT status после UPDATE, но лучше поправить wrapper
+            return True
+
+        return rowcount > 0
+
+
+    async def set_billing_invoice_ton_failed(
+        self,
+        invoice_id: int,
+        error_code: str | None,
+        error_message: str | None,
+    ) -> None:
+        """
+        Помечает TON-инвойс как failed и сохраняет диагностическую информацию.
+        Подходит для случаев, когда проверка транзакции не удалась/просрочена/найден конфликт.
+        """
+        await self.execute(
+            """
+            UPDATE billing_invoices
+               SET status = 'failed',
+                   error_code = %s,
+                   error_message = %s,
+                   updated_at = NOW()
+             WHERE invoice_id = %s
+            """,
+            (error_code, error_message, invoice_id),
+        )
+
+    async def upsert_billing_invoice_ton_tx(
+        self,
+        invoice_id: int,
+        tx_hash: str | None,
+        amount_minor_units: int | None,
+        currency: str = "TON",
+    ) -> None:
+        """
+        Обновляет служебные поля TON-инвойса без смены статуса.
+        Удобно вызывать при промежуточных событиях (нашли tx, но ждём подтверждений).
+        """
+        await self.execute(
+            """
+            UPDATE billing_invoices
+               SET provider_tx_hash = COALESCE(%s, provider_tx_hash),
+                   amount_minor_units = COALESCE(%s, amount_minor_units),
+                   currency = %s,
+                   updated_at = NOW()
+             WHERE invoice_id = %s
+            """,
+            (tx_hash, amount_minor_units, currency, invoice_id),
+        )
 
 
     async def get_saas_plan_with_product_by_code(self, plan_code: str) -> dict | None:
@@ -379,7 +598,9 @@ class MasterDatabase:
                 period_end,
                 tickets_used,
                 tickets_limit,
-                over_limit
+                over_limit,
+                last_expiring_notice_date,
+                last_paused_notice_at
             )
             VALUES (
                 %(instance_id)s,
@@ -388,7 +609,9 @@ class MasterDatabase:
                 NOW() + (%(period_days)s || ' days')::interval,
                 0,
                 %(tickets_limit)s,
-                FALSE
+                FALSE,
+                NULL,
+                NULL
             )
             ON CONFLICT (instance_id) DO UPDATE SET
                 plan_id = EXCLUDED.plan_id,
@@ -404,7 +627,11 @@ class MasterDatabase:
                             END,
                 tickets_used = 0,
                 tickets_limit = EXCLUDED.tickets_limit,
-                over_limit = FALSE
+                over_limit = FALSE,
+                -- при новом периоде очищаем отметки уведомлений
+                last_expiring_notice_date = NULL,
+                last_paused_notice_at     = NULL,
+                updated_at = NOW()
             """,
             {
                 "instance_id": instance_id,
@@ -420,7 +647,6 @@ class MasterDatabase:
             data["plan_code"],
             period_days,
         )
-
 
 
     async def create_tables(self) -> None:
@@ -473,22 +699,6 @@ class MasterDatabase:
                 language   TEXT DEFAULT 'ru',
                 created_at TIMESTAMPTZ DEFAULT NOW()
             )
-            """
-        )
-        cur.execute(
-            """
-            DO $$
-            BEGIN
-                IF NOT EXISTS (
-                    SELECT 1
-                    FROM information_schema.columns
-                    WHERE table_name = 'user_states'
-                      AND column_name = 'language'
-                ) THEN
-                    ALTER TABLE user_states
-                        ADD COLUMN language TEXT DEFAULT 'ru';
-                END IF;
-            END$$;
             """
         )
 
@@ -843,20 +1053,22 @@ class MasterDatabase:
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS instance_billing (
-                instance_id    TEXT PRIMARY KEY,
-                plan_id        INTEGER NOT NULL
+                instance_id                 TEXT PRIMARY KEY,
+                plan_id                     INTEGER NOT NULL
                     REFERENCES saas_plans(plan_id)
                     ON DELETE RESTRICT,
-                period_start   TIMESTAMPTZ NOT NULL,
-                period_end     TIMESTAMPTZ NOT NULL,
-                tickets_used   INTEGER NOT NULL DEFAULT 0,
-                tickets_limit  INTEGER NOT NULL,
-                last_billed_at TIMESTAMPTZ,
-                over_limit     BOOLEAN NOT NULL DEFAULT FALSE,
-                days_left      INTEGER NOT NULL DEFAULT 0,
-                service_paused BOOLEAN NOT NULL DEFAULT FALSE,
-                created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                period_start               TIMESTAMPTZ NOT NULL,
+                period_end                 TIMESTAMPTZ NOT NULL,
+                tickets_used               INTEGER NOT NULL DEFAULT 0,
+                tickets_limit              INTEGER NOT NULL,
+                last_billed_at             TIMESTAMPTZ,
+                over_limit                 BOOLEAN NOT NULL DEFAULT FALSE,
+                days_left                  INTEGER NOT NULL DEFAULT 0,
+                service_paused             BOOLEAN NOT NULL DEFAULT FALSE,
+                last_expiring_notice_date  DATE,
+                last_paused_notice_at      TIMESTAMPTZ,
+                created_at                 TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at                 TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 CONSTRAINT fk_instance_billing_instance
                     FOREIGN KEY (instance_id)
                     REFERENCES bot_instances(instance_id)
@@ -870,13 +1082,13 @@ class MasterDatabase:
             """
             CREATE TABLE IF NOT EXISTS billing_products (
                 product_id     SERIAL PRIMARY KEY,
-                code           TEXT NOT NULL UNIQUE, -- например: plan_lite_30d
+                code           TEXT NOT NULL UNIQUE, 
                 plan_id        INTEGER NOT NULL
                     REFERENCES saas_plans(plan_id)
                     ON DELETE RESTRICT,
                 title          TEXT NOT NULL,
                 description    TEXT,
-                amount_stars   INTEGER NOT NULL,   -- стоимость в XTR (целое)
+                amount_stars   INTEGER NOT NULL,  
                 is_active      BOOLEAN NOT NULL DEFAULT TRUE,
                 created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -884,27 +1096,42 @@ class MasterDatabase:
             """
         )
 
-        # billing_invoices: сессии оплаты через Telegram Stars
+        # billing_invoices: сессии оплаты (Telegram Stars + TON)
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS billing_invoices (
                 invoice_id          BIGSERIAL PRIMARY KEY,
                 instance_id         TEXT NOT NULL,
-                user_id             BIGINT,              -- кто платит (Telegram user_id)
+                user_id             BIGINT,              
+
                 product_id          INTEGER NOT NULL
                     REFERENCES billing_products(product_id)
                     ON DELETE RESTRICT,
-                payload             TEXT NOT NULL,       -- то, что передаём в createInvoiceLink
-                telegram_invoice_id TEXT,                -- если будешь сохранять id из успешного платежа
-                invoice_link        TEXT,                -- URL вида https://t.me/...
-                stars_amount        INTEGER NOT NULL,
+
+                -- Универсальное поле для любых методов:
+                payload             TEXT NOT NULL,      
+
+                -- Telegram Stars:
+                telegram_invoice_id TEXT,              
+                invoice_link        TEXT,              
+
+                -- Суммы:
+                stars_amount        INTEGER NOT NULL,    
+                amount_minor_units  BIGINT,           
+
                 currency            TEXT NOT NULL DEFAULT 'XTR',
-                status              TEXT NOT NULL DEFAULT 'pending', -- pending/paid/expired/canceled/failed
+                payment_method      TEXT NOT NULL DEFAULT 'telegram_stars',
+
+                -- Для TON (или внешних платёжных провайдеров):
+                provider_tx_hash    TEXT,               
+                status              TEXT NOT NULL DEFAULT 'pending',
                 error_code          TEXT,
                 error_message       TEXT,
+
                 created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 paid_at             TIMESTAMPTZ,
+
                 CONSTRAINT fk_billing_invoices_instance
                     FOREIGN KEY (instance_id)
                     REFERENCES bot_instances(instance_id)
@@ -913,6 +1140,7 @@ class MasterDatabase:
             """
         )
 
+        # Индексы (можно расширить под TON)
         cur.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_billing_invoices_instance
@@ -923,6 +1151,18 @@ class MasterDatabase:
             """
             CREATE INDEX IF NOT EXISTS idx_billing_invoices_status
             ON billing_invoices(status)
+            """
+        )
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_billing_invoices_method_status
+            ON billing_invoices(payment_method, status)
+            """
+        )
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_billing_invoices_provider_tx_hash
+            ON billing_invoices(provider_tx_hash)
             """
         )
 
@@ -1057,13 +1297,17 @@ class MasterDatabase:
         self,
         instance_id: str,
         user_id: int,
-        plan_code: str,      # можно не использовать, но оставим для совместимости
+        plan_code: str,      # для совместимости, можно не использовать
         periods: int,
-        amount_stars: int,
+        amount_stars: int,   # Stars сумма (XTR), оставляем для совместимости
         product_code: str,
         payload: str,
         invoice_link: str,
         status: str = "pending",
+        *,
+        payment_method: str = "telegram_stars",  # telegram_stars | ton | yookassa
+        currency: str = "XTR",                   # XTR | TON | RUB
+        amount_minor_units: int | None = None,   # для TON: nanoton, для YooKassa: kopeks
     ) -> int:
         # product_code = billing_products.code → достаём product_id
         product_row = await self.fetchone(
@@ -1080,6 +1324,44 @@ class MasterDatabase:
 
         product_id = product_row["product_id"]
 
+        # Нормализация payment_method (на случай enum/алиасов)
+        if hasattr(payment_method, "value"):
+            payment_method = payment_method.value
+
+        payment_method = str(payment_method or "").strip().lower()
+
+        # алиасы, если где-то в коде встречаются другие значения
+        if payment_method in ("telegram_stars", "tg_stars", "stars"):
+            payment_method = "telegram_stars"
+
+        # Нормализация под метод
+        if payment_method == "telegram_stars":
+            currency = "XTR"
+            stars_amount_val = int(amount_stars)
+            amount_minor_val = None
+
+        elif payment_method == "ton":
+            currency = "TON"
+            stars_amount_val = 0  # stars_amount NOT NULL
+            if amount_minor_units is None or int(amount_minor_units) <= 0:
+                raise ValueError("TON invoice requires amount_minor_units > 0 (nanoton)")
+            amount_minor_val = int(amount_minor_units)
+
+        elif payment_method == "yookassa":
+            # Для YooKassa сохраняем сумму в минимальных единицах (копейки) в amount_minor_units
+            currency = currency or "RUB"
+            if currency != "RUB":
+                # чтобы не разъехались ожидания в остальном коде
+                raise ValueError(f"YooKassa invoice requires currency=RUB, got {currency}")
+
+            stars_amount_val = 0  # stars_amount NOT NULL
+            if amount_minor_units is None or int(amount_minor_units) <= 0:
+                raise ValueError("YooKassa invoice requires amount_minor_units > 0 (kopeks)")
+            amount_minor_val = int(amount_minor_units)
+
+        else:
+            raise ValueError(f"Unsupported payment_method={payment_method}")
+
         row = await self.fetchone(
             """
             INSERT INTO billing_invoices (
@@ -1090,10 +1372,12 @@ class MasterDatabase:
                 telegram_invoice_id,
                 invoice_link,
                 stars_amount,
+                amount_minor_units,
                 currency,
+                payment_method,
                 status
             )
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             RETURNING invoice_id
             """,
             (
@@ -1101,10 +1385,12 @@ class MasterDatabase:
                 user_id,
                 product_id,
                 payload,
-                None,             
+                None,
                 invoice_link,
-                amount_stars,     
-                "XTR",
+                stars_amount_val,
+                amount_minor_val,
+                currency,
+                payment_method,
                 status,
             ),
         )
@@ -1374,6 +1660,10 @@ class MasterDatabase:
     async def get_instance_billing(self, instance_id: str) -> Optional[dict]:
         """
         Возвращает запись instance_billing для инстанса или None.
+        Включает поля:
+        - period_start / period_end / days_left / service_paused
+        - tickets_used / tickets_limit / over_limit
+        - last_expiring_notice_date / last_paused_notice_at
         """
         assert self.conn is not None
         with self.conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
@@ -1387,6 +1677,30 @@ class MasterDatabase:
             )
             row = cur.fetchone()
         return dict(row) if row else None
+
+
+    async def get_saas_plan_by_id(self, plan_id: int) -> Optional[dict]:
+        """
+        Возвращает saas_plan по plan_id (для отображения текущего тарифа инстанса).
+        """
+        row = await self.fetchone(
+            """
+            SELECT
+                plan_id,
+                code        AS plan_code,
+                name        AS plan_name,
+                period_days,
+                tickets_limit,
+                price_stars,
+                features_json
+            FROM saas_plans
+            WHERE plan_id = %s
+            LIMIT 1
+            """,
+            (plan_id,),
+        )
+        return dict(row) if row else None
+
 
     async def increment_tickets_used(self, instance_id: str) -> Tuple[bool, Optional[str]]:
         """
@@ -1589,10 +1903,12 @@ class MasterDatabase:
                     tickets_used,
                     tickets_limit,
                     over_limit,
+                    last_expiring_notice_date,
+                    last_paused_notice_at,
                     created_at,
                     updated_at
                 )
-                VALUES (%s, %s, %s, %s, 0, %s, FALSE, %s, %s)
+                VALUES (%s, %s, %s, %s, 0, %s, FALSE, NULL, NULL, %s, %s)
                 """,
                 (
                     instance_id,

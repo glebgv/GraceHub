@@ -88,7 +88,6 @@ TEXTS_EN = Texts(
     ticket_btn_spam="Spam",
     ticket_btn_close="Close",
     ticket_btn_compact="⬅️ Collapse",
-    ticket_not_found="Ticket not found",
     ticket_taken_in_work="Ticket has been taken in work",
     ticket_assign_nobody="There is no one to assign",
     ticket_assign_cancel="Cancelled",
@@ -97,6 +96,7 @@ TEXTS_EN = Texts(
     ticket_restored_from_spam="Ticket has been restored from spam",
     ticket_closed="Ticket has been closed",
     ticket_reopened="Ticket has been reopened",
+    ticket_not_found="Ticket not found",
 
     ticket_closed_rating_request="Your request has been closed. Please rate the specialist:",
     rating_topic_message="User rating: {emoji}",
@@ -289,6 +289,12 @@ TEXTS_EN = Texts(
     billing_button_pay_stars="💳 Pay with Stars",
     billing_button_back_plans="⬅️ Back to plans",
 
+    billing_expiring_title="🔔 <b>Plan reminder</b>\n\n",
+    billing_expiring_body=(
+        "Instance @{bot_username} has {days_left} days left before the billing period ends.\n"
+        "Extend your plan to keep the bot running without limitations."
+    ),
+
     master_remove_owner_only="Access is restricted to the owner only",
     master_remove_not_yours="❌ This bot does not belong to you",
     master_remove_confirm_title="🤖 <b>{bot_name}</b> (@{bot_username})",
@@ -297,5 +303,26 @@ TEXTS_EN = Texts(
     master_remove_confirm_yes="✅ Yes, delete",
     master_remove_confirm_cancel="❌ Cancel",
     master_menu_billing="💳 Plans & Billing",
+    attachment_too_big = "The file is too large. Please send a smaller file.",
+    too_many_messages="Too many messages. Please wait a bit and try again.",
+    billing_plans_title="Choose a plan for your account:",
+    billing_plan_line="• <b>{plan_name}</b>: {price_stars} ⭐ / {period_days} days, limit {tickets_limit} tickets",
+    menu_rating = "Rating on close",
+    rating_state_on = "Rating request: ENABLED",
+    rating_state_off = "Rating request: DISABLED",
+
+    rating_screen = (
+        "{state}\n\n"
+        "When enabled, after a ticket is closed the user will receive "
+        "a request to rate the support quality."
+    ),
+
+    rating_toggle_btn = "Toggle rating request",
+
+    rating_toggled = "Rating request state has been changed.\n\n{state}",
+    master_current_plan_with_expiry = "Current plan: {plan_name} (until {date}), {days_left} days left.",
+    master_current_plan_no_date = "Current plan: {plan_name}, {days_left} days left.",
+    master_current_plan_paused = "Plan {plan_name} is paused (until {date}). Renew your subscription to continue.",
+    billing_unknown_plan_name = "Unknown plan",
 )
 

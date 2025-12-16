@@ -49,3 +49,31 @@ OWNER_TELEGRAM_ID = int(os.getenv("GRACEHUB_OWNER_TELEGRAM_ID", "0")) or None
 
 WORKER_MONITOR_INTERVAL = int(os.getenv("WORKER_MONITOR_INTERVAL", "600"))
 BILLING_CRON_INTERVAL = int(os.getenv("BILLING_CRON_INTERVAL", "3600"))
+
+WORKER_MAX_FILE_MB: int = int(os.getenv("WORKER_MAX_FILE_MB", 50))
+
+ANTIFLOOD_MAX_USER_MESSAGES_PER_MINUTE = int(os.getenv("ANTIFLOOD_MAX_USER_MESSAGES_PER_MINUTE", "30"))
+
+# TON payment
+TON_NETWORK = os.getenv("TON_NETWORK", "testnet")  # "testnet" / "mainnet"
+TON_WALLET_ADDRESS = os.getenv("TON_WALLET_ADDRESS", "")
+TON_API_BASE_URL = os.getenv("TON_API_BASE_URL", "https://testnet.toncenter.com/api/v2")
+TON_API_KEY = os.getenv("TON_API_KEY", "")
+TON_CHECK_DELAY_SECONDS = int(os.getenv("TON_CHECK_DELAY_SECONDS", "5"))
+TON_CONFIRMATIONS_REQUIRED = int(os.getenv("TON_CONFIRMATIONS_REQUIRED", "1"))
+
+TON_PRICE_PER_PERIOD_LITE = float(os.getenv("TON_PRICE_PER_PERIOD_LITE", "0.3"))
+TON_PRICE_PER_PERIOD_PRO = float(os.getenv("TON_PRICE_PER_PERIOD_PRO", "0.8"))
+TON_PRICE_PER_PERIOD_ENTERPRISE = float(os.getenv("TON_PRICE_PER_PERIOD_ENTERPRISE", "2.5"))
+
+# YooKassa payment
+YOOKASSA_SHOP_ID = os.getenv("YOOKASSA_SHOP_ID", "")
+YOOKASSA_SECRET_KEY = os.getenv("YOOKASSA_SECRET_KEY", "")
+YOOKASSA_RETURN_URL = os.getenv("YOOKASSA_RETURN_URL", "")
+
+# булево из env: "1/0", "true/false", "yes/no"
+YOOKASSA_TEST_MODE = os.getenv("YOOKASSA_TEST_MODE", "0").strip().lower() in ("1", "true", "yes", "y", "on")
+
+YOOKASSA_PRICE_RUB_LITE = float(os.getenv("YOOKASSA_PRICE_RUB_LITE", "0"))
+YOOKASSA_PRICE_RUB_PRO = float(os.getenv("YOOKASSA_PRICE_RUB_PRO", "0"))
+YOOKASSA_PRICE_RUB_ENTERPRISE = float(os.getenv("YOOKASSA_PRICE_RUB_ENTERPRISE", "0"))

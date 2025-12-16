@@ -33,8 +33,44 @@ GraceHub 是一个 SaaS 平台，使您能够直接在 Telegram 中部署支持�
 
 **🌐 网站:** [gracehub.ru](https://gracehub.ru)  
 **📢 Telegram 频道:** [@gracehubru](https://t.me/gracehubru)  
-**👨‍💻 开发者:** [@Gribson_Micro](https://t.me/Gribson_Micro)
+**👨‍💻 开发者:** [@Gribson_Micro](https://t.me/Gribson_Micro)  
 **🗺️ 路线图:** [ROADMAP.md](./ROADMAP.md)
+
+<div align="center">
+  <h3>📱 界面截图</h3>
+  <table>
+    <tr>
+      <td align="center"><img src="./images/gracehub1.png" width="180" alt="起始页面"></td>
+      <td align="center"><img src="./images/gracehub2.png" width="180" alt="仪表板"></td>
+      <td align="center"><img src="./images/gracehub3.png" width="180" alt="添加机器人"></td>
+    </tr>
+    <tr>
+      <td align="center"><em>起始页面</em></td>
+      <td align="center"><em>仪表板</em></td>
+      <td align="center"><em>添加机器人</em></td>
+    </tr>
+    <tr>
+      <td align="center"><img src="./images/gracehub4.png" width="180" alt="支付部分"></td>
+      <td align="center"><img src="./images/gracehub5.png" width="180" alt="截图 5"></td>
+      <td align="center"><img src="./images/gracehub6.png" width="180" alt="截图 6"></td>
+    </tr>
+    <tr>
+      <td align="center"><em>支付部分</em></td>
+      <td align="center"><em>主机器人，可以在此绑定支持机器人</em></td>
+      <td align="center"><em>支持机器人管理员菜单</em></td>
+    </tr>
+    <tr>
+      <td align="center"><img src="./images/gracehub7.png" width="180" alt="截图 7"></td>
+      <td align="center"><img src="./images/gracehub8.png" width="180" alt="截图 8"></td>
+      <td align="center"><img src="./images/gracehub9.png" width="180" alt="截图 9"></td>
+    </tr>
+    <tr>
+      <td align="center"><em>收到客户请求</em></td>
+      <td align="center"><em>工单管理菜单</em></td>
+      <td align="center"><em>回复客户</em></td>
+    </tr>
+  </table>
+</div>
 
 ## 主要功能
 
@@ -78,6 +114,16 @@ gracehub/
 ├── logs/                           # 应用日志
 └── .env                            # 环境变量
 ```
+
+### 💳 支持的支付系统
+
+该平台已与以下支付系统集成，可接受支持服务的付款：
+
+| 系统 | 支付方式 | 技术特性 |
+| :--- | :--- | :--- |
+| **Telegram Stars** | Telegram 原生货币 | 与 [Telegram Mini Apps Billing](https://core.telegram.org/bots/payments) 直接集成。付款在 Telegram 平台内处理。 |
+| **TON Coin** | 加密货币 (Toncoin) | 直接转账到 TON 钱包。交易在 TON 区块链上处理，无需在平台端使用智能合约。 |
+| **YooKassa** | 支付聚合器 (RU) | 按第 54-FZ 法律接受付款（银行卡、SBP、电子钱包）。带有支付确认网络钩子的 REST API。 |
 
 ## 📋 要求
 
@@ -240,4 +286,3 @@ journalctl -u gracehub-frontend -n 50 --no-pager
 ## 📄 许可证
 
 MIT
-

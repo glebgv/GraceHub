@@ -87,7 +87,6 @@ TEXTS_ZH = Texts(
     ticket_btn_spam="垃圾信息",
     ticket_btn_close="关闭",
     ticket_btn_compact="⬅️ 折叠",
-    ticket_not_found="未找到工单",
     ticket_taken_in_work="工单已被接手处理",
     ticket_assign_nobody="没有可分配的处理人",
     ticket_assign_cancel="已取消",
@@ -96,6 +95,7 @@ TEXTS_ZH = Texts(
     ticket_restored_from_spam="工单已从垃圾信息中恢复",
     ticket_closed="工单已关闭",
     ticket_reopened="工单已重新打开",
+    ticket_not_found="未找到工单",
 
     ticket_closed_rating_request="您的请求已关闭。请对专家进行评分：",
     rating_topic_message="用户评分：{emoji}",
@@ -286,7 +286,15 @@ TEXTS_ZH = Texts(
 
     billing_button_pay_stars="💳 使用 Stars 支付",
     billing_button_back_plans="⬅️ 返回套餐列表",
+
+    billing_expiring_title="🔔 <b>套餐到期提醒</b>\n\n",
+    billing_expiring_body=(
+        "实例 @{bot_username} 的计费周期还剩 {days_left} 天到期。\n"
+        "请及时续费，以保证机器人持续正常运行。"
+    ),
+
     master_remove_owner_only="仅限拥有者访问",
+
     master_remove_not_yours="❌ 该机器人不属于你",
     master_remove_confirm_title="🤖 <b>{bot_name}</b> (@{bot_username})",
     master_remove_confirm_question="你确定要删除这个机器人吗？",
@@ -294,5 +302,25 @@ TEXTS_ZH = Texts(
     master_remove_confirm_yes="✅ 是的，删除",
     master_remove_confirm_cancel="❌ 取消",
     master_menu_billing="💳 套餐与支付",
-)
+    attachment_too_big = "文件太大。请发送一个更小的文件。",
+    too_many_messages="消息发送过于频繁，请稍后再试。",
+    billing_plans_title="为你的账户选择套餐：",
+    billing_plan_line="• <b>{plan_name}</b>: {price_stars} ⭐ / {period_days} 天，限 {tickets_limit} 工单",
+    menu_rating = "工单关闭评分",
+    rating_state_on = "评分请求：已开启",
+    rating_state_off = "评分请求：已关闭",
 
+    rating_screen = (
+        "{state}\n\n"
+        "开启后，在工单关闭后会向用户发送消息，邀请其对支持质量进行评分。"
+    ),
+
+    rating_toggle_btn = "切换评分请求",
+
+    rating_toggled = "评分请求状态已更新。\n\n{state}",
+    master_current_plan_with_expiry = "当前套餐：{plan_name}（至 {date}），剩余 {days_left} 天。",
+    master_current_plan_no_date = "当前套餐：{plan_name}，剩余 {days_left} 天。",
+    master_current_plan_paused = "套餐 {plan_name} 已暂停（至 {date}）。请续费以继续使用。",
+    billing_unknown_plan_name = "未知套餐",
+
+)

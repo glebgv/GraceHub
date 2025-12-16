@@ -55,14 +55,37 @@ export interface SaasPlanDTO {
 
 // --- Billing invoices ---
 
+// NB: оставляем твой текущий контракт snake_case, чтобы не перепахивать Billing.tsx.
+// Просто расширяем PaymentMethod и добавляем YooKassa status DTO/метод.
+export type PaymentMethod = "telegram_stars" | "ton" | "yookassa";
+
 export interface CreateInvoiceRequest {
   plan_code: string;
   periods: number;
+  payment_method?: PaymentMethod;
 }
 
 export interface CreateInvoiceResponse {
   invoice_id: number;
   invoice_link: string;
+  // опционально: backend может вернуть ещё поля (не ломаем типизацию)
+  amount_minor_units?: number;
+  amount_ton?: number;
+  currency?: string;
+}
+
+export interface TonInvoiceStatusResponse {
+  invoice_id: number;
+  status: "pending" | "paid" | "failed";
+  tx_hash?: string | null;
+  period_applied: boolean;
+}
+
+export interface YooKassaStatusResponse {
+  invoice_id: number;
+  status: string; // pending/succeeded/canceled/waiting_for_capture/...
+  payment_id?: string | null;
+  period_applied: boolean;
 }
 
 class ApiClient {
@@ -70,20 +93,20 @@ class ApiClient {
   private baseUrl: string;
   private initData: string | null = null;
 
-  constructor(baseUrl: string = '') {
+  constructor(baseUrl: string = "") {
     // baseUrl типа "https://gracehub.ru"
     this.baseUrl = baseUrl || window.location.origin;
-    console.log('[ApiClient] baseUrl =', this.baseUrl);
+    console.log("[ApiClient] baseUrl =", this.baseUrl);
   }
 
   setToken(token: string | null) {
     this.token = token;
-    console.log('[ApiClient] setToken', !!token);
+    console.log("[ApiClient] setToken", !!token);
   }
 
   clearToken() {
     this.token = null;
-    console.log('[ApiClient] clearToken');
+    console.log("[ApiClient] clearToken");
   }
 
   /**
@@ -93,28 +116,24 @@ class ApiClient {
    */
   setInitData(initData: string) {
     this.initData = initData;
-    console.log('[ApiClient] setInitData', {
+    console.log("[ApiClient] setInitData", {
       length: initData?.length,
       preview: initData?.slice(0, 60),
     });
   }
 
-  private async request<T>(
-    method: string,
-    path: string,
-    body?: any,
-  ): Promise<T> {
+  private async request<T>(method: string, path: string, body?: any): Promise<T> {
     const url = `${this.baseUrl}${path}`;
     const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
+      "Content-Type": "application/json",
     };
 
     if (this.token) {
-      headers['Authorization'] = `Bearer ${this.token}`;
+      headers["Authorization"] = `Bearer ${this.token}`;
     }
 
     if (this.initData) {
-      headers['X-Telegram-Init-Data'] = this.initData;
+      headers["X-Telegram-Init-Data"] = this.initData;
     }
 
     const options: RequestInit = {
@@ -126,7 +145,7 @@ class ApiClient {
       options.body = JSON.stringify(body);
     }
 
-    console.log('[ApiClient] request >>>', {
+    console.log("[ApiClient] request >>>", {
       method,
       url,
       headers,
@@ -135,7 +154,7 @@ class ApiClient {
 
     const response = await fetch(url, options);
 
-    const text = await response.text().catch(() => '');
+    const text = await response.text().catch(() => "");
     let json: any = null;
 
     try {
@@ -144,7 +163,7 @@ class ApiClient {
       json = null;
     }
 
-    console.log('[ApiClient] response <<<', {
+    console.log("[ApiClient] response <<<", {
       status: response.status,
       ok: response.ok,
       url: response.url,
@@ -153,10 +172,8 @@ class ApiClient {
     });
 
     if (!response.ok) {
-      // backend для единой логики может вернуть detail, message или errors
       const detail =
-        (json && (json.detail || json.message || json.error)) ||
-        `Ошибка ${response.status}`;
+        (json && (json.detail || json.message || json.error)) || `Ошибка ${response.status}`;
       throw new Error(detail);
     }
 
@@ -164,74 +181,57 @@ class ApiClient {
   }
 
   async authTelegram(req: AuthRequest): Promise<AuthResponse> {
-    console.log('[ApiClient] authTelegram payload:', req, {
+    console.log("[ApiClient] authTelegram payload:", req, {
       url: `${this.baseUrl}/api/auth/telegram`,
     });
 
-    return this.request<AuthResponse>('POST', '/api/auth/telegram', {
-      initData: req.initData, // ключ в camelCase, как в Pydantic alias
+    return this.request<AuthResponse>("POST", "/api/auth/telegram", {
+      initData: req.initData,
       start_param: req.start_param ?? undefined,
     });
   }
 
-  async resolveInstance(
-    payload: ResolveInstanceRequest,
-  ): Promise<ResolveInstanceResponse> {
-    console.log('[ApiClient] resolveInstance payload:', payload, {
+  async resolveInstance(payload: ResolveInstanceRequest): Promise<ResolveInstanceResponse> {
+    console.log("[ApiClient] resolveInstance payload:", payload, {
       url: `${this.baseUrl}/api/resolve_instance`,
     });
 
-    return this.request<ResolveInstanceResponse>(
-      'POST',
-      '/api/resolve_instance',
-      payload,
-    );
+    return this.request<ResolveInstanceResponse>("POST", "/api/resolve_instance", payload);
   }
 
   async getMe() {
-    return this.request('GET', '/api/me');
+    return this.request("GET", "/api/me");
   }
 
   async getInstances() {
-    return this.request('GET', '/api/instances');
+    return this.request("GET", "/api/instances");
   }
 
-  async createInstanceByToken(
-    payload: CreateInstanceRequest,
-  ): Promise<InstanceDto> {
-    console.log('[ApiClient] createInstanceByToken payload:', {
+  async createInstanceByToken(payload: CreateInstanceRequest): Promise<InstanceDto> {
+    console.log("[ApiClient] createInstanceByToken payload:", {
       hasToken: !!payload.token,
       tokenPreview: payload.token?.slice(0, 10),
     });
 
-    return this.request<InstanceDto>(
-      'POST',
-      '/api/instances',
-      { token: payload.token },
-    );
+    return this.request<InstanceDto>("POST", "/api/instances", {
+      token: payload.token,
+    });
   }
 
   async deleteInstance(instanceId: string): Promise<void> {
-    return this.request<void>('DELETE', `/api/instances/${instanceId}`);
+    return this.request<void>("DELETE", `/api/instances/${instanceId}`);
   }
 
   async getStats(instanceId: string, days: number = 30) {
-    return this.request(
-      'GET',
-      `/api/instances/${instanceId}/stats?days=${days}`,
-    );
+    return this.request("GET", `/api/instances/${instanceId}/stats?days=${days}`);
   }
 
   async getSettings(instanceId: string) {
-    return this.request('GET', `/api/instances/${instanceId}/settings`);
+    return this.request("GET", `/api/instances/${instanceId}/settings`);
   }
 
   async updateSettings(instanceId: string, settings: any) {
-    return this.request(
-      'POST',
-      `/api/instances/${instanceId}/settings`,
-      settings,
-    );
+    return this.request("POST", `/api/instances/${instanceId}/settings`, settings);
   }
 
   async getTickets(
@@ -242,59 +242,63 @@ class ApiClient {
     offset: number = 0,
   ) {
     const params = new URLSearchParams();
-    if (status) params.append('status', status);
-    if (search) params.append('search', search);
-    params.append('limit', limit.toString());
-    params.append('offset', offset.toString());
+    if (status) params.append("status", status);
+    if (search) params.append("search", search);
+    params.append("limit", limit.toString());
+    params.append("offset", offset.toString());
 
-    return this.request(
-      'GET',
-      `/api/instances/${instanceId}/tickets?${params.toString()}`,
-    );
+    return this.request("GET", `/api/instances/${instanceId}/tickets?${params.toString()}`);
   }
 
   async getOperators(instanceId: string) {
-    return this.request('GET', `/api/instances/${instanceId}/operators`);
+    return this.request("GET", `/api/instances/${instanceId}/operators`);
   }
 
   async addOperator(instanceId: string, userId: number, role: string) {
-    return this.request('POST', `/api/instances/${instanceId}/operators`, {
+    return this.request("POST", `/api/instances/${instanceId}/operators`, {
       user_id: userId,
       role,
     });
   }
 
   async removeOperator(instanceId: string, userId: number) {
-    return this.request(
-      'DELETE',
-      `/api/instances/${instanceId}/operators/${userId}`,
-    );
+    return this.request("DELETE", `/api/instances/${instanceId}/operators/${userId}`);
   }
 
   // === Billing ===
 
   async getInstanceBilling(instanceId: string) {
-    return this.request(
-      'GET',
-      `/api/instances/${instanceId}/billing`,
-    );
+    return this.request("GET", `/api/instances/${instanceId}/billing`);
   }
 
   async getSaasPlans(): Promise<SaasPlanDTO[]> {
-    return this.request<SaasPlanDTO[]>(
-      'GET',
-      '/api/saas/plans',
+    return this.request<SaasPlanDTO[]>("GET", "/api/saas/plans");
+  }
+
+  async createBillingInvoice(instanceId: string, payload: CreateInvoiceRequest): Promise<CreateInvoiceResponse> {
+    return this.request<CreateInvoiceResponse>(
+      "POST",
+      `/api/instances/${instanceId}/billing/create_invoice`,
+      payload,
     );
   }
 
-  async createBillingInvoice(
-    instanceId: string,
-    payload: CreateInvoiceRequest,
-  ): Promise<CreateInvoiceResponse> {
-    return this.request<CreateInvoiceResponse>(
-      'POST',
-      `/api/instances/${instanceId}/billing/create_invoice`,
-      payload,
+  // TON invoice status polling
+  async getTonInvoiceStatus(invoiceId: number): Promise<TonInvoiceStatusResponse> {
+    const params = new URLSearchParams();
+    params.append("invoice_id", String(invoiceId));
+
+    return this.request<TonInvoiceStatusResponse>("GET", `/api/billing/ton/status?${params.toString()}`);
+  }
+
+  // NEW: YooKassa invoice status polling
+  async getYooKassaInvoiceStatus(invoiceId: number): Promise<YooKassaStatusResponse> {
+    const params = new URLSearchParams();
+    params.append("invoice_id", String(invoiceId));
+
+    return this.request<YooKassaStatusResponse>(
+      "GET",
+      `/api/billing/yookassa/status?${params.toString()}`,
     );
   }
 }

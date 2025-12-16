@@ -63,5 +63,7 @@ ssl/
 venv/
 data/instances
 docker/
-
+site/
+mkdocs.yml
 11
+deploy_git.sh
