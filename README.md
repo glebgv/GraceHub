@@ -36,6 +36,28 @@ GraceHub — это SaaS платформа, которая позволяет �
 **👨‍💻 Разработчик:** [@Gribson_Micro](https://t.me/Gribson_Micro)  
 **🗺️ Roadmap:** [ROADMAP.md](./ROADMAP.md)
 
+<div align="center">
+  <h3>📱 Скриншоты интерфейса</h3>
+  <table>
+    <tr>
+      <td align="center"><img src="./images/gracehub1.png" width="200" alt="Скриншот 1"></td>
+      <td align="center"><img src="./images/gracehub2.png" width="200" alt="Скриншот 2"></td>
+    </tr>
+    <tr>
+      <td align="center"><em>Личный кабинет</em></td>
+      <td align="center"><em>Управление ботами</em></td>
+    </tr>
+    <tr>
+      <td align="center"><img src="./images/gracehub3.png" width="200" alt="Скриншот 3"></td>
+      <td align="center"><img src="./images/gracehub4.png" width="200" alt="Скриншот 4"></td>
+    </tr>
+    <tr>
+      <td align="center"><em>Статистика</em></td>
+      <td align="center"><em>Настройки</em></td>
+    </tr>
+  </table>
+</div>
+
 ## Основной функционал
 
 - **Главный бот** — центральная точка привязки всех ботов обратной связи
