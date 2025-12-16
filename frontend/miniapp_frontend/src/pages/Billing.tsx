@@ -106,7 +106,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
   const [selectedPeriod, setSelectedPeriod] = useState<PeriodOption | null>(periodOptions[0]);
   const [isModalOpen, setIsModalOpen] = useState(false);
 
-  // По умолчанию пусто => показываем placeholder "Выберите способ оплаты"
+  // По умолчанию пусто => показываем placeholder
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod | ''>('');
 
   const [submitting, setSubmitting] = useState(false);
@@ -355,7 +355,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
     setIsTonModalOpen(false);
     setTonInvoice(null);
 
-    showCopied(t('billing.cancelled', 'Отменено'));
+    showCopied(t('billing.cancelled'));
   };
 
   const pollYooKassaStatus = async (
@@ -411,7 +411,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
     setIsYkModalOpen(false);
     setYkInvoice(null);
 
-    showCopied(t('billing.cancelled', 'Отменено'));
+    showCopied(t('billing.cancelled'));
   };
 
   const formatTonAmountFromResp = (resp: any): string => {
@@ -440,7 +440,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
 
     // важно: не даём отправить запрос с payment_method=''
     if (!paymentMethod) {
-      setSubmitError(t('billing.choose_payment_method', 'Выберите способ оплаты'));
+      setSubmitError(t('billing.choose_payment_method'));
       return;
     }
 
@@ -530,7 +530,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
         return;
       }
 
-      setSubmitError(t('billing.payment_failed', 'Неизвестный способ оплаты'));
+      setSubmitError(t('billing.payment_failed'));
     } catch (e: any) {
       console.error('createBillingInvoice error', e);
       setSubmitError(e?.message || 'Failed to create invoice');
@@ -564,14 +564,14 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
         >
           <div className="modal-header">
             <h3 className="modal-title modal-title--gradient">
-              {t('billing.ton_requisites_title', 'Реквизиты для оплаты TON')}
+              {t('billing.ton_requisites_title')}
             </h3>
             <button
               type="button"
               className="modal-close"
               onClick={() => setIsTonModalOpen(false)}
-              aria-label={t('billing.close', 'Закрыть')}
-              title={t('billing.close', 'Закрыть')}
+              aria-label={t('billing.close')}
+              title={t('billing.close')}
             >
               ✕
             </button>
@@ -603,19 +603,15 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
             <div style={{ display: 'grid', rowGap: 12 }}>
               <div>
                 <div style={{ fontSize: 12, opacity: 0.75, display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span>{t('billing.ton_addr_label', 'Адрес')}</span>
+                  <span>{t('billing.ton_addr_label')}</span>
                   <button
                     type="button"
                     style={iconBtnStyle}
-                    aria-label={t('billing.copy_address', 'Скопировать адрес')}
-                    title={t('billing.copy_address', 'Скопировать адрес')}
+                    aria-label={t('billing.copy_address')}
+                    title={t('billing.copy_address')}
                     onClick={async () => {
                       const ok = await copyToClipboard(tonInvoice.address);
-                      showCopied(
-                        ok
-                          ? t('billing.copied', 'Скопировано')
-                          : t('billing.copy_failed', 'Не удалось скопировать'),
-                      );
+                      showCopied(ok ? t('billing.copied') : t('billing.copy_failed'));
                     }}
                   >
                     <CopyIcon />
@@ -626,20 +622,16 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
 
               <div>
                 <div style={{ fontSize: 12, opacity: 0.75, display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span>{t('billing.ton_amount_label', 'Сумма')}</span>
+                  <span>{t('billing.ton_amount_label')}</span>
                   <button
                     type="button"
                     style={iconBtnStyle}
-                    aria-label={t('billing.copy_amount', 'Скопировать сумму')}
-                    title={t('billing.copy_amount', 'Скопировать сумму')}
+                    aria-label={t('billing.copy_amount')}
+                    title={t('billing.copy_amount')}
                     onClick={async () => {
                       const val = `${tonInvoice.amountTon}`;
                       const ok = await copyToClipboard(val);
-                      showCopied(
-                        ok
-                          ? t('billing.copied', 'Скопировано')
-                          : t('billing.copy_failed', 'Не удалось скопировать'),
-                      );
+                      showCopied(ok ? t('billing.copied') : t('billing.copy_failed'));
                     }}
                   >
                     <CopyIcon />
@@ -650,19 +642,15 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
 
               <div>
                 <div style={{ fontSize: 12, opacity: 0.75, display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span>{t('billing.ton_comment_label', 'Комментарий')}</span>
+                  <span>{t('billing.ton_comment_label')}</span>
                   <button
                     type="button"
                     style={iconBtnStyle}
-                    aria-label={t('billing.copy_comment', 'Скопировать комментарий')}
-                    title={t('billing.copy_comment', 'Скопировать комментарий')}
+                    aria-label={t('billing.copy_comment')}
+                    title={t('billing.copy_comment')}
                     onClick={async () => {
                       const ok = await copyToClipboard(tonInvoice.comment);
-                      showCopied(
-                        ok
-                          ? t('billing.copied', 'Скопировано')
-                          : t('billing.copy_failed', 'Не удалось скопировать'),
-                      );
+                      showCopied(ok ? t('billing.copied') : t('billing.copy_failed'));
                     }}
                   >
                     <CopyIcon />
@@ -683,13 +671,8 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
                 lineHeight: 1.35,
               }}
             >
-              <div style={{ fontWeight: 700, marginBottom: 4 }}>{t('billing.important', 'Важно')}</div>
-              <div>
-                {t(
-                  'billing.ton_comment_required',
-                  'Обязательно укажите комментарий, иначе платёж не засчитается автоматически.',
-                )}
-              </div>
+              <div style={{ fontWeight: 700, marginBottom: 4 }}>{t('billing.important')}</div>
+              <div>{t('billing.ton_comment_required')}</div>
             </div>
 
             {tonCheckError && (
@@ -697,10 +680,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
             )}
 
             <p style={{ marginTop: 10, fontSize: 12, opacity: 0.85 }}>
-              {t(
-                'billing.ton_manual_hint_short',
-                'Если кошелёк не установлен или данные не заполнились автоматически — установите кошелёк и отправьте перевод по реквизитам выше.',
-              )}
+              {t('billing.ton_manual_hint_short')}
             </p>
           </div>
 
@@ -711,7 +691,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
               onClick={() => openTonLinkExternally(tonInvoice.invoiceLink)}
               disabled={submitting || tonChecking}
             >
-              {t('billing.open_wallet_btn', 'Открыть кошелёк')}
+              {t('billing.open_wallet_btn')}
             </button>
 
             <button
@@ -720,11 +700,11 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
               onClick={handleCheckTonPayment}
               disabled={submitting || tonChecking}
             >
-              {tonChecking ? t('billing.checking', 'Проверяем...') : t('billing.check_payment', 'Проверить оплату')}
+              {tonChecking ? t('billing.checking') : t('billing.check_payment')}
             </button>
 
             <button type="button" className="btn btn--ghost" onClick={handleCancelTonPayment} disabled={submitting}>
-              {t('billing.cancel_payment', 'Отмена оплаты')}
+              {t('billing.cancel_payment')}
             </button>
           </div>
         </div>
@@ -753,7 +733,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
         >
           <div className="modal-header">
             <h3 className="modal-title modal-title--gradient">
-              {t('billing.yk_title', 'Оплата ЮKassa')}
+              {t('billing.yk_title')}
             </h3>
             <button type="button" className="modal-close" onClick={() => setIsYkModalOpen(false)}>
               ✕
@@ -777,11 +757,11 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
             )}
 
             <p style={{ marginTop: 0, fontSize: 13, opacity: 0.85 }}>
-              {t('billing.yk_hint', 'Оплатите по ссылке, затем вернитесь и нажмите “Проверить оплату”.')}
+              {t('billing.yk_hint')}
             </p>
 
             <div style={{ fontSize: 12, opacity: 0.8, wordBreak: 'break-all' }}>
-              {t('billing.yk_invoice_id', 'Invoice')}: {ykInvoice.invoiceId}
+              {t('billing.yk_invoice_id')}: {ykInvoice.invoiceId}
             </div>
 
             {ykCheckError && (
@@ -796,7 +776,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
               onClick={() => openYooKassaLinkExternally(ykInvoice.invoiceLink)}
               disabled={submitting || ykChecking}
             >
-              {t('billing.open_payment_page', 'Открыть страницу оплаты')}
+              {t('billing.open_payment_page')}
             </button>
 
             <button
@@ -805,11 +785,11 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
               onClick={handleCheckYooKassaPayment}
               disabled={submitting || ykChecking}
             >
-              {ykChecking ? t('billing.checking', 'Проверяем...') : t('billing.check_payment', 'Проверить оплату')}
+              {ykChecking ? t('billing.checking') : t('billing.check_payment')}
             </button>
 
             <button type="button" className="btn btn--ghost" onClick={handleCancelYooKassaPayment} disabled={submitting}>
-              {t('billing.cancel_payment', 'Отмена оплаты')}
+              {t('billing.cancel_payment')}
             </button>
           </div>
         </div>
@@ -820,9 +800,9 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
   };
 
   const paymentMethods: Array<{ value: PaymentMethod; label: string }> = [
-    { value: 'telegram_stars', label: t('billing.payment_method_stars', 'Telegram Stars') },
-    { value: 'ton', label: t('billing.payment_method_ton', 'TON') },
-    { value: 'yookassa', label: t('billing.payment_method_yookassa', 'ЮKassa (карта/СБП)') },
+    { value: 'telegram_stars', label: t('billing.payment_method_stars') },
+    { value: 'ton', label: t('billing.payment_method_ton') },
+    { value: 'yookassa', label: t('billing.payment_method_yookassa') },
   ];
 
   if (loading) {
@@ -926,7 +906,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
               {/* Способ оплаты (dropdown) */}
               <div style={{ marginTop: 12 }}>
                 <div className="modal-section-title">
-                  {t('billing.payment_method_label', 'Способ оплаты')}
+                  {t('billing.payment_method_label')}
                 </div>
 
                 <select
@@ -945,7 +925,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
                   }}
                 >
                   <option value="" disabled>
-                    {t('billing.payment_method_placeholder', 'Выберите способ оплаты')}
+                    {t('billing.payment_method_placeholder')}
                   </option>
 
                   {paymentMethods.map((m) => (
@@ -957,19 +937,13 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
 
                 {paymentMethod === 'ton' && (
                   <p style={{ marginTop: 8, fontSize: 12, opacity: 0.8 }}>
-                    {t(
-                      'billing.ton_hint',
-                      'Нажмите "Выбрать", затем нажмите "Открыть кошелёк" и оплатите. После оплаты вернитесь сюда и нажмите "Проверить оплату".',
-                    )}
+                    {t('billing.ton_hint')}
                   </p>
                 )}
 
                 {paymentMethod === 'yookassa' && (
                   <p style={{ marginTop: 8, fontSize: 12, opacity: 0.8 }}>
-                    {t(
-                      'billing.yk_hint_inline',
-                      'Нажмите "Выбрать", оплатите в ЮKassa, затем вернитесь и нажмите "Проверить оплату".',
-                    )}
+                    {t('billing.yk_hint_inline')}
                   </p>
                 )}
               </div>
@@ -1015,9 +989,9 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
                   {paymentMethod === 'telegram_stars'
                     ? `${selectedPlan.priceStars * selectedPeriod.multiplier} ⭐`
                     : paymentMethod === 'ton'
-                      ? t('billing.ton_price_after_invoice', 'Сумма будет показана после создания инвойса')
+                      ? t('billing.ton_price_after_invoice')
                       : paymentMethod === 'yookassa'
-                        ? t('billing.yk_price_after_invoice', 'Сумма будет показана после создания инвойса')
+                        ? t('billing.yk_price_after_invoice')
                         : '—'}
                 </div>
 
@@ -1076,7 +1050,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
           >
             <div className="modal-header">
               <h3 className="modal-title modal-title--gradient">
-                {t('billing.payment_success_title', 'Оплата успешна')}
+                {t('billing.payment_success_title')}
               </h3>
               <button
                 type="button"
@@ -1112,7 +1086,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
                   window.location.reload();
                 }}
               >
-                {t('billing.payment_success_ok', 'Ок')}
+                {t('billing.payment_success_ok')}
               </button>
             </div>
           </div>

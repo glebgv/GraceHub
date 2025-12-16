@@ -40,32 +40,68 @@
     "title": "Тарифы и оплата",
     "loading": "Загрузка тарифов…",
     "error_prefix": "Ошибка загрузки тарифов",
-    "button_choose": "Выбрать",
-    "demo_name": "Demo",
-    "lite_name": "Lite",
-    "pro_name": "Pro",
-    "enterprise_name": "Enterprise",
-    "period_and_limit": "{{days}} дней • до {{limit}} тикетов",
-    "loading": "Загрузка тарифов…",
-    "error_prefix": "Ошибка загрузки тарифов",
+
     "button_details": "Подробнее",
     "button_choose": "Выбрать",
     "button_cancel": "Отмена",
+    "button_processing": "Обработка...",
+
     "period_and_limit": "{{days}} дней • до {{limit}} тикетов",
+
     "modal_title": "Тариф {{name}}",
     "modal_description": "Тариф {{name}} включает до {{ticketsLimit}} тикетов в месяц.",
     "base_period": "Базовый период: {{days}} дней • до {{limit}} тикетов в месяц.",
     "choose_period_label": "Выберите срок оплаты",
+
     "period_1x": "1 месяц",
-    "period_3x": "3 месяц",
-    "period_12x": "12 месяц",
+    "period_3x": "3 месяца",
+    "period_12x": "12 месяцев",
+
     "final_period_label": "Итоговый период",
     "final_price_label": "Итоговая цена",
+
+    "payment_method_label": "Способ оплаты",
+    "payment_method_placeholder": "Выберите способ оплаты",
+    "payment_method_stars": "Telegram Stars",
+    "payment_method_ton": "TON",
+    "payment_method_yookassa": "ЮKassa (карта/СБП)",
+
+    "ton_hint": "Нажмите «Выбрать», затем нажмите «Открыть кошелёк» и оплатите. После оплаты вернитесь сюда и нажмите «Проверить оплату».",
+    "yk_hint_inline": "Нажмите «Выбрать», оплатите в ЮKassa, затем вернитесь и нажмите «Проверить оплату».",
+
+    "ton_price_after_invoice": "Сумма будет показана после создания инвойса",
+    "yk_price_after_invoice": "Сумма будет показана после создания инвойса",
+
+    "ton_requisites_title": "Реквизиты для оплаты TON",
+    "close": "Закрыть",
+    "ton_addr_label": "Адрес",
+    "ton_amount_label": "Сумма",
+    "ton_comment_label": "Комментарий",
+    "copy_address": "Скопировать адрес",
+    "copy_amount": "Скопировать сумму",
+    "copy_comment": "Скопировать комментарий",
+    "copied": "Скопировано",
+    "copy_failed": "Не удалось скопировать",
+
+    "important": "Важно",
+    "ton_comment_required": "Обязательно укажите комментарий, иначе платёж не засчитается автоматически.",
+    "ton_manual_hint_short": "Если кошелёк не установлен или данные не заполнились автоматически — установите кошелёк и отправьте перевод по реквизитам выше.",
+
+    "open_wallet_btn": "Открыть кошелёк",
+    "open_payment_page": "Открыть страницу оплаты",
+    "check_payment": "Проверить оплату",
+    "checking": "Проверяем...",
+    "cancel_payment": "Отмена оплаты",
+    "cancelled": "Отменено",
+
+    "yk_title": "Оплата ЮKassa",
+    "yk_hint": "Оплатите по ссылке, затем вернитесь и нажмите «Проверить оплату».",
+    "yk_invoice_id": "Инвойс",
+
     "payment_success_title": "Оплата успешна",
     "payment_success_body": "Тариф {{name}} на {{months}} мес. успешно оплачен.",
     "payment_success_ok": "Ок",
-    "payment_failed": "Не удалось подтвердить оплату. Попробуйте ещё раз.",
-    "button_processing": "Обработка..."
+    "payment_failed": "Не удалось подтвердить оплату. Попробуйте ещё раз."
   },
   "firstLaunch": {
     "welcome": "Добро пожаловать в платформу управления ботами GraceHub!",

@@ -40,32 +40,68 @@
     "title": "Plans & billing",
     "loading": "Loading plans…",
     "error_prefix": "Failed to load plans",
-    "button_choose": "Choose",
-    "demo_name": "Demo",
-    "lite_name": "Lite",
-    "pro_name": "Pro",
-    "enterprise_name": "Enterprise",
-    "period_and_limit": "{{days}} days • up to {{limit}} tickets",
-    "loading": "Loading plans…",
-    "error_prefix": "Failed to load plans",
+
     "button_details": "Details",
     "button_choose": "Choose",
     "button_cancel": "Cancel",
+    "button_processing": "Processing...",
+
     "period_and_limit": "{{days}} days • up to {{limit}} tickets",
+
     "modal_title": "{{name}} plan",
-    "modal_description": "{{name}} plan includes up to {{ticketsLimit}} tickets per month.",
+    "modal_description": "The {{name}} plan includes up to {{ticketsLimit}} tickets per month.",
     "base_period": "Base period: {{days}} days • up to {{limit}} tickets per month.",
     "choose_period_label": "Choose billing period",
-    "period_1x": "1 period",
-    "period_3x": "3 periods",
-    "period_12x": "12 periods",
+
+    "period_1x": "1 month",
+    "period_3x": "3 months",
+    "period_12x": "12 months",
+
     "final_period_label": "Total period",
     "final_price_label": "Total price",
+
+    "payment_method_label": "Payment method",
+    "payment_method_placeholder": "Choose payment method",
+    "payment_method_stars": "Telegram Stars",
+    "payment_method_ton": "TON",
+    "payment_method_yookassa": "YooKassa (card/SBP)",
+
+    "ton_hint": "Click “Choose”, then click “Open wallet” and pay. After payment, return here and press “Check payment”.",
+    "yk_hint_inline": "Click “Choose”, pay in YooKassa, then return and press “Check payment”.",
+
+    "ton_price_after_invoice": "The amount will be shown after the invoice is created",
+    "yk_price_after_invoice": "The amount will be shown after the invoice is created",
+
+    "ton_requisites_title": "TON payment details",
+    "close": "Close",
+    "ton_addr_label": "Address",
+    "ton_amount_label": "Amount",
+    "ton_comment_label": "Comment",
+    "copy_address": "Copy address",
+    "copy_amount": "Copy amount",
+    "copy_comment": "Copy comment",
+    "copied": "Copied",
+    "copy_failed": "Failed to copy",
+
+    "important": "Important",
+    "ton_comment_required": "Be sure to specify the comment, otherwise the payment will not be applied automatically.",
+    "ton_manual_hint_short": "If the wallet is not installed or the data was not filled automatically, install a wallet and send a transfer using the details above.",
+
+    "open_wallet_btn": "Open wallet",
+    "open_payment_page": "Open payment page",
+    "check_payment": "Check payment",
+    "checking": "Checking...",
+    "cancel_payment": "Cancel payment",
+    "cancelled": "Cancelled",
+
+    "yk_title": "YooKassa payment",
+    "yk_hint": "Pay using the link, then return and press “Check payment”.",
+    "yk_invoice_id": "Invoice",
+
     "payment_success_title": "Payment successful",
     "payment_success_body": "Plan {{name}} for {{months}} month(s) has been paid successfully.",
     "payment_success_ok": "OK",
-    "payment_failed": "Failed to confirm the payment. Please try again.",
-    "button_processing": "Processing..."
+    "payment_failed": "Failed to confirm the payment. Please try again."
   },
   "firstLaunch": {
     "welcome": "Welcome to the GraceHub bot management platform!",
