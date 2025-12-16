@@ -33,9 +33,44 @@ GraceHub es una plataforma SaaS que le permite desplegar su soporte directamente
 
 **🌐 Sitio Web:** [gracehub.ru](https://gracehub.ru)  
 **📢 Canal de Telegram:** [@gracehubru](https://t.me/gracehubru)  
-**👨‍💻 Desarrollador:** [@Gribson_Micro](https://t.me/Gribson_Micro)
-**🗺️ Hoja de ruta:** [ROADMAP.md](./ROADMAP.md)
+**👨‍💻 Desarrollador:** [@Gribson_Micro](https://t.me/Gribson_Micro)  
+**🗺️ Hoja de Ruta:** [ROADMAP.md](./ROADMAP.md)
 
+<div align="center">
+  <h3>📱 Capturas de Pantalla de la Interfaz</h3>
+  <table>
+    <tr>
+      <td align="center"><img src="./images/gracehub1.png" width="180" alt="Página de Inicio"></td>
+      <td align="center"><img src="./images/gracehub2.png" width="180" alt="Panel de Control"></td>
+      <td align="center"><img src="./images/gracehub3.png" width="180" alt="Agregar un Bot"></td>
+    </tr>
+    <tr>
+      <td align="center"><em>Página de Inicio</em></td>
+      <td align="center"><em>Panel de Control</em></td>
+      <td align="center"><em>Agregar un Bot</em></td>
+    </tr>
+    <tr>
+      <td align="center"><img src="./images/gracehub4.png" width="180" alt="Sección de Pagos"></td>
+      <td align="center"><img src="./images/gracehub5.png" width="180" alt="Captura de Pantalla 5"></td>
+      <td align="center"><img src="./images/gracehub6.png" width="180" alt="Captura de Pantalla 6"></td>
+    </tr>
+    <tr>
+      <td align="center"><em>Sección de Pagos</em></td>
+      <td align="center"><em>Bot Principal Donde Puede Vincular Bot de Soporte</em></td>
+      <td align="center"><em>Menú de Administrador del Bot de Soporte</em></td>
+    </tr>
+    <tr>
+      <td align="center"><img src="./images/gracehub7.png" width="180" alt="Captura de Pantalla 7"></td>
+      <td align="center"><img src="./images/gracehub8.png" width="180" alt="Captura de Pantalla 8"></td>
+      <td align="center"><img src="./images/gracehub9.png" width="180" alt="Captura de Pantalla 9"></td>
+    </tr>
+    <tr>
+      <td align="center"><em>Solicitud de Cliente Recibida</em></td>
+      <td align="center"><em>Menú de Gestión de Tickets</em></td>
+      <td align="center"><em>Respuesta al Cliente</em></td>
+    </tr>
+  </table>
+</div>
 
 ## Características Principales
 
@@ -79,6 +114,16 @@ gracehub/
 ├── logs/                           # Registros de aplicación
 └── .env                            # Variables de entorno
 ```
+
+### 💳 Sistemas de Pago Soportados
+
+La plataforma está integrada con los siguientes sistemas de pago para aceptar pagos por servicios de soporte:
+
+| Sistema | Método de Pago | Características Técnicas |
+| :--- | :--- | :--- |
+| **Telegram Stars** | Moneda Nativa de Telegram | Integración directa con [Telegram Mini Apps Billing](https://core.telegram.org/bots/payments). Los pagos se procesan dentro de la plataforma Telegram. |
+| **TON Coin** | Criptomoneda (Toncoin) | Transferencias directas a billetera TON. Las transacciones se procesan en la cadena de bloques TON sin usar contratos inteligentes en el lado de la plataforma. |
+| **YooKassa** | Agregador de Pagos (RU) | Aceptación de pagos según la ley 54-FZ (tarjetas bancarias, SBP, billeteras electrónicas). API REST con webhooks para confirmación de pagos. |
 
 ## 📋 Requisitos
 
@@ -241,4 +286,3 @@ Su sistema de soporte en Telegram está completamente configurado. Los clientes 
 ## 📄 Licencia
 
 MIT
-
