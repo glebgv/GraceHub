@@ -1140,28 +1140,6 @@ class MasterDatabase:
             """
         )
 
-        # ----------------------------------------------------------------
-        # Миграции для уже созданной таблицы (если проект уже развёрнут)
-        # ----------------------------------------------------------------
-        cur.execute(
-            """
-            ALTER TABLE billing_invoices
-                ADD COLUMN IF NOT EXISTS payment_method TEXT NOT NULL DEFAULT 'telegram_stars'
-            """
-        )
-        cur.execute(
-            """
-            ALTER TABLE billing_invoices
-                ADD COLUMN IF NOT EXISTS amount_minor_units BIGINT
-            """
-        )
-        cur.execute(
-            """
-            ALTER TABLE billing_invoices
-                ADD COLUMN IF NOT EXISTS provider_tx_hash TEXT
-            """
-        )
-
         # Индексы (можно расширить под TON)
         cur.execute(
             """

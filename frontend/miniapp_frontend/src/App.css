@@ -1254,3 +1254,43 @@ select.form-control {
 .tariff-value {
   font-weight: 500;
 }
+
+
+/* Градиентный заголовок модалки тарифов/оплаты */
+.modal-title--gradient {
+  background: linear-gradient(
+    90deg,
+    var(--tg-theme-link-color, #3b82f6),
+    rgba(148, 163, 184, 1)
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  letter-spacing: 0.2px;
+}
+
+/* Подзаголовки в Billing-модалке: "Способ оплаты", "Выберите срок оплаты", ... */
+.modal-section-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--tg-theme-text-color, #0f172a);
+  margin-bottom: 4px;
+}
+
+/* Общий текст внутри модалок сделать темнее */
+.modal-body {
+  font-size: 14px;
+  color: var(--tg-theme-text-color, #111827);
+}
+
+/* Селект выбора способа оплаты — более заметный */
+.modal-select {
+  background: rgba(15, 23, 42, 0.04);
+  border: 1px solid rgba(148, 163, 184, 0.7);
+  color: var(--tg-theme-text-color, #0f172a);
+}
+
+.modal-select:focus {
+  border-color: var(--tg-theme-link-color, #3b82f6);
+  box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.35);
+}

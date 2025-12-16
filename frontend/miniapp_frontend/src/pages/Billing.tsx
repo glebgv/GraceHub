@@ -563,7 +563,9 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
           }}
         >
           <div className="modal-header">
-            <h3 className="modal-title">{t('billing.ton_requisites_title', 'Реквизиты для оплаты TON')}</h3>
+            <h3 className="modal-title modal-title--gradient">
+              {t('billing.ton_requisites_title', 'Реквизиты для оплаты TON')}
+            </h3>
             <button
               type="button"
               className="modal-close"
@@ -591,7 +593,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
                   padding: '6px 8px',
                   borderRadius: 8,
                   background: 'rgba(34,197,94,0.12)',
-                  border: '1px solid rgba(34,197,94,0.25)',
+                  border: '1px solid ' + 'rgba(34,197,94,0.25)',
                 }}
               >
                 {copiedMsg}
@@ -609,7 +611,11 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
                     title={t('billing.copy_address', 'Скопировать адрес')}
                     onClick={async () => {
                       const ok = await copyToClipboard(tonInvoice.address);
-                      showCopied(ok ? t('billing.copied', 'Скопировано') : t('billing.copy_failed', 'Не удалось скопировать'));
+                      showCopied(
+                        ok
+                          ? t('billing.copied', 'Скопировано')
+                          : t('billing.copy_failed', 'Не удалось скопировать'),
+                      );
                     }}
                   >
                     <CopyIcon />
@@ -629,7 +635,11 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
                     onClick={async () => {
                       const val = `${tonInvoice.amountTon}`;
                       const ok = await copyToClipboard(val);
-                      showCopied(ok ? t('billing.copied', 'Скопировано') : t('billing.copy_failed', 'Не удалось скопировать'));
+                      showCopied(
+                        ok
+                          ? t('billing.copied', 'Скопировано')
+                          : t('billing.copy_failed', 'Не удалось скопировать'),
+                      );
                     }}
                   >
                     <CopyIcon />
@@ -648,7 +658,11 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
                     title={t('billing.copy_comment', 'Скопировать комментарий')}
                     onClick={async () => {
                       const ok = await copyToClipboard(tonInvoice.comment);
-                      showCopied(ok ? t('billing.copied', 'Скопировано') : t('billing.copy_failed', 'Не удалось скопировать'));
+                      showCopied(
+                        ok
+                          ? t('billing.copied', 'Скопировано')
+                          : t('billing.copy_failed', 'Не удалось скопировать'),
+                      );
                     }}
                   >
                     <CopyIcon />
@@ -738,7 +752,9 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
           }}
         >
           <div className="modal-header">
-            <h3 className="modal-title">{t('billing.yk_title', 'Оплата ЮKassa')}</h3>
+            <h3 className="modal-title modal-title--gradient">
+              {t('billing.yk_title', 'Оплата ЮKassa')}
+            </h3>
             <button type="button" className="modal-close" onClick={() => setIsYkModalOpen(false)}>
               ✕
             </button>
@@ -877,7 +893,9 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
             }}
           >
             <div className="modal-header">
-              <h3 className="modal-title">{t('billing.modal_title', { name: selectedPlan.planName })}</h3>
+              <h3 className="modal-title modal-title--gradient">
+                {t('billing.modal_title', { name: selectedPlan.planName })}
+              </h3>
               <button type="button" className="modal-close" onClick={closeModal}>
                 ✕
               </button>
@@ -907,7 +925,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
 
               {/* Способ оплаты (dropdown) */}
               <div style={{ marginTop: 12 }}>
-                <div style={{ marginBottom: 8, fontSize: 13, fontWeight: 500 }}>
+                <div className="modal-section-title">
                   {t('billing.payment_method_label', 'Способ оплаты')}
                 </div>
 
@@ -915,13 +933,14 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
                   value={paymentMethod}
                   onChange={(e) => setPaymentMethod(e.target.value as PaymentMethod | '')}
                   disabled={submitting || tonChecking || ykChecking}
+                  className="modal-select"
                   style={{
                     width: '100%',
                     padding: '10px 12px',
                     borderRadius: 10,
-                    background: 'rgba(255,255,255,0.06)',
-                    border: '1px solid rgba(255,255,255,0.12)',
-                    color: 'inherit',
+                    background: 'rgba(15,23,42,0.04)',
+                    border: '1px solid rgba(148,163,184,0.7)',
+                    color: 'var(--tg-theme-text-color, #0f172a)',
                     outline: 'none',
                   }}
                 >
@@ -957,7 +976,9 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
 
               {/* Выбор периода */}
               <div style={{ marginTop: 12 }}>
-                <div style={{ marginBottom: 8, fontSize: 13, fontWeight: 500 }}>{t('billing.choose_period_label')}</div>
+                <div className="modal-section-title">
+                  {t('billing.choose_period_label')}
+                </div>
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                   {periodOptions.map((opt) => (
                     <button
@@ -976,7 +997,9 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
 
               {/* Итоговая цена и длительность */}
               <div style={{ marginTop: 16 }}>
-                <div style={{ fontSize: 13, opacity: 0.8 }}>{t('billing.final_period_label')}</div>
+                <div className="modal-section-title">
+                  {t('billing.final_period_label')}
+                </div>
                 <div style={{ fontSize: 14, fontWeight: 500 }}>
                   {t('billing.period_and_limit', {
                     days: selectedPlan.periodDays * selectedPeriod.multiplier,
@@ -984,7 +1007,9 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
                   })}
                 </div>
 
-                <div style={{ marginTop: 8, fontSize: 13, opacity: 0.8 }}>{t('billing.final_price_label')}</div>
+                <div className="modal-section-title" style={{ marginTop: 8 }}>
+                  {t('billing.final_price_label')}
+                </div>
 
                 <div style={{ fontSize: 16, fontWeight: 600 }}>
                   {paymentMethod === 'telegram_stars'
@@ -1050,7 +1075,9 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
             }}
           >
             <div className="modal-header">
-              <h3 className="modal-title">{t('billing.payment_success_title', 'Оплата успешна')}</h3>
+              <h3 className="modal-title modal-title--gradient">
+                {t('billing.payment_success_title', 'Оплата успешна')}
+              </h3>
               <button
                 type="button"
                 className="modal-close"
