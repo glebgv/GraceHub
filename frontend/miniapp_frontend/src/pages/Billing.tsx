@@ -130,6 +130,17 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
   const [tonCheckError, setTonCheckError] = useState<string | null>(null);
   const tonPollAbortRef = useRef<{ aborted: boolean }>({ aborted: false });
 
+  // YooKassa invoice
+  const [ykInvoice, setYkInvoice] = useState<{
+    invoiceId: number;
+    invoiceLink: string;
+  } | null>(null);
+
+  const [isYkModalOpen, setIsYkModalOpen] = useState(false);
+  const [ykChecking, setYkChecking] = useState(false);
+  const [ykCheckError, setYkCheckError] = useState<string | null>(null);
+  const ykPollAbortRef = useRef<{ aborted: boolean }>({ aborted: false });
+
   // UI feedback "Скопировано"
   const [copiedMsg, setCopiedMsg] = useState<string | null>(null);
   const copiedTimerRef = useRef<number | null>(null);
@@ -207,7 +218,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
 
   // Disable background scroll when ANY modal is open
   useEffect(() => {
-    const anyModalOpen = isModalOpen || isTonModalOpen || !!paymentResult;
+    const anyModalOpen = isModalOpen || isTonModalOpen || isYkModalOpen || !!paymentResult;
     if (!anyModalOpen) return;
 
     const prevOverflow = document.body.style.overflow;
@@ -216,7 +227,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
     return () => {
       document.body.style.overflow = prevOverflow;
     };
-  }, [isModalOpen, isTonModalOpen, paymentResult]);
+  }, [isModalOpen, isTonModalOpen, isYkModalOpen, paymentResult]);
 
   const openPlanModal = (plan: SaasPlanDTO) => {
     setSelectedPlan(plan);
@@ -231,14 +242,24 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
     setTonCheckError(null);
     tonPollAbortRef.current.aborted = true;
 
+    // reset YooKassa state
+    setYkInvoice(null);
+    setIsYkModalOpen(false);
+    setYkChecking(false);
+    setYkCheckError(null);
+    ykPollAbortRef.current.aborted = true;
+
     setCopiedMsg(null);
     setIsModalOpen(true);
   };
 
   const closeModal = () => {
-    // stop any TON polling when closing
+    // stop any polling when closing
     tonPollAbortRef.current.aborted = true;
     setTonChecking(false);
+
+    ykPollAbortRef.current.aborted = true;
+    setYkChecking(false);
 
     setIsModalOpen(false);
     setSelectedPlan(null);
@@ -251,6 +272,22 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
 
   // Открывать Tonkeeper через внешний браузер, чтобы не терялись параметры в Telegram webview
   const openTonLinkExternally = (link: string) => {
+    const tg = (window as any).Telegram?.WebApp;
+
+    try {
+      tg?.openLink?.(link, { try_instant_view: false });
+      return;
+    } catch {}
+
+    try {
+      window.open(link, '_blank', 'noopener,noreferrer');
+      return;
+    } catch {}
+
+    window.location.href = link;
+  };
+
+  const openYooKassaLinkExternally = (link: string) => {
     const tg = (window as any).Telegram?.WebApp;
 
     try {
@@ -317,6 +354,62 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
 
     setIsTonModalOpen(false);
     setTonInvoice(null);
+
+    showCopied(t('billing.cancelled', 'Отменено'));
+  };
+
+  const pollYooKassaStatus = async (
+    invoiceId: number,
+    abortRef: { aborted: boolean },
+    timeoutMs: number = 120000,
+  ) => {
+    const started = Date.now();
+    while (Date.now() - started < timeoutMs) {
+      if (abortRef.aborted) throw new Error('aborted');
+
+      const st = await apiClient.getYooKassaInvoiceStatus(invoiceId);
+
+      if (abortRef.aborted) throw new Error('aborted');
+
+      if (st.status === 'succeeded' && st.period_applied) return st;
+      if (st.status === 'canceled') throw new Error(t('billing.payment_failed'));
+
+      await sleep(2500);
+    }
+    throw new Error(t('billing.payment_failed'));
+  };
+
+  const handleCheckYooKassaPayment = async () => {
+    if (!ykInvoice?.invoiceId) return;
+
+    ykPollAbortRef.current = { aborted: false };
+    setYkChecking(true);
+    setYkCheckError(null);
+
+    try {
+      const st = await pollYooKassaStatus(ykInvoice.invoiceId, ykPollAbortRef.current, 120000);
+      if (st.status === 'succeeded') {
+        setIsYkModalOpen(false);
+        closeModal();
+        if (selectedPlan && selectedPeriod) {
+          setPaymentResult({ planName: selectedPlan.planName, months: selectedPeriod.multiplier });
+        }
+      }
+    } catch (e: any) {
+      if (e?.message === 'aborted') return;
+      setYkCheckError(e?.message || t('billing.payment_failed'));
+    } finally {
+      setYkChecking(false);
+    }
+  };
+
+  const handleCancelYooKassaPayment = () => {
+    ykPollAbortRef.current.aborted = true;
+    setYkChecking(false);
+    setYkCheckError(null);
+
+    setIsYkModalOpen(false);
+    setYkInvoice(null);
 
     showCopied(t('billing.cancelled', 'Отменено'));
   };
@@ -417,7 +510,26 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
         return;
       }
 
-      // Будущие способы оплаты:
+      // YooKassa
+      if (paymentMethod === 'yookassa') {
+        setYkCheckError(null);
+        setYkChecking(false);
+        ykPollAbortRef.current.aborted = true;
+
+        const invoiceLink = resp.invoice_link as string;
+
+        setYkInvoice({
+          invoiceId: resp.invoice_id,
+          invoiceLink,
+        });
+
+        // тут можно открывать автоматически (в отличие от TON)
+        openYooKassaLinkExternally(invoiceLink);
+
+        setIsYkModalOpen(true);
+        return;
+      }
+
       setSubmitError(t('billing.payment_failed', 'Неизвестный способ оплаты'));
     } catch (e: any) {
       console.error('createBillingInvoice error', e);
@@ -608,9 +720,93 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
     return ReactDOM.createPortal(content, document.body);
   };
 
+  const YooKassaPaymentModal = () => {
+    if (!isYkModalOpen || !ykInvoice) return null;
+
+    const content = (
+      <div className="modal-backdrop" onClick={() => setIsYkModalOpen(false)} style={{ zIndex: 9999 }}>
+        <div
+          className="modal"
+          onClick={(e) => e.stopPropagation()}
+          style={{
+            maxWidth: 520,
+            width: 'calc(100% - 24px)',
+            maxHeight: '80vh',
+            overflow: 'hidden',
+            display: 'flex',
+            flexDirection: 'column',
+          }}
+        >
+          <div className="modal-header">
+            <h3 className="modal-title">{t('billing.yk_title', 'Оплата ЮKassa')}</h3>
+            <button type="button" className="modal-close" onClick={() => setIsYkModalOpen(false)}>
+              ✕
+            </button>
+          </div>
+
+          <div className="modal-body">
+            {copiedMsg && (
+              <div
+                style={{
+                  marginBottom: 10,
+                  fontSize: 12,
+                  padding: '6px 8px',
+                  borderRadius: 8,
+                  background: 'rgba(34,197,94,0.12)',
+                  border: '1px solid rgba(34,197,94,0.25)',
+                }}
+              >
+                {copiedMsg}
+              </div>
+            )}
+
+            <p style={{ marginTop: 0, fontSize: 13, opacity: 0.85 }}>
+              {t('billing.yk_hint', 'Оплатите по ссылке, затем вернитесь и нажмите “Проверить оплату”.')}
+            </p>
+
+            <div style={{ fontSize: 12, opacity: 0.8, wordBreak: 'break-all' }}>
+              {t('billing.yk_invoice_id', 'Invoice')}: {ykInvoice.invoiceId}
+            </div>
+
+            {ykCheckError && (
+              <p style={{ marginTop: 10, fontSize: 12, color: 'var(--tg-color-error, #dc2626)' }}>{ykCheckError}</p>
+            )}
+          </div>
+
+          <div className="modal-footer" style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              className="btn"
+              onClick={() => openYooKassaLinkExternally(ykInvoice.invoiceLink)}
+              disabled={submitting || ykChecking}
+            >
+              {t('billing.open_payment_page', 'Открыть страницу оплаты')}
+            </button>
+
+            <button
+              type="button"
+              className="btn btn--secondary"
+              onClick={handleCheckYooKassaPayment}
+              disabled={submitting || ykChecking}
+            >
+              {ykChecking ? t('billing.checking', 'Проверяем...') : t('billing.check_payment', 'Проверить оплату')}
+            </button>
+
+            <button type="button" className="btn btn--ghost" onClick={handleCancelYooKassaPayment} disabled={submitting}>
+              {t('billing.cancel_payment', 'Отмена оплаты')}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+
+    return ReactDOM.createPortal(content, document.body);
+  };
+
   const paymentMethods: Array<{ value: PaymentMethod; label: string }> = [
     { value: 'telegram_stars', label: t('billing.payment_method_stars', 'Telegram Stars') },
     { value: 'ton', label: t('billing.payment_method_ton', 'TON') },
+    { value: 'yookassa', label: t('billing.payment_method_yookassa', 'ЮKassa (карта/СБП)') },
   ];
 
   if (loading) {
@@ -718,7 +914,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
                 <select
                   value={paymentMethod}
                   onChange={(e) => setPaymentMethod(e.target.value as PaymentMethod | '')}
-                  disabled={submitting || tonChecking}
+                  disabled={submitting || tonChecking || ykChecking}
                   style={{
                     width: '100%',
                     padding: '10px 12px',
@@ -748,13 +944,20 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
                     )}
                   </p>
                 )}
+
+                {paymentMethod === 'yookassa' && (
+                  <p style={{ marginTop: 8, fontSize: 12, opacity: 0.8 }}>
+                    {t(
+                      'billing.yk_hint_inline',
+                      'Нажмите "Выбрать", оплатите в ЮKassa, затем вернитесь и нажмите "Проверить оплату".',
+                    )}
+                  </p>
+                )}
               </div>
 
               {/* Выбор периода */}
               <div style={{ marginTop: 12 }}>
-                <div style={{ marginBottom: 8, fontSize: 13, fontWeight: 500 }}>
-                  {t('billing.choose_period_label')}
-                </div>
+                <div style={{ marginBottom: 8, fontSize: 13, fontWeight: 500 }}>{t('billing.choose_period_label')}</div>
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                   {periodOptions.map((opt) => (
                     <button
@@ -763,7 +966,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
                       onClick={() => setSelectedPeriod(opt)}
                       className={opt.id === selectedPeriod.id ? 'btn btn--secondary' : 'btn btn--ghost'}
                       style={{ flex: '1 1 0' }}
-                      disabled={submitting || tonChecking}
+                      disabled={submitting || tonChecking || ykChecking}
                     >
                       {t(opt.labelKey, { months: opt.multiplier })}
                     </button>
@@ -788,7 +991,9 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
                     ? `${selectedPlan.priceStars * selectedPeriod.multiplier} ⭐`
                     : paymentMethod === 'ton'
                       ? t('billing.ton_price_after_invoice', 'Сумма будет показана после создания инвойса')
-                      : '—'}
+                      : paymentMethod === 'yookassa'
+                        ? t('billing.yk_price_after_invoice', 'Сумма будет показана после создания инвойса')
+                        : '—'}
                 </div>
 
                 {submitError && (
@@ -798,13 +1003,19 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
             </div>
 
             <div className="modal-footer">
-              <button type="button" className="btn btn--secondary" onClick={closeModal} disabled={submitting || tonChecking}>
+              <button
+                type="button"
+                className="btn btn--secondary"
+                onClick={closeModal}
+                disabled={submitting || tonChecking || ykChecking}
+              >
                 {t('billing.button_cancel')}
               </button>
+
               <button
                 type="button"
                 className="btn"
-                disabled={!selectedPlan.productCode || !paymentMethod || submitting || tonChecking}
+                disabled={!selectedPlan.productCode || !paymentMethod || submitting || tonChecking || ykChecking}
                 onClick={handleCreateInvoice}
               >
                 {submitting ? t('billing.button_processing') : t('billing.button_choose')}
@@ -814,8 +1025,9 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
         </div>
       )}
 
-      {/* Отдельное окно с TON реквизитами */}
+      {/* Отдельные окна оплаты */}
       <TonPaymentModal />
+      <YooKassaPaymentModal />
 
       {/* Модалка успеха */}
       {paymentResult && (

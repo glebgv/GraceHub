@@ -65,3 +65,15 @@ TON_CONFIRMATIONS_REQUIRED = int(os.getenv("TON_CONFIRMATIONS_REQUIRED", "1"))
 TON_PRICE_PER_PERIOD_LITE = float(os.getenv("TON_PRICE_PER_PERIOD_LITE", "0.3"))
 TON_PRICE_PER_PERIOD_PRO = float(os.getenv("TON_PRICE_PER_PERIOD_PRO", "0.8"))
 TON_PRICE_PER_PERIOD_ENTERPRISE = float(os.getenv("TON_PRICE_PER_PERIOD_ENTERPRISE", "2.5"))
+
+# YooKassa payment
+YOOKASSA_SHOP_ID = os.getenv("YOOKASSA_SHOP_ID", "")
+YOOKASSA_SECRET_KEY = os.getenv("YOOKASSA_SECRET_KEY", "")
+YOOKASSA_RETURN_URL = os.getenv("YOOKASSA_RETURN_URL", "")
+
+# булево из env: "1/0", "true/false", "yes/no"
+YOOKASSA_TEST_MODE = os.getenv("YOOKASSA_TEST_MODE", "0").strip().lower() in ("1", "true", "yes", "y", "on")
+
+YOOKASSA_PRICE_RUB_LITE = float(os.getenv("YOOKASSA_PRICE_RUB_LITE", "0"))
+YOOKASSA_PRICE_RUB_PRO = float(os.getenv("YOOKASSA_PRICE_RUB_PRO", "0"))
+YOOKASSA_PRICE_RUB_ENTERPRISE = float(os.getenv("YOOKASSA_PRICE_RUB_ENTERPRISE", "0"))

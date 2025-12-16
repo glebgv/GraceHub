@@ -324,6 +324,46 @@ class MasterDatabase:
             (telegram_invoice_id, total_amount, currency, invoice_id),
         )
 
+    async def find_billing_invoice_by_payload(self, payload: str) -> Optional[Dict[str, Any]]:
+        row = await self.fetchone(
+            """
+            SELECT invoice_id, instance_id, user_id, product_id, payload, invoice_link, stars_amount,
+                amount_minor_units, currency, payment_method, provider_tx_hash, status,
+                created_at, updated_at, paid_at
+            FROM billing_invoices
+            WHERE payload = %s
+            LIMIT 1
+            """,
+            (payload,),
+        )
+        return dict(row) if row else None
+
+    async def mark_billing_invoice_paid_yookassa(
+        self,
+        invoice_id: int,
+        payment_id: str,
+        amount_minor_units: int,
+        currency: str = "RUB",
+    ) -> bool:
+        res = await self.execute(
+            """
+            UPDATE billing_invoices
+            SET status='paid',
+                provider_tx_hash=%s,
+                amount_minor_units=%s,
+                currency=%s,
+                paid_at=NOW(),
+                updated_at=NOW()
+            WHERE invoice_id=%s AND status != 'paid'
+            """,
+            (payment_id, amount_minor_units, currency, invoice_id),
+        )
+        rowcount = getattr(res, "rowcount", None)
+        if rowcount is None:
+            return True
+        return rowcount > 0
+
+
     async def get_billing_invoice(self, invoice_id: int) -> dict | None:
         row = await self.fetchone(
             """
@@ -1287,9 +1327,9 @@ class MasterDatabase:
         invoice_link: str,
         status: str = "pending",
         *,
-        payment_method: str = "telegram_stars",  # telegram_stars | ton
-        currency: str = "XTR",                   # XTR | TON
-        amount_minor_units: int | None = None,   # для TON: nanoton
+        payment_method: str = "telegram_stars",  # telegram_stars | ton | yookassa
+        currency: str = "XTR",                   # XTR | TON | RUB
+        amount_minor_units: int | None = None,   # для TON: nanoton, для YooKassa: kopeks
     ) -> int:
         # product_code = billing_products.code → достаём product_id
         product_row = await self.fetchone(
@@ -1306,19 +1346,41 @@ class MasterDatabase:
 
         product_id = product_row["product_id"]
 
+        # Нормализация payment_method (на случай enum/алиасов)
+        if hasattr(payment_method, "value"):
+            payment_method = payment_method.value
+
+        payment_method = str(payment_method or "").strip().lower()
+
+        # алиасы, если где-то в коде встречаются другие значения
+        if payment_method in ("telegram_stars", "tg_stars", "stars"):
+            payment_method = "telegram_stars"
+
         # Нормализация под метод
         if payment_method == "telegram_stars":
-            payment_method = "telegram_stars"
             currency = "XTR"
             stars_amount_val = int(amount_stars)
             amount_minor_val = None
+
         elif payment_method == "ton":
-            payment_method = "ton"
             currency = "TON"
             stars_amount_val = 0  # stars_amount NOT NULL
             if amount_minor_units is None or int(amount_minor_units) <= 0:
                 raise ValueError("TON invoice requires amount_minor_units > 0 (nanoton)")
             amount_minor_val = int(amount_minor_units)
+
+        elif payment_method == "yookassa":
+            # Для YooKassa сохраняем сумму в минимальных единицах (копейки) в amount_minor_units
+            currency = currency or "RUB"
+            if currency != "RUB":
+                # чтобы не разъехались ожидания в остальном коде
+                raise ValueError(f"YooKassa invoice requires currency=RUB, got {currency}")
+
+            stars_amount_val = 0  # stars_amount NOT NULL
+            if amount_minor_units is None or int(amount_minor_units) <= 0:
+                raise ValueError("YooKassa invoice requires amount_minor_units > 0 (kopeks)")
+            amount_minor_val = int(amount_minor_units)
+
         else:
             raise ValueError(f"Unsupported payment_method={payment_method}")
 
@@ -1355,7 +1417,6 @@ class MasterDatabase:
             ),
         )
         return row["invoice_id"]
-
 
 
     async def get_instance(self, instance_id: str) -> Optional[BotInstance]:

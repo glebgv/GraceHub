@@ -12,6 +12,7 @@ import logging
 import base64
 import binascii
 import time
+import os
 import secrets
 from pathlib import Path
 from contextlib import asynccontextmanager
@@ -24,6 +25,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from shared import settings
+from enum import Enum
 from urllib.parse import parse_qsl, unquote, quote
 
 from .main import MasterBot
@@ -219,21 +221,18 @@ class SaasPlanOut(BaseModel):
     priceStars: int
     productCode: str | None
 
+class PaymentMethod(str, Enum):
+    telegram_stars = "telegram_stars"
+    ton = "ton"
+    yookassa = "yookassa"
+
 class CreateInvoiceRequest(BaseModel):
     plan_code: str = Field(..., description="Код тарифа (lite/pro/enterprise/demo)")
     periods: int = Field(..., ge=1, le=24, description="Количество периодов (1,3,12)")
-
-    # Новый параметр: метод оплаты
-    payment_method: str = Field(
-        default="telegram_stars",
-        description="Метод оплаты: telegram_stars или ton",
-        pattern="^(telegram_stars|ton)$",
+    payment_method: PaymentMethod = Field(
+        default=PaymentMethod.telegram_stars,
+        description="Метод оплаты",
     )
-
-    # Опционально: сеть (если хочешь уметь форсировать testnet/mainnet из клиента).
-    # Обычно лучше НЕ давать клиенту это менять и брать из settings.TON_NETWORK.
-    # ton_network: str | None = Field(default=None, pattern="^(testnet|mainnet)$")
-
 
 class CreateInvoiceResponse(BaseModel):
     invoice_id: int
@@ -253,6 +252,15 @@ class TonInvoiceStatusResponse(BaseModel):
 class TonInvoiceCancelResponse(BaseModel):
     invoice_id: int
     status: str  # cancelled
+
+class UpdateTicketStatusRequest(BaseModel):
+    status: str = Field(..., description="new, inprogress, answered, closed, spam")
+
+class YooKassaStatusResponse(BaseModel):
+    invoice_id: int
+    status: str  # pending/succeeded/canceled/waiting_for_capture
+    payment_id: str | None = None
+    period_applied: bool = False
 
 # ========================================================================
 # Telegram Validation
@@ -498,7 +506,7 @@ class MiniAppDB:
 
     async def get_worker_setting(self, instanceid: str, key: str) -> Optional[str]:
         row = await self.db.fetchone(
-            "SELECT value FROM workersettings WHERE instanceid = %s AND key = %s",
+            "SELECT value FROM worker_settings WHERE instanc_eid = %s AND key = %s",
             (instanceid, key),
         )
         return row["value"] if row else None
@@ -506,9 +514,9 @@ class MiniAppDB:
     async def set_worker_setting(self, instanceid: str, key: str, value: str) -> None:
         await self.db.execute(
             """
-            INSERT INTO workersettings (instanceid, key, value)
+            INSERT INTO worker_settings (instanc_eid, key, value)
             VALUES (%s, %s, %s)
-            ON CONFLICT (instanceid, key) DO UPDATE
+            ON CONFLICT (instance_id, key) DO UPDATE
               SET value = EXCLUDED.value
             """,
             (instanceid, key, value),
@@ -1224,153 +1232,358 @@ def create_miniapp_app(
         req: CreateInvoiceRequest,
         current_user: Dict[str, Any] = Depends(get_current_user),
     ):
+        import os
+        import uuid
+        import time
+        import httpx
+        from urllib.parse import quote
+
+        request_id = str(uuid.uuid4())
+        t0 = time.monotonic()
+
         user_id = current_user["user_id"]
-
-        # 1) Доступ к инстансу (как было)
-        await require_instance_access(instance_id, current_user)
-
-        # 2) Продукт
-        product = await miniapp_db.get_billing_product_by_plan_code(req.plan_code)
-        if not product or not product["product_code"]:
-            raise HTTPException(status_code=400, detail="Тариф недоступен для оплаты")
-
+        payment_method = getattr(req, "payment_method", "telegram_stars")
         periods = req.periods
 
-        # 3) Основной инстанс аккаунта
-        main_instance = await miniapp_db.get_instance_by_owner(user_id)
-        if not main_instance:
-            raise HTTPException(
-                status_code=400,
-                detail="Сначала создайте бота, затем можно оформить тариф",
-            )
-        account_instance_id = main_instance["instance_id"]
+        logger.info(
+            "billing.create_invoice start request_id=%s instance_id=%s user_id=%s plan_code=%s periods=%s payment_method=%s",
+            request_id, instance_id, user_id, getattr(req, "plan_code", None), periods, payment_method,
+        )
 
-        # 4) Ветка оплаты
-        payment_method = getattr(req, "payment_method", "telegram_stars")
+        try:
+            # 1) Доступ к инстансу (как было)
+            await require_instance_access(instance_id, current_user)
 
-        # -------------------------
-        # Stars
-        # -------------------------
-        if payment_method == "telegram_stars":
-            base_amount = product["amount_stars"]
-            total_amount = base_amount * periods
-
-            invoice_id = await miniapp_db.db.insert_billing_invoice(
-                instance_id=account_instance_id,
-                user_id=user_id,
-                plan_code=req.plan_code,
-                periods=periods,
-                amount_stars=total_amount,
-                product_code=product["product_code"],
-                payload="",
-                invoice_link="",
-                status="pending",
-                payment_method="telegram_stars",
-                currency="XTR",
-            )
-
-            payload = f"saas:{invoice_id}"
-
-            if master_bot is None:
-                logger.error("create_billing_invoice: master_bot is not initialized")
-                raise HTTPException(status_code=500, detail="MasterBot не инициализирован")
-
-            try:
-                invoice_link = await master_bot.create_stars_invoice_link_for_miniapp(
-                    user_id=user_id,
-                    title=product.get("title") or product["name"],
-                    description=product.get("description") or f"SaaS план {req.plan_code}",
-                    payload=payload,
-                    currency="XTR",
-                    amount_stars=total_amount,
-                )
-            except Exception as e:
-                logger.exception("create_billing_invoice: error from MasterBot: %s", e)
-                raise HTTPException(
-                    status_code=500,
-                    detail="Не удалось создать инвойс Telegram Stars",
-                )
-
-            await miniapp_db.db.update_billing_invoice_link_and_payload(
-                invoice_id=invoice_id,
-                payload=payload,
-                invoice_link=invoice_link,
-            )
-
-            return CreateInvoiceResponse(
-                invoice_id=invoice_id,
-                invoice_link=invoice_link,
-                currency="XTR",
-            )
-
-        # -------------------------
-        # TON (Tonkeeper deeplink)
-        # -------------------------
-        if payment_method == "ton":
-            plan = req.plan_code.lower()
-            price_map = {
-                "lite": settings.TON_PRICE_PER_PERIOD_LITE,
-                "pro": settings.TON_PRICE_PER_PERIOD_PRO,
-                "enterprise": settings.TON_PRICE_PER_PERIOD_ENTERPRISE,
-            }
-            if plan not in price_map:
-                raise HTTPException(status_code=400, detail="Этот тариф нельзя оплатить в TON")
-
-            # 1 TON = 1e9 nanoton
-            amount_ton = float(price_map[plan]) * float(periods)
+            # 2) Продукт
+            product = await miniapp_db.get_billing_product_by_plan_code(req.plan_code)
             logger.info(
-                "TON price debug: plan=%s periods=%s price=%s amount_ton=%s",
-                plan, periods, price_map[plan], amount_ton
+                "billing.create_invoice product request_id=%s plan_code=%s product=%s",
+                request_id, req.plan_code, {
+                    "ok": bool(product),
+                    "product_code": (product or {}).get("product_code"),
+                    "amount_stars": (product or {}).get("amount_stars"),
+                    "title": (product or {}).get("title"),
+                    "name": (product or {}).get("name"),
+                },
             )
+            if not product or not product.get("product_code"):
+                raise HTTPException(status_code=400, detail="Тариф недоступен для оплаты")
 
-            amount_minor_units = int(amount_ton * 1_000_000_000)
-
-            if not settings.TON_WALLET_ADDRESS:
-                raise HTTPException(status_code=500, detail="TON_WALLET_ADDRESS не настроен")
-
-            # создаём invoice в БД (payload пока пустой)
-            invoice_id = await miniapp_db.db.insert_billing_invoice(
-                instance_id=account_instance_id,
-                user_id=user_id,
-                plan_code=req.plan_code,
-                periods=periods,
-                amount_stars=0,
-                product_code=product["product_code"],
-                payload="",
-                invoice_link="",
-                status="pending",
-                payment_method="ton",
-                currency="TON",
-                amount_minor_units=amount_minor_units,
+            # 3) Основной инстанс аккаунта
+            main_instance = await miniapp_db.get_instance_by_owner(user_id)
+            logger.info(
+                "billing.create_invoice main_instance request_id=%s found=%s instance_id=%s",
+                request_id, bool(main_instance), (main_instance or {}).get("instance_id"),
             )
+            if not main_instance:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Сначала создайте бота, затем можно оформить тариф",
+                )
+            account_instance_id = main_instance["instance_id"]
 
-            # комментарий для матчинга входящей транзакции
-            comment = f"saas:{invoice_id}"
-            payload = comment
+            # -------------------------
+            # Stars
+            # -------------------------
+            if payment_method == "telegram_stars":
+                base_amount = product["amount_stars"]
+                total_amount = base_amount * periods
 
-            ton_address = settings.TON_WALLET_ADDRESS
+                invoice_id = await miniapp_db.db.insert_billing_invoice(
+                    instance_id=account_instance_id,
+                    user_id=user_id,
+                    plan_code=req.plan_code,
+                    periods=periods,
+                    amount_stars=total_amount,
+                    product_code=product["product_code"],
+                    payload="",
+                    invoice_link="",
+                    status="pending",
+                    payment_method="telegram_stars",
+                    currency="XTR",
+                )
 
-            invoice_link = (
-                f"https://app.tonkeeper.com/transfer/{ton_address}"
-                f"?amount={amount_minor_units}"
-                f"&text={quote(comment)}"
+                payload = f"saas:{invoice_id}"
+
+                if master_bot is None:
+                    logger.error("billing.create_invoice master_bot is None request_id=%s", request_id)
+                    raise HTTPException(status_code=500, detail="MasterBot не инициализирован")
+
+                try:
+                    invoice_link = await master_bot.create_stars_invoice_link_for_miniapp(
+                        user_id=user_id,
+                        title=product.get("title") or product["name"],
+                        description=product.get("description") or f"SaaS план {req.plan_code}",
+                        payload=payload,
+                        currency="XTR",
+                        amount_stars=total_amount,
+                    )
+                except Exception:
+                    logger.exception("billing.create_invoice stars masterbot error request_id=%s", request_id)
+                    raise HTTPException(status_code=500, detail="Не удалось создать инвойс Telegram Stars")
+
+                await miniapp_db.db.update_billing_invoice_link_and_payload(
+                    invoice_id=invoice_id,
+                    payload=payload,
+                    invoice_link=invoice_link,
+                )
+
+                logger.info(
+                    "billing.create_invoice done request_id=%s method=telegram_stars invoice_id=%s elapsed_ms=%s",
+                    request_id, invoice_id, int((time.monotonic() - t0) * 1000),
+                )
+                return CreateInvoiceResponse(
+                    invoice_id=invoice_id,
+                    invoice_link=invoice_link,
+                    currency="XTR",
+                )
+
+            # -------------------------
+            # TON (Tonkeeper deeplink)
+            # -------------------------
+            if payment_method == "ton":
+                plan = req.plan_code.lower()
+                price_map = {
+                    "lite": settings.TON_PRICE_PER_PERIOD_LITE,
+                    "pro": settings.TON_PRICE_PER_PERIOD_PRO,
+                    "enterprise": settings.TON_PRICE_PER_PERIOD_ENTERPRISE,
+                }
+                if plan not in price_map:
+                    raise HTTPException(status_code=400, detail="Этот тариф нельзя оплатить в TON")
+
+                amount_ton = float(price_map[plan]) * float(periods)
+                amount_minor_units = int(amount_ton * 1_000_000_000)
+
+                if not settings.TON_WALLET_ADDRESS:
+                    raise HTTPException(status_code=500, detail="TON_WALLET_ADDRESS не настроен")
+
+                invoice_id = await miniapp_db.db.insert_billing_invoice(
+                    instance_id=account_instance_id,
+                    user_id=user_id,
+                    plan_code=req.plan_code,
+                    periods=periods,
+                    amount_stars=0,
+                    product_code=product["product_code"],
+                    payload="",
+                    invoice_link="",
+                    status="pending",
+                    payment_method="ton",
+                    currency="TON",
+                    amount_minor_units=amount_minor_units,
+                )
+
+                comment = f"saas:{invoice_id}"
+                payload = comment
+                ton_address = settings.TON_WALLET_ADDRESS
+
+                invoice_link = (
+                    f"https://app.tonkeeper.com/transfer/{ton_address}"
+                    f"?amount={amount_minor_units}"
+                    f"&text={quote(comment)}"
+                )
+
+                await miniapp_db.db.update_billing_invoice_link_and_payload(
+                    invoice_id=invoice_id,
+                    payload=payload,
+                    invoice_link=invoice_link,
+                )
+
+                logger.info(
+                    "billing.create_invoice done request_id=%s method=ton invoice_id=%s amount_minor_units=%s elapsed_ms=%s",
+                    request_id, invoice_id, amount_minor_units, int((time.monotonic() - t0) * 1000),
+                )
+                return CreateInvoiceResponse(
+                    invoice_id=invoice_id,
+                    invoice_link=invoice_link,
+                    amount_minor_units=amount_minor_units,
+                    amount_ton=amount_ton,
+                    currency="TON",
+                )
+
+            # -------------------------
+            # YooKassa (redirect confirmation_url)
+            # -------------------------
+            if payment_method == "yookassa":
+                # 0) конфиг
+                logger.info(
+                    "billing.create_invoice yookassa config request_id=%s shop_id_set=%s secret_set=%s return_url_set=%s",
+                    request_id,
+                    bool(getattr(settings, "YOOKASSA_SHOP_ID", None)),
+                    bool(getattr(settings, "YOOKASSA_SECRET_KEY", None)),
+                    bool(getattr(settings, "YOOKASSA_RETURN_URL", None)),
+                )
+                if not settings.YOOKASSA_SHOP_ID or not settings.YOOKASSA_SECRET_KEY:
+                    raise HTTPException(status_code=500, detail="YOOKASSA_SHOP_ID/YOOKASSA_SECRET_KEY не настроены")
+                if not settings.YOOKASSA_RETURN_URL:
+                    raise HTTPException(status_code=500, detail="YOOKASSA_RETURN_URL не настроен")
+
+                # 1) маппинг цены
+                plan = req.plan_code.lower()
+                price_map_rub = {
+                    "lite": float(os.getenv("YOOKASSA_PRICE_RUB_LITE", "0")),
+                    "pro": float(os.getenv("YOOKASSA_PRICE_RUB_PRO", "0")),
+                    "enterprise": float(os.getenv("YOOKASSA_PRICE_RUB_ENTERPRISE", "0")),
+                }
+                logger.info(
+                    "billing.create_invoice yookassa price_map request_id=%s plan=%s price_map_rub=%s periods=%s",
+                    request_id, plan, price_map_rub, periods,
+                )
+                if plan not in price_map_rub or price_map_rub[plan] <= 0:
+                    raise HTTPException(status_code=400, detail="Этот тариф нельзя оплатить в ЮKassa (цена не настроена)")
+
+                amount_rub = float(price_map_rub[plan]) * float(periods)
+                amount_minor_units = int(round(amount_rub * 100))
+                amount_value = f"{amount_rub:.2f}"
+
+                logger.info(
+                    "billing.create_invoice yookassa amount request_id=%s amount_rub=%s amount_value=%s amount_minor_units=%s",
+                    request_id, amount_rub, amount_value, amount_minor_units,
+                )
+
+                # 2) создаём invoice в БД
+                try:
+                    invoice_id = await miniapp_db.db.insert_billing_invoice(
+                        instance_id=account_instance_id,
+                        user_id=user_id,
+                        plan_code=req.plan_code,
+                        periods=periods,
+                        amount_stars=0,
+                        product_code=product["product_code"],
+                        payload="",
+                        invoice_link="",
+                        status="pending",
+                        payment_method="yookassa",
+                        currency="RUB",
+                        amount_minor_units=amount_minor_units,  # копейки
+                    )
+                except Exception:
+                    logger.exception(
+                        "billing.create_invoice yookassa db.insert_billing_invoice failed request_id=%s instance_id=%s account_instance_id=%s user_id=%s product_code=%s",
+                        request_id, instance_id, account_instance_id, user_id, product.get("product_code"),
+                    )
+                    raise
+
+                logger.info(
+                    "billing.create_invoice yookassa db invoice created request_id=%s invoice_id=%s",
+                    request_id, invoice_id,
+                )
+
+                # 3) создаём payment в YooKassa
+                idempotence_key = str(uuid.uuid4())
+                yk_url = "https://api.yookassa.ru/v3/payments"
+
+                body = {
+                    "amount": {"value": amount_value, "currency": "RUB"},
+                    "confirmation": {"type": "redirect", "return_url": settings.YOOKASSA_RETURN_URL},
+                    "capture": True,
+                    "description": f"SaaS {req.plan_code} x{periods} (invoice {invoice_id})",
+                    "metadata": {
+                        "saas_invoice_id": invoice_id,
+                        "instance_id": account_instance_id,
+                        "user_id": user_id,
+                        "plan_code": req.plan_code,
+                        "periods": periods,
+                        "request_id": request_id,  # удобно для отладки и вебхуков
+                    },
+                }
+
+                logger.info(
+                    "billing.create_invoice yookassa request request_id=%s url=%s idempotence_key=%s body=%s",
+                    request_id, yk_url, idempotence_key, body,
+                )
+
+                try:
+                    async with httpx.AsyncClient(timeout=20.0) as client:
+                        resp = await client.post(
+                            yk_url,
+                            auth=(str(settings.YOOKASSA_SHOP_ID), str(settings.YOOKASSA_SECRET_KEY)),
+                            headers={
+                                "Idempotence-Key": idempotence_key,
+                                "Content-Type": "application/json",
+                            },
+                            json=body,
+                        )
+
+                        logger.info(
+                            "billing.create_invoice yookassa response request_id=%s status_code=%s headers_request_id=%s body=%s",
+                            request_id,
+                            resp.status_code,
+                            resp.headers.get("Request-Id") or resp.headers.get("X-Request-Id"),
+                            resp.text,
+                        )
+
+                        resp.raise_for_status()
+                        data = resp.json()
+
+                except httpx.HTTPStatusError as e:
+                    logger.exception(
+                        "billing.create_invoice yookassa HTTPStatusError request_id=%s status=%s response_body=%s",
+                        request_id,
+                        getattr(e.response, "status_code", None),
+                        getattr(e.response, "text", None),
+                    )
+                    raise HTTPException(status_code=502, detail="ЮKassa: ошибка создания платежа")
+                except Exception:
+                    logger.exception("billing.create_invoice yookassa request failed request_id=%s", request_id)
+                    raise HTTPException(status_code=502, detail="ЮKassa: не удалось создать платеж")
+
+                yk_payment_id = data.get("id")
+                confirmation = data.get("confirmation") or {}
+                confirmation_url = confirmation.get("confirmation_url")
+
+                logger.info(
+                    "billing.create_invoice yookassa parsed request_id=%s invoice_id=%s yk_payment_id=%s confirmation_url=%s",
+                    request_id, invoice_id, yk_payment_id, confirmation_url,
+                )
+
+                if not yk_payment_id or not confirmation_url:
+                    logger.error(
+                        "billing.create_invoice yookassa missing fields request_id=%s data=%s",
+                        request_id, data,
+                    )
+                    raise HTTPException(status_code=502, detail="ЮKassa: некорректный ответ API")
+
+                payload = f"yookassa:{yk_payment_id}"
+
+                # 4) обновляем invoice_link/payload
+                try:
+                    await miniapp_db.db.update_billing_invoice_link_and_payload(
+                        invoice_id=invoice_id,
+                        payload=payload,
+                        invoice_link=confirmation_url,
+                    )
+                except Exception:
+                    logger.exception(
+                        "billing.create_invoice yookassa db.update_billing_invoice_link_and_payload failed request_id=%s invoice_id=%s payload=%s confirmation_url=%s",
+                        request_id, invoice_id, payload, confirmation_url,
+                    )
+                    raise
+
+                logger.info(
+                    "billing.create_invoice done request_id=%s method=yookassa invoice_id=%s yk_payment_id=%s elapsed_ms=%s",
+                    request_id, invoice_id, yk_payment_id, int((time.monotonic() - t0) * 1000),
+                )
+
+                return CreateInvoiceResponse(
+                    invoice_id=invoice_id,
+                    invoice_link=confirmation_url,
+                    currency="RUB",
+                )
+
+            raise HTTPException(status_code=400, detail="Неизвестный метод оплаты")
+
+        except HTTPException as e:
+            logger.warning(
+                "billing.create_invoice http_exception request_id=%s status_code=%s detail=%s elapsed_ms=%s",
+                request_id, e.status_code, getattr(e, "detail", None), int((time.monotonic() - t0) * 1000),
             )
-
-            await miniapp_db.db.update_billing_invoice_link_and_payload(
-                invoice_id=invoice_id,
-                payload=payload,
-                invoice_link=invoice_link,
+            raise
+        except Exception:
+            logger.exception(
+                "billing.create_invoice unhandled_error request_id=%s elapsed_ms=%s",
+                request_id, int((time.monotonic() - t0) * 1000),
             )
-
-            return CreateInvoiceResponse(
-                invoice_id=invoice_id,
-                invoice_link=invoice_link,
-                amount_minor_units=amount_minor_units,
-                amount_ton=amount_ton,
-                currency="TON",
-            )
-
-        raise HTTPException(status_code=400, detail="Неизвестный метод оплаты")
+            raise HTTPException(status_code=500, detail=f"Internal error (request_id={request_id})")
 
 
     async def _toncenter_get_transactions(address: str, limit: int = 30) -> list[dict]:
@@ -1691,6 +1904,133 @@ def create_miniapp_app(
                 )
             )
         return result
+
+    # Юkassa метод получения статусов платежей
+    def _extract_yk_payment_id(payload: str | None) -> str | None:
+        if not payload:
+            return None
+        if payload.startswith("yookassa:"):
+            return payload.split("yookassa:", 1)[1].strip() or None
+        return None
+
+    async def _yookassa_get_payment(payment_id: str) -> dict:
+        if not settings.YOOKASSA_SHOP_ID or not settings.YOOKASSA_SECRET_KEY:
+            raise HTTPException(status_code=500, detail="YOOKASSA credentials not configured")
+        url = f"https://api.yookassa.ru/v3/payments/{payment_id}"
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(
+                url,
+                auth=(str(settings.YOOKASSA_SHOP_ID), str(settings.YOOKASSA_SECRET_KEY)),
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+    @app.get("/api/billing/yookassa/status", response_model=YooKassaStatusResponse)
+    async def yookassa_invoice_status(
+        invoice_id: int,
+        current_user: Dict[str, Any] = Depends(get_current_user),
+    ):
+        inv = await miniapp_db.db.get_billing_invoice(invoice_id)
+        if not inv:
+            raise HTTPException(status_code=404, detail="Invoice not found")
+
+        # NB: поля из DB: instanceid / paymentmethod [file:284]
+        await require_instance_access(inv["instance_id"], current_user)
+
+        if (inv.get("payment_method") or "").lower() != "yookassa":
+            raise HTTPException(status_code=400, detail="Invoice is not YooKassa")
+
+        # если уже paid — сразу отдаём
+        if (inv.get("status") or "").lower() == "paid":
+            return YooKassaStatusResponse(
+                invoice_id=invoice_id,
+                status="succeeded",
+                payment_id=_extract_yk_payment_id(inv.get("payload")),
+                period_applied=True,
+            )
+
+        payment_id = _extract_yk_payment_id(inv.get("payload"))
+        if not payment_id:
+            raise HTTPException(status_code=500, detail="YooKassa payment_id missing in invoice payload")
+
+        data = await _yookassa_get_payment(payment_id)
+        st = (data.get("status") or "pending").lower()
+
+        # amount.value в ЮKassa обычно строка вида "199.00" => переводим в копейки [web:286]
+        amt = data.get("amount") or {}
+        currency = amt.get("currency") or "RUB"
+        value_str = amt.get("value") or "0.00"
+        try:
+            amount_minor_units = int(round(float(value_str) * 100))
+        except Exception:
+            amount_minor_units = 0
+
+        if st == "succeeded":
+            await miniapp_db.db.mark_billing_invoice_paid_yookassa(
+                invoice_id=invoice_id,
+                payment_id=payment_id,
+                amount_minor_units=amount_minor_units,
+                currency=currency,
+            )
+            await miniapp_db.db.apply_saas_plan_for_invoice(invoice_id)
+            return YooKassaStatusResponse(
+                invoice_id=invoice_id,
+                status="succeeded",
+                payment_id=payment_id,
+                period_applied=True,
+            )
+
+        return YooKassaStatusResponse(
+            invoice_id=invoice_id,
+            status=st,
+            payment_id=payment_id,
+            period_applied=False,
+        )
+
+
+    @app.post("/api/billing/yookassa/webhook")
+    async def yookassa_webhook(request: Request):
+        body = await request.json()
+        event = body.get("event")
+        obj = body.get("object") or {}
+        payment_id = obj.get("id")
+
+        if not payment_id:
+            raise HTTPException(status_code=400, detail="missing payment id")
+
+        if event not in ("payment.succeeded", "payment.canceled", "payment.waiting_for_capture"):
+            return {"ok": True}
+
+        payload = f"yookassa:{payment_id}"
+        inv = await miniapp_db.db.find_billing_invoice_by_payload(payload)
+        if not inv:
+            return {"ok": True}
+
+        invoice_id = int(inv["invoiceid"])
+
+        # перепроверка статуса через API (рекомендованный подход) [web:294]
+        data = await _yookassa_get_payment(payment_id)
+        st = (data.get("status") or "pending").lower()
+
+        if st == "succeeded" and (inv.get("status") or "").lower() != "paid":
+            amt = data.get("amount") or {}
+            currency = amt.get("currency") or "RUB"
+            value_str = amt.get("value") or "0.00"
+            try:
+                amount_minor_units = int(round(float(value_str) * 100))
+            except Exception:
+                amount_minor_units = 0
+
+            await miniapp_db.db.mark_billing_invoice_paid_yookassa(
+                invoice_id=invoice_id,
+                payment_id=payment_id,
+                amount_minor_units=amount_minor_units,
+                currency=currency,
+            )
+            await miniapp_db.db.apply_saas_plan_for_invoice(invoice_id)
+
+        return {"ok": True, "status": st}
+
 
     @app.get("/api/instances/{instance_id}/billing", response_model=BillingInfo)
     async def get_instance_billing_endpoint(
@@ -2177,9 +2517,6 @@ def create_miniapp_app(
 
 
     # ---------- Tickets / Operators ----------
-
-    class UpdateTicketStatusRequest(BaseModel):
-        status: str = Field(..., description="new, inprogress, answered, closed, spam")
 
     @app.get(
         "/api/instances/{instance_id}/tickets",

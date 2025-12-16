@@ -32,6 +32,7 @@ from shared.models import BotInstance, InstanceStatus
 from shared.webhook_manager import WebhookManager
 from shared.security import SecurityManager
 from shared import settings
+from dotenv import load_dotenv
 
 # Configure logging
 logging.basicConfig(
@@ -44,6 +45,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("master_bot")
 
+load_dotenv(override=False)
 
 class MasterBot:
     def __init__(self, token: str, webhook_domain: str, webhook_port: int = 8443, db: MasterDatabase | None = None):
