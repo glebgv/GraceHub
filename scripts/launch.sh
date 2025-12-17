@@ -22,17 +22,13 @@ cd "$ROOT_DIR"
 # --- аккуратный stop в одну "динамическую" строку и строго один раз ---
 _cleanup_done=0
 cleanup() {
-    # защита от повторного вызова (INT + EXIT, повторные сигналы, killpg и т.п.)
     if [ "${_cleanup_done}" -eq 1 ]; then
         return 0
     fi
     _cleanup_done=1
 
-    # снимаем трапы, чтобы не было рекурсии/повторов
     trap - EXIT INT TERM
 
-    # "динамическая" строка: \r (carriage return) + очистка до конца строки \033[K
-    # это убирает спам и перерисовывает строку на месте [web:22][web:25]
     printf "\r\033[K🔻 Stopping GraceHub dev/prod stack..."
     kill -- -$$ 2>/dev/null || true
     printf "\r\033[K✅ Stopped.\n"
@@ -43,13 +39,13 @@ trap cleanup EXIT INT TERM
 load_env() {
     if [ ! -f "$ENV_FILE" ]; then
         echo "❌ .env file not found at: $ENV_FILE"
-        echo "   Create .env with at least: MASTER_BOT_TOKEN, WEBHOOK_DOMAIN, DATABASE_URL"
+        echo "   Create .env with at least: MASTER_BOT_TOKEN, WEBHOOK_DOMAIN, DB_* vars"
         exit 1
     fi
 
-    # Загружаем пары KEY=VALUE, игнорируя комментарии и пустые строки
+    # подгружаем .env в окружение текущего shell (для dev-режима)
     set -a
-    # shellcheck disable=SC1090
+    # только строки формата KEY=VALUE, без комментариев
     source <(grep -Ev '^\s*#' "$ENV_FILE" | grep -E '^\s*[A-Za-z_][A-Za-z0-9_]*=' || true)
     set +a
 }
@@ -57,7 +53,7 @@ load_env() {
 check_required_env() {
     local missing=0
 
-    for var in MASTER_BOT_TOKEN WEBHOOK_DOMAIN DATABASE_URL; do
+    for var in MASTER_BOT_TOKEN WEBHOOK_DOMAIN; do
         if [ -z "${!var:-}" ]; then
             echo "❌ Required variable $var is not set or empty (check $ENV_FILE)"
             missing=1
@@ -66,7 +62,7 @@ check_required_env() {
 
     if [ "$missing" -ne 0 ]; then
         echo "   Make sure .env contains non-empty values for:"
-        echo "   MASTER_BOT_TOKEN, WEBHOOK_DOMAIN, DATABASE_URL"
+        echo "   MASTER_BOT_TOKEN, WEBHOOK_DOMAIN"
         exit 1
     fi
 }
@@ -85,7 +81,6 @@ run_dev() {
     echo "🔧 Starting in development mode..."
     export PYTHONPATH="$ROOT_DIR/src"
 
-    # активируем venv относительно корня
     if [ ! -d "$VENV_DIR" ]; then
         echo "❌ venv not found at $VENV_DIR"
         exit 1
@@ -106,13 +101,9 @@ run_dev() {
         echo "✅ Python deps already up to date"
     fi
 
-    # master bot (без nohup, обычный фон)
     python src/master_bot/main.py >> logs/masterbot.log 2>&1 &
-
-    # api backend
     python src/master_bot/api_server.py >> logs/api_server.log 2>&1 &
 
-    # frontend dev server
     cd "$FRONTEND_DIR"
     if ! command -v npm >/dev/null 2>&1; then
         echo "❌ npm not found in PATH. Install Node.js/npm first."
@@ -143,9 +134,8 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=$ROOT_DIR
+EnvironmentFile=$ROOT_DIR/.env
 Environment=PYTHONPATH=$ROOT_DIR/src
-Environment=MASTER_BOT_TOKEN=$MASTER_BOT_TOKEN
-Environment=WEBHOOK_DOMAIN=$WEBHOOK_DOMAIN
 ExecStart=$VENV_DIR/bin/python $ROOT_DIR/src/master_bot/main.py
 Restart=always
 
@@ -161,9 +151,8 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=$ROOT_DIR
+EnvironmentFile=$ROOT_DIR/.env
 Environment=PYTHONPATH=$ROOT_DIR/src
-Environment=MASTER_BOT_TOKEN=$MASTER_BOT_TOKEN
-Environment=WEBHOOK_DOMAIN=$WEBHOOK_DOMAIN
 ExecStart=$VENV_DIR/bin/python $ROOT_DIR/src/master_bot/api_server.py
 Restart=always
 
@@ -176,6 +165,27 @@ EOF
 
 run_prod() {
     echo "🏭 Setting up production (backend + frontend build + nginx checks)..."
+
+    # === ПРОВЕРКА СИСТЕМНЫХ ПАКЕТОВ ===
+    echo "🔍 Checking required system packages..."
+    local missing_packages=()
+
+    command -v rsync >/dev/null 2>&1 || missing_packages+=("rsync")
+    command -v npm >/dev/null 2>&1 || missing_packages+=("npm")
+    command -v nginx >/dev/null 2>&1 || missing_packages+=("nginx")
+    command -v ss >/dev/null 2>&1 || missing_packages+=("iproute2 (ss)")
+    command -v md5sum >/dev/null 2>&1 || missing_packages+=("coreutils")
+
+    if [ ${#missing_packages[@]} -ne 0 ]; then
+        echo "❌ Missing required system packages:"
+        printf '   • %s\n' "${missing_packages[@]}"
+        echo ""
+        echo "📦 Install them with:"
+        echo "   apt update && apt install -y rsync npm nginx iproute2"
+        echo "   (or: yum install rsync nodejs nginx iproute)"
+        exit 1
+    fi
+    echo "✅ All required system packages found"
 
     # --- backend deps ---
     if [ ! -d "$VENV_DIR" ]; then
@@ -194,11 +204,6 @@ run_prod() {
 
     cd "$FRONTEND_DIR"
 
-    if ! command -v npm >/dev/null 2>&1; then
-        echo "❌ npm not found in PATH. Install Node.js/npm first."
-        exit 1
-    fi
-
     echo "📦 Installing frontend deps..."
     if [ -f package-lock.json ]; then
         npm ci
@@ -210,7 +215,7 @@ run_prod() {
     npm run build
 
     # --- deploy static build ---
-    BUILD_DIR="$FRONTEND_DIR/dist"   # для Vite; замени на build при CRA
+    BUILD_DIR="$FRONTEND_DIR/dist"
     TARGET_DIR="/var/www/gracehub-frontend"
 
     if [ ! -d "$BUILD_DIR" ]; then
@@ -246,11 +251,11 @@ run_prod() {
     echo "🔍 Testing nginx configuration (nginx -t)..."
     if ! nginx -t >/dev/null 2>&1; then
         echo "❌ nginx configuration test failed. Fix config and run again."
-        nginx -t  # показать ошибки пользователю
+        nginx -t
         exit 1
     fi
 
-    # --- check backend listener on 8001 (или поменяй на свой) ---
+    # --- check backend listener on 8001 ---
     BACKEND_PORT=8001
     echo "🔍 Checking backend listener on port $BACKEND_PORT ..."
     if ! ss -tuln | grep -q ":$BACKEND_PORT"; then
@@ -266,7 +271,39 @@ run_prod() {
     systemctl restart $MASTER_SERVICE $API_SERVICE
 
     systemctl --no-pager status $MASTER_SERVICE $API_SERVICE
-    echo "✅ Production setup finished."
+
+    # === ФИНАЛЬНОЕ СООБЩЕНИЕ ===
+    echo ""
+    echo "🎉 ✅ PRODUCTION SETUP COMPLETED!"
+    echo ""
+    echo "📁 Frontend static files deployed:"
+    echo "   → /var/www/gracehub-frontend/"
+    echo "   → index.html, assets/*.js"
+    echo ""
+    echo "⚙️  Backend services running:"
+    echo "   → gracehub-master.service (Telegram Bot)"
+    echo "   → gracehub-api.service (API на :8001)"
+    echo ""
+    echo "🌐 NEXT STEPS - Configure nginx:"
+    echo "   1. Add location / → /var/www/gracehub-frontend/"
+    echo "   2. Add proxy_pass /api/ → http://localhost:8001/"
+    echo ""
+    echo "📄 Example nginx config:"
+    echo "   server {"
+    echo "     location / {"
+    echo "       root /var/www/gracehub-frontend;"
+    echo "       try_files \$uri \$uri/ /index.html;"
+    echo "     }"
+    echo "     location /api/ {"
+    echo "       proxy_pass http://localhost:8001/;"
+    echo "     }"
+    echo "   }"
+    echo ""
+    echo "🔍 Check logs:"
+    echo "   journalctl -u gracehub-master.service -f"
+    echo "   journalctl -u gracehub-api.service -f"
+    echo "   tail -f $ROOT_DIR/logs/*"
+    echo ""
 }
 
 case "$MODE" in
@@ -285,4 +322,3 @@ case "$MODE" in
     echo "  $0 prod"
     ;;
 esac
-

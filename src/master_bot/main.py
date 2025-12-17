@@ -7,6 +7,7 @@ from typing import Optional, Dict, List, Tuple
 import secrets
 import hashlib
 import os
+import sys
 import subprocess
 from pathlib import Path
 from languages import LANGS
@@ -287,7 +288,7 @@ class MasterBot:
         proc = self.worker_procs.get(instance_id)
         if not proc:
             return False
-        return proc.poll() is None  
+        return proc.poll() is None
 
 
     def spawn_worker(self, instance_id: str, token: str) -> None:
@@ -304,14 +305,17 @@ class MasterBot:
         env["WORKER_INSTANCE_ID"] = instance_id
         env["WORKER_TOKEN"] = token
 
+        worker_path = Path(__file__).resolve().parent.parent / "worker" / "main.py"
+
         proc = subprocess.Popen(
-            ["python", "src/worker/main.py"],
+            [sys.executable, str(worker_path)],
             env=env,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.STDOUT,
         )
         self.worker_procs[instance_id] = proc
         logger.info(f"Spawned worker process for instance {instance_id} (pid={proc.pid})")
+
 
     def stop_worker(self, instance_id: str) -> None:
         """
@@ -613,7 +617,7 @@ class MasterBot:
         self.dp.callback_query(F.data.startswith("remove_confirm_"))(self.handle_remove_confirm)
         self.dp.callback_query(F.data.startswith("remove_yes_"))(self.handle_remove_instance)
         self.dp.callback_query(F.data.startswith("remove_no_"))(self.handle_remove_cancel)
-        
+
         # === Биллинг из мастер-бота ===
         self.dp.callback_query(F.data.startswith("billing_choose_plan_"))(
             self.handle_billing_choose_plan
