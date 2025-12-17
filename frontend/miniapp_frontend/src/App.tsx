@@ -342,6 +342,11 @@ const App: React.FC<AppProps> = ({
       setSelectedInstance(normalized);
       setIsFirstLaunch(false);
       setCurrentPage('dashboard');
+
+      // онбординг бинда, если чат ещё не привязан
+      if (!normalized.generalpanelchatid) {
+        setShowBindHelpModal(true);
+      }
     } catch (err: any) {
       console.error('[App] createInstanceByToken error', err);
       const fallback = t('firstLaunch.create_error_fallback');

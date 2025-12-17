@@ -1311,3 +1311,19 @@ select.form-control {
   color: var(--tg-color-accent);
   font-weight: bold;
 }
+
+
+.modal {
+  animation: modal-pop 0.24s ease-out;
+}
+
+@keyframes modal-pop {
+  from {
+    transform: translateY(8px) scale(0.96);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0) scale(1);
+    opacity: 1;
+  }
+}
