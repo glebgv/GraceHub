@@ -322,5 +322,6 @@ TEXTS_ZH = Texts(
     master_current_plan_no_date = "当前套餐：{plan_name}，剩余 {days_left} 天。",
     master_current_plan_paused = "套餐 {plan_name} 已暂停（至 {date}）。请续费以继续使用。",
     billing_unknown_plan_name = "未知套餐",
-
+    ticket_taken_self = "✅ 工单已分配给你",
+    ticket_no_assignees = "没有可分配的客服",
 )

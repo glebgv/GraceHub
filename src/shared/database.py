@@ -86,6 +86,22 @@ class MasterDatabase:
             pass
         return key
 
+    async def track_operator_activity(self, instance_id: str, user_id: int, username: str) -> None:
+        """
+        Обновляет/создаёт оператора по активности в OpenChat.
+        """
+        now = datetime.now(timezone.utc)
+        await self.execute(
+            """
+            INSERT INTO operators (instance_id, user_id, username, last_seen)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (instance_id, user_id)
+            DO UPDATE SET
+                username = EXCLUDED.username,
+                last_seen = EXCLUDED.last_seen
+            """,
+            (instance_id, user_id, username, now),
+        )
 
     async def mark_expiring_notified_today(self, instance_id: str) -> None:
         """
@@ -1019,6 +1035,23 @@ class MasterDatabase:
             )
             """
         )
+
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS operators (
+                instance_id TEXT NOT NULL,
+                user_id BIGINT NOT NULL,
+                username TEXT,
+                last_seen TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                added_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (instance_id, user_id),
+                CONSTRAINT fk_operators_instance
+                    FOREIGN KEY (instance_id) REFERENCES bot_instances(instance_id) ON DELETE CASCADE
+            )
+        """)
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_operators_last_seen
+                ON operators(instance_id, last_seen DESC)
+        """)
 
         # greetings
         cur.execute(

@@ -346,5 +346,8 @@ TEXTS_RU = Texts(
     master_current_plan_no_date = "Текущий тариф: {plan_name}, осталось {days_left} дн.",
     master_current_plan_paused = "Тариф {plan_name} приостановлен (до {date}). Продлите подписку, чтобы возобновить работу.",
     billing_unknown_plan_name = "Неизвестный тариф",
+    ticket_taken_self = "✅ Тикет закреплён за вами",
+    ticket_no_assignees = "Нет доступных операторов для назначения",
+    
 )
 

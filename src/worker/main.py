@@ -195,6 +195,50 @@ class GraceHubWorker:
 
         return True
 
+    async def get_operators_keyboard(
+        self,
+        ticket_id: int,
+        page: int = 0,
+        per_page: int = 10,
+    ) -> InlineKeyboardMarkup:
+        offset = page * per_page
+        rows = await self.db.fetchall(
+            """
+            SELECT user_id, username, last_seen
+            FROM operators
+            WHERE instance_id = %s
+            ORDER BY last_seen DESC
+            LIMIT %s OFFSET %s
+            """,
+            (self.instance_id, per_page, offset),
+        )
+
+        buttons: List[List[InlineKeyboardButton]] = []
+        for r in rows:
+            uid = r["user_id"]
+            uname = r["username"] or ""
+            label = f"@{uname}" if uname else f"id{uid}"
+            buttons.append([
+                InlineKeyboardButton(
+                    text=label,
+                    callback_data=f"ticket:assign_to:{ticket_id}:{uid}",
+                )
+            ])
+
+        # Если пусто — вернём пустую клаву, выше ты это проверяешь и шлёшь ticket_no_assignees
+        if not buttons:
+            return InlineKeyboardMarkup(inline_keyboard=[])
+
+        # Отмена
+        buttons.append([
+            InlineKeyboardButton(
+                text="❌ Отмена",
+                callback_data=f"ticket:cancel_assign:{ticket_id}",
+            )
+        ])
+
+        return InlineKeyboardMarkup(inline_keyboard=buttons)
+
 
     async def init_database(self) -> None:
         # master_db уже инициализирован и передан в конструктор
@@ -1558,8 +1602,8 @@ class GraceHubWorker:
                     await self.db.execute(
                         """
                         UPDATE tickets
-                           SET thread_id = %s, updated_at = %s
-                         WHERE instance_id = %s AND id = %s
+                        SET thread_id = %s, updated_at = %s
+                        WHERE instance_id = %s AND id = %s
                         """,
                         (new_thread_id, now, self.instance_id, ticket["id"]),
                     )
@@ -1574,6 +1618,12 @@ class GraceHubWorker:
                 logger.error(f"Failed to forward to OpenChat: Telegram server says - {e}")
                 return
 
+        if message.chat.id == chat_id and message.from_user:
+            await self.db.track_operator_activity(
+                self.instance_id,
+                message.from_user.id,
+                message.from_user.username or "",
+            )
         # Сохраняем связь для корректного реплея админа клиенту
         if sent:
             # маппинг admin_message -> user
@@ -1601,10 +1651,10 @@ class GraceHubWorker:
             await self.db.execute(
                 """
                 UPDATE tickets
-                   SET last_user_msg_at = %s,
-                       updated_at       = %s
-                 WHERE instance_id = %s
-                   AND id          = %s
+                SET last_user_msg_at = %s,
+                    updated_at       = %s
+                WHERE instance_id = %s
+                AND id          = %s
                 """,
                 (now, now, self.instance_id, ticket["id"]),
             )
@@ -1614,7 +1664,6 @@ class GraceHubWorker:
                 await self.set_ticket_status(ticket["id"], "inprogress")
         except Exception as e:
             logger.error(f"Failed to update ticket timestamps: {e}")
-
 
 
     # ====================== КОМАНДЫ ======================
@@ -1901,8 +1950,8 @@ class GraceHubWorker:
                         return
                     # сообщение протухло → шлём новое
                     try:
-                        await self.sendsafemessage(
-                            chatid=cb.message.chat.id,
+                        await self._send_safe_message(
+                            chat_id=cb.message.chat.id,
                             text=self.texts.ticket_admin_prompt,
                             reply_markup=kb,
                         )
@@ -1971,52 +2020,24 @@ class GraceHubWorker:
             await cb.answer(self.texts.ticket_taken_self)
             return
 
-        # 2) "Назначить" — показать список других участников (админов) чата
+        # 2) "Назначить" — показать список операторов из БД
         if action == "assign":
-            members = await self.bot.get_chat_administrators(ticket["chat_id"])
-            rows: List[List[InlineKeyboardButton]] = []
-
-            for m in members:
-                if m.user.is_bot or m.user.id == user.id:
-                    continue
-                label = (
-                    f"@{m.user.username}"
-                    if m.user.username
-                    else m.user.full_name
-                )
-                rows.append(
-                    [
-                        InlineKeyboardButton(
-                            text=label,
-                            callback_data=f"ticket:assign_to:{ticket_id}:{m.user.id}",
-                        )
-                    ]
-                )
-            if not rows:
+            # строим клавиатуру на основе таблицы operators
+            kb = await self.get_operators_keyboard(ticket_id, page=0)
+            if not kb.inline_keyboard:
                 await cb.answer(self.texts.ticket_no_assignees, show_alert=True)
                 return
 
-            rows.append(
-                [
-                    InlineKeyboardButton(
-                        text=self.texts.ticket_cancel,
-                        callback_data=f"ticket:cancel_assign:{ticket_id}",
-                    )
-                ]
-            )
-
             try:
-                await message.edit_reply_markup(
-                    reply_markup=InlineKeyboardMarkup(inline_keyboard=rows)
-                )
+                await message.edit_reply_markup(reply_markup=kb)
             except TelegramBadRequest as e:
                 err = str(e).lower()
                 if "message is not modified" not in err:
                     try:
-                        await self.sendsafemessage(
-                            chatid=message.chat.id,
+                        await self._send_safe_message(
+                            chat_id=message.chat.id,
                             text=self.texts.ticket_admin_prompt,
-                            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+                            reply_markup=kb,
                         )
                     except Exception as e2:
                         logger.error(
@@ -2035,8 +2056,15 @@ class GraceHubWorker:
                 await cb.answer()
                 return
 
-            member = await self.bot.get_chat_member(ticket["chat_id"], assignee_id)
-            target_username = member.user.username or f"id{member.user.id}"
+            # раньше тут был get_chat_member, теперь берём только username/id для записи
+            target_username = f"id{assignee_id}"
+            try:
+                member = await self.bot.get_chat_member(ticket["chat_id"], assignee_id)
+                if member and member.user:
+                    target_username = member.user.username or f"id{member.user.id}"
+            except Exception:
+                # если не удалось получить из TG — оставляем id
+                pass
 
             current_status = ticket.get("status") or "new"
             new_status = current_status
@@ -2737,9 +2765,8 @@ class GraceHubWorker:
             wait_for = await self.ratelimiter.wait_for_send()
             await asyncio.sleep(wait_for)
 
-        # Если это админ
+        # Если это админ — показываем админ-панель
         if await self.is_admin(user_id):
-            # Показываем админ-панель
             await self._send_safe_message(
                 chat_id=message.chat.id,
                 text=self.texts.admin_panel_title,
@@ -2843,6 +2870,14 @@ class GraceHubWorker:
         if message.from_user and message.from_user.is_bot:
             return
 
+        # 🔹 Трекинг оператора по активности в OpenChat
+        if message.from_user:
+            await self.db.track_operator_activity(
+                self.instance_id,
+                message.from_user.id,
+                message.from_user.username or "",
+            )
+
         # Валидация размеров вложений от админов/операторов в OpenChat
         too_big = False
         max_bytes = self.max_file_bytes  # задаётся в __init__ из settings.WORKER_MAX_FILE_MB
@@ -2884,8 +2919,6 @@ class GraceHubWorker:
                 message.chat.id,
                 max_bytes,
             )
-            # В OpenChat обычно отвечаем только оператору, без текста пользователю
-            # Можно отправить сервисное сообщение в этот же топик
             await self._send_safe_message(
                 chat_id=message.chat.id,
                 text=self.texts.attachment_too_big,

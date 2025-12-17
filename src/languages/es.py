@@ -326,6 +326,7 @@ TEXTS_ES = Texts(
     master_current_plan_no_date = "Plan actual: {plan_name}, quedan {days_left} días.",
     master_current_plan_paused = "El plan {plan_name} está en pausa (hasta {date}). Renueva tu suscripción para continuar.",
     billing_unknown_plan_name = "Plan desconocido",
-
+    ticket_taken_self = "✅ El ticket ha sido asignado a ti",
+    ticket_no_assignees = "No hay operadores disponibles para asignar",
 )
 

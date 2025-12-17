@@ -325,6 +325,8 @@ TEXTS_HI = Texts(
     master_current_plan_no_date = "वर्तमान प्लान: {plan_name}, {days_left} दिन बचे हैं.",
     master_current_plan_paused = "प्लान {plan_name} रोका गया है (तक {date}). जारी रखने के लिए सब्सक्रिप्शन बढ़ाएँ.",
     billing_unknown_plan_name = "अज्ञात प्लान",
+    ticket_taken_self = "✅ टिकट आपके नाम पर सौंप दिया गया है",
+    ticket_no_assignees = "कोई उपलब्ध ऑपरेटर नहीं है जिसे असाइन किया जा सके",
 
 )
 
