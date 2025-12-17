@@ -1294,3 +1294,20 @@ select.form-control {
   border-color: var(--tg-theme-link-color, #3b82f6);
   box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.35);
 }
+
+
+.btn--ghost-selected {
+  background: rgba(255,255,255,0.12) !important;
+  border: 2px solid var(--tg-color-accent, #3b82f6) !important;
+  position: relative;
+}
+
+.btn--ghost-selected::after {
+  content: '✓';
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--tg-color-accent);
+  font-weight: bold;
+}

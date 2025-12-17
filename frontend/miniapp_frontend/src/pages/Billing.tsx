@@ -954,18 +954,41 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
                   {t('billing.choose_period_label')}
                 </div>
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                  {periodOptions.map((opt) => (
-                    <button
-                      key={opt.id}
-                      type="button"
-                      onClick={() => setSelectedPeriod(opt)}
-                      className={opt.id === selectedPeriod.id ? 'btn btn--secondary' : 'btn btn--ghost'}
-                      style={{ flex: '1 1 0' }}
-                      disabled={submitting || tonChecking || ykChecking}
-                    >
-                      {t(opt.labelKey, { months: opt.multiplier })}
-                    </button>
-                  ))}
+                  {periodOptions.map((opt) => {
+                    const isActive = opt.id === selectedPeriod.id;
+                    return (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={() => setSelectedPeriod(opt)}
+                        className={`btn ${isActive ? 'btn--ghost' : 'btn--ghost'}`} // обе ghost, но active светлее
+                        style={{ 
+                          flex: '1 1 0',
+                          position: 'relative',
+                          // Активная: светлый фон + яркая обводка
+                          backgroundColor: isActive ? 'rgba(255,255,255,0.15)' : 'transparent',
+                          border: isActive ? '2px solid var(--tg-color-accent, #3b82f6)' : '1px solid rgba(148,163,184,0.3)',
+                          color: isActive ? 'var(--tg-color-text)' : 'var(--tg-color-hint-color)',
+                          minHeight: '44px'
+                        }}
+                        disabled={submitting || tonChecking || ykChecking}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
+                          <span>{t(opt.labelKey, { months: opt.multiplier })}</span>
+                          {isActive && (
+                            <span style={{ 
+                              fontSize: '16px', 
+                              fontWeight: 'bold',
+                              color: 'var(--tg-color-accent, #3b82f6)'
+                            }}>
+                              ✓
+                            </span>
+                          )}
+                        </div>
+                      </button>
+                    );
+                  })}
+
                 </div>
               </div>
 
