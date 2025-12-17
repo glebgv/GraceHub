@@ -27,24 +27,36 @@ from aiogram.exceptions import TelegramBadRequest, TelegramAPIError, TelegramUna
 from aiogram.types.web_app_info import WebAppInfo
 from aiohttp import web
 
-# Import shared utilities
+# ✅ НАСТРОЙКА ЛОГОВ ПЕРЕД ВСЕМИ ИМПОРТАМИ shared.* !!!
+BASE_DIR = Path(__file__).resolve().parents[2]  # /root/GraceHub
+LOG_DIR = BASE_DIR / "logs"
+LOG_DIR.mkdir(exist_ok=True, parents=True)
+LOG_FILE = LOG_DIR / "masterbot.log"
+
+formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+fh = logging.FileHandler(LOG_FILE, encoding="utf-8")
+fh.setLevel(logging.INFO)
+fh.setFormatter(formatter)
+
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.INFO)
+root_logger.handlers.clear()
+root_logger.addHandler(fh)
+root_logger.propagate = False
+
+logger = logging.getLogger("master_bot")
+logger.setLevel(logging.INFO)
+
+print(f"✅ Logging configured to: {LOG_FILE}")
+
+
+# ТЕПЕРЬ импорты shared — они подхватят НАСТРОЕННЫЙ логгер
 from shared.database import MasterDatabase
 from shared.models import BotInstance, InstanceStatus
 from shared.webhook_manager import WebhookManager
 from shared.security import SecurityManager
 from shared import settings
 from dotenv import load_dotenv
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[
-        logging.FileHandler("master_bot.log", encoding="utf-8"),
-        logging.StreamHandler(),
-    ],
-)
-logger = logging.getLogger("master_bot")
 
 load_dotenv(override=False)
 
