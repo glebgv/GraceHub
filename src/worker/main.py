@@ -125,7 +125,7 @@ class GraceHubWorker:
         self.max_file_bytes: int = self.max_file_mb * 1024 * 1024
         # Храним скользящее окно значений в минуту. Для антифлуда
         self.user_msg_timestamps: dict[int, deque[datetime]] = {}
-
+        self.user_session_messages: Dict[int, int] = {}
         # хендлеры можно регать сразу, БД для этого не нужна
         self.register_handlers()
 
@@ -1584,12 +1584,44 @@ class GraceHubWorker:
                     message_thread_id=thread,
                 )
 
+        # Rate-limit перед отправкой в OpenChat
+        if not await self.ratelimiter.can_send(chat_id=chat_id):
+            wait_for = await self.ratelimiter.wait_for_send()
+            logger.info(f"Rate limit wait for OpenChat chat {chat_id}: {wait_for}s")
+            await asyncio.sleep(wait_for)
+
         # Пытаемся отправить в текущий thread_id
         try:
             sent = await _send_into_thread(thread_id)
         except Exception as e:
             err_text = str(e).lower()
-            if "message thread not found" in err_text or "message thread not found" in getattr(
+            
+            # Flood control: Too Many Requests
+            if "too many requests" in err_text or "flood control exceeded" in err_text:
+                retry_sec = 5
+                # пытаемся вытащить retry-after из текста ошибки
+                for token in err_text.split():
+                    if token.isdigit():
+                        retry_sec = int(token)
+                        break
+                logger.warning(
+                    "Flood control in forward_to_openchat, sleep %s sec (chat %s, ticket %s)",
+                    retry_sec,
+                    chat_id,
+                    ticket["id"],
+                )
+                await asyncio.sleep(retry_sec)
+                # одна повторная попытка
+                try:
+                    sent = await _send_into_thread(thread_id)
+                except Exception as e2:
+                    logger.error(
+                        "Failed to forward to OpenChat after retry for ticket %s: %s",
+                        ticket["id"],
+                        e2,
+                    )
+                    return
+            elif "message thread not found" in err_text or "message thread not found" in getattr(
                 getattr(e, "message", ""), "lower", lambda: ""
             )():
                 # Топик удалён — создаём новый и обновляем тикет
@@ -1618,12 +1650,8 @@ class GraceHubWorker:
                 logger.error(f"Failed to forward to OpenChat: Telegram server says - {e}")
                 return
 
-        if message.chat.id == chat_id and message.from_user:
-            await self.db.track_operator_activity(
-                self.instance_id,
-                message.from_user.id,
-                message.from_user.username or "",
-            )
+        # ✅ УБРАНО: трекинг операторов (перенесён в handle_openchat_message)
+
         # Сохраняем связь для корректного реплея админа клиенту
         if sent:
             # маппинг admin_message -> user
@@ -2760,6 +2788,16 @@ class GraceHubWorker:
             )
             return
 
+        # 🔹 СЕССИОННЫЙ ФЛУД (>3 подряд)
+        user_msgs = self.user_session_messages.get(user_id, 0)
+        if user_msgs >= 3:
+            logger.warning(f"User {user_id} session flood ({user_msgs} msgs)")
+            await self._send_safe_message(
+                chat_id=message.chat.id,
+                text="⏳ Ваши сообщения доставлены. Ожидайте ответа оператора!",
+            )
+            return
+
         # Rate-limit на отправку ответов
         if not await self.ratelimiter.can_send(chat_id=message.chat.id):
             wait_for = await self.ratelimiter.wait_for_send()
@@ -2827,21 +2865,21 @@ class GraceHubWorker:
         if oc["enabled"] and oc["chat_id"]:
             try:
                 await self.forward_to_openchat(message)
-            except Exception as e:
-                logger.error(f"Failed to forward to OpenChat: {e}")
-            # Можно дополнительно прислать автоответ пользователю
-            if await self.get_setting("autoreply_enabled") == "True":
-                text = await self.get_setting("autoreply_text") or ""
-                if text:
+                
+                # 🔹 УМНЫЙ АВТООТВЕТ: только на 1-е сообщение сессии
+                if user_msgs == 0:
                     await self._send_safe_message(
                         chat_id=message.chat.id,
-                        text=text,
+                        text="✅ Сообщение передано в поддержку. Скоро ответим!",
                     )
-            else:
-                await self._send_safe_message(
-                    chat_id=message.chat.id,
-                    text=self.texts.message_forwarded_to_support,
-                )
+                
+                # Обновляем счётчик сессии
+                self.user_session_messages[user_id] = user_msgs + 1
+                if self.user_session_messages[user_id] > 10:
+                    self.user_session_messages[user_id] = 0
+                    
+            except Exception as e:
+                logger.error(f"Failed to forward to OpenChat: {e}")
             return
 
         # Если OpenChat не настроен — информируем пользователя
