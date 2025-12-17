@@ -17,16 +17,26 @@ logger = logging.getLogger(__name__)
 
 def get_master_dsn() -> str:
     """
-    Возвращает DSN для master-БД.
-    Обязательно должен быть задан env DATABASE_URL (postgresql://...).
+    Возвращает DSN для master-БД из settings.py или env
     """
+    # 1. Импорт settings с правильным путем
+    try:
+        from . import settings
+        return settings.DATABASE_URL
+    except (ImportError, AttributeError):
+        pass
+    
+    # 2. Fallback на env переменную
     env_dsn = os.getenv("DATABASE_URL")
     if env_dsn:
         return env_dsn
-
+    
     raise RuntimeError(
-        "DATABASE_URL не задан. Укажи DATABASE_URL=postgresql://user:pass@host:port/dbname"
+        "DATABASE_URL не задан.\n"
+        "1. Добавь в .env: DB_USER, DB_PASSWORD, DB_HOST, DB_NAME\n"
+        "2. Или DATABASE_URL=postgresql://user:pass@host:port/dbname"
     )
+
 
 
 class MasterDatabase:
