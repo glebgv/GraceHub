@@ -111,13 +111,16 @@ export interface ManageHealthResponse {
 
 /**
  * То, что хранится в platform_settings["miniapp_public"].
- * Важно: сейчас это UI-конфиг. Для реального применения env-параметров нужен бекенд-слой. [file:26]
+ * Важно: single-tenant режим в бекенде читается из singleTenant.allowedUserIds. [file:52]
  */
 export interface MiniappPublicSettings {
   singleTenant: {
     enabled: boolean;
+    allowedUserIds: number[];
+    // legacy (старое поле, может встречаться в БД после миграций/ручных правок)
     ownerTelegramId?: number | null;
   };
+
   superadmins: number[];
 
   payments: {
@@ -153,6 +156,42 @@ export interface MiniappPublicSettings {
     workerMaxFileMb: number;
     maxInstancesPerUser: number;
   };
+}
+
+function normalizeIds(list: any): number[] {
+  if (!Array.isArray(list)) return [];
+  const out = new Set<number>();
+  for (const x of list) {
+    const n = Number(x);
+    if (Number.isFinite(n) && n > 0) out.add(n);
+  }
+  return Array.from(out).sort((a, b) => a - b);
+}
+
+/**
+ * Нормализация miniapp_public:
+ * - гарантирует наличие singleTenant.allowedUserIds
+ * - мигрирует старое singleTenant.ownerTelegramId -> allowedUserIds [file:52]
+ */
+function normalizeMiniappPublicSettings(raw: any): MiniappPublicSettings {
+  const v = raw || {};
+  const st = v?.singleTenant || {};
+
+  let allowed = normalizeIds(st?.allowedUserIds);
+  if (allowed.length === 0 && st?.ownerTelegramId !== null && st?.ownerTelegramId !== undefined) {
+    allowed = normalizeIds([st.ownerTelegramId]);
+  }
+
+  return {
+    ...v,
+    singleTenant: {
+      ...st,
+      enabled: !!st?.enabled,
+      allowedUserIds: allowed,
+      // ownerTelegramId оставляем как legacy-поле (не используем в UI, но не ломаем старые данные)
+      ownerTelegramId: st?.ownerTelegramId === undefined ? undefined : st?.ownerTelegramId,
+    },
+  } as MiniappPublicSettings;
 }
 
 class ApiClient {
@@ -203,21 +242,13 @@ class ApiClient {
       headers['X-Telegram-Init-Data'] = this.initData;
     }
 
-    const options: RequestInit = {
-      method,
-      headers,
-    };
+    const options: RequestInit = { method, headers };
 
     if (body !== undefined) {
       options.body = JSON.stringify(body);
     }
 
-    console.log('[ApiClient] request >>>', {
-      method,
-      url,
-      headers,
-      body,
-    });
+    console.log('[ApiClient] request >>>', { method, url, headers, body });
 
     const response = await fetch(url, options);
 
@@ -239,8 +270,7 @@ class ApiClient {
     });
 
     if (!response.ok) {
-      const detail =
-        (json && (json.detail || json.message || json.error)) || `Ошибка ${response.status}`;
+      const detail = (json && (json.detail || json.message || json.error)) || `Ошибка ${response.status}`;
       throw new Error(detail);
     }
 
@@ -287,9 +317,7 @@ class ApiClient {
       tokenPreview: payload.token?.slice(0, 10),
     });
 
-    return this.request<InstanceDto>('POST', '/api/instances', {
-      token: payload.token,
-    });
+    return this.request<InstanceDto>('POST', '/api/instances', { token: payload.token });
   }
 
   async deleteInstance(instanceId: string): Promise<void> {
@@ -308,13 +336,7 @@ class ApiClient {
     return this.request('POST', `/api/instances/${instanceId}/settings`, settings);
   }
 
-  async getTickets(
-    instanceId: string,
-    status?: string,
-    search?: string,
-    limit: number = 20,
-    offset: number = 0,
-  ) {
+  async getTickets(instanceId: string, status?: string, search?: string, limit: number = 20, offset: number = 0) {
     const params = new URLSearchParams();
     if (status) params.append('status', status);
     if (search) params.append('search', search);
@@ -348,15 +370,8 @@ class ApiClient {
     return this.request<SaasPlanDTO[]>('GET', '/api/saas/plans');
   }
 
-  async createBillingInvoice(
-    instanceId: string,
-    payload: CreateInvoiceRequest,
-  ): Promise<CreateInvoiceResponse> {
-    return this.request<CreateInvoiceResponse>(
-      'POST',
-      `/api/instances/${instanceId}/billing/create_invoice`,
-      payload,
-    );
+  async createBillingInvoice(instanceId: string, payload: CreateInvoiceRequest): Promise<CreateInvoiceResponse> {
+    return this.request<CreateInvoiceResponse>('POST', `/api/instances/${instanceId}/billing/create_invoice`, payload);
   }
 
   // TON invoice status polling
@@ -364,10 +379,7 @@ class ApiClient {
     const params = new URLSearchParams();
     params.append('invoice_id', String(invoiceId));
 
-    return this.request<TonInvoiceStatusResponse>(
-      'GET',
-      `/api/billing/ton/status?${params.toString()}`,
-    );
+    return this.request<TonInvoiceStatusResponse>('GET', `/api/billing/ton/status?${params.toString()}`);
   }
 
   // YooKassa invoice status polling
@@ -375,17 +387,14 @@ class ApiClient {
     const params = new URLSearchParams();
     params.append('invoice_id', String(invoiceId));
 
-    return this.request<YooKassaStatusResponse>(
-      'GET',
-      `/api/billing/yookassa/status?${params.toString()}`,
-    );
+    return this.request<YooKassaStatusResponse>('GET', `/api/billing/yookassa/status?${params.toString()}`);
   }
 
   // === Platform settings ===
 
   /**
    * GET /api/platform/settings
-   * Backend сейчас возвращает всегда один ключ: "miniapp_public". [file:26]
+   * Backend возвращает ключ "miniapp_public" и его value. [file:52]
    */
   async getPlatformSettings(): Promise<PlatformSettingsResponse> {
     return this.request<PlatformSettingsResponse>('GET', '/api/platform/settings');
@@ -393,28 +402,31 @@ class ApiClient {
 
   /**
    * POST /api/platform/settings/{key}
-   * Только superadmin (backend проверяет роли). [file:26]
+   * Только superadmin (backend проверяет роли). [file:52]
    */
-  async setPlatformSetting(
-    key: string,
-    value: Record<string, any>,
-  ): Promise<SimpleStatusResponse> {
+  async setPlatformSetting(key: string, value: Record<string, any>): Promise<SimpleStatusResponse> {
     const payload: PlatformSettingUpsertRequest = { value };
-    return this.request<SimpleStatusResponse>(
-      'POST',
-      `/api/platform/settings/${encodeURIComponent(key)}`,
-      payload,
-    );
+    return this.request<SimpleStatusResponse>('POST', `/api/platform/settings/${encodeURIComponent(key)}`, payload);
   }
 
   // --- Convenience wrappers for SuperAdmin page (miniapp_public) ---
   async getMiniappPublicSettings(): Promise<MiniappPublicSettings> {
     const res = await this.getPlatformSettings();
-    return (res?.value || {}) as MiniappPublicSettings;
+    return normalizeMiniappPublicSettings(res?.value || {});
   }
 
   async setMiniappPublicSettings(value: MiniappPublicSettings): Promise<SimpleStatusResponse> {
-    return this.setPlatformSetting('miniapp_public', value as any);
+    // перед сохранением гарантируем нормальный массив id
+    const normalized = normalizeMiniappPublicSettings(value);
+    // важно: ownerTelegramId не нужен; если он там остался — можно убрать, чтобы не плодить legacy
+    const cleaned: any = {
+      ...normalized,
+      singleTenant: {
+        enabled: !!normalized.singleTenant.enabled,
+        allowedUserIds: normalizeIds(normalized.singleTenant.allowedUserIds),
+      },
+    };
+    return this.setPlatformSetting('miniapp_public', cleaned);
   }
 }
 

@@ -21,7 +21,14 @@ interface AppProps {
   initDataRaw: string | null;
 }
 
-type Page = 'dashboard' | 'tickets' | 'operators' | 'settings' | 'billing' | 'superadmin';
+type Page =
+  | 'instances'
+  | 'dashboard'
+  | 'tickets'
+  | 'operators'
+  | 'settings'
+  | 'billing'
+  | 'superadmin';
 
 type Instance = {
   instanceid: string;
@@ -57,7 +64,10 @@ const App: React.FC<AppProps> = ({
   const [user, setUser] = useState<any | null>(null);
   const [instances, setInstances] = useState<Instance[]>([]);
   const [selectedInstance, setSelectedInstance] = useState<Instance | null>(null);
-  const [currentPage, setCurrentPage] = useState<Page>('dashboard');
+
+  // ✅ Start app from InstancesList screen
+  const [currentPage, setCurrentPage] = useState<Page>('instances');
+
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -218,6 +228,7 @@ const App: React.FC<AppProps> = ({
           );
           setIsFirstLaunch(true);
           setSelectedInstance(null);
+          setCurrentPage('instances');
           setLoading(false);
           return;
         }
@@ -239,6 +250,9 @@ const App: React.FC<AppProps> = ({
             return normalizedList[0] ?? null;
           });
         }
+
+        // ✅ If instance is auto-selected, switch to dashboard
+        setCurrentPage('dashboard');
 
         setLoading(false);
         console.log('[App.initApp] done (resolvedInstance) =', resolvedInstance);
@@ -407,6 +421,7 @@ const App: React.FC<AppProps> = ({
           } else {
             setSelectedInstance(null);
             setIsFirstLaunch(true);
+            setCurrentPage('instances');
           }
         }
 
@@ -466,7 +481,11 @@ const App: React.FC<AppProps> = ({
   }
 
   // FirstLaunch screen
-  if (isFirstLaunch && instances.length === 0 && !(currentPage === 'superadmin' && isSuperadmin)) {
+  if (
+    isFirstLaunch &&
+    instances.length === 0 &&
+    !(currentPage === 'superadmin' && isSuperadmin)
+  ) {
     return (
       <div className="app-container" style={{ justifyContent: 'flex-start' }}>
         <FirstLaunch
@@ -492,11 +511,11 @@ const App: React.FC<AppProps> = ({
             onBack={() => {
               // ✅ back from superadmin when no instances
               if (instances.length === 0) {
-                setCurrentPage('dashboard');
+                setCurrentPage('instances');
                 setIsFirstLaunch(true);
                 return;
               }
-              setCurrentPage('dashboard');
+              setCurrentPage('instances');
             }}
           />
           {footerBranding}
@@ -540,7 +559,9 @@ const App: React.FC<AppProps> = ({
       ? billing.planName || billing.planCode
       : '—';
 
-  const displayPlanLabel = billing?.unlimited ? t('app.tariff_private_mode') : planLabel;
+  const displayPlanLabel = billing?.unlimited
+    ? t('app.tariff_private_mode')
+    : planLabel;
 
   return (
     <div className="app-container">
@@ -557,7 +578,8 @@ const App: React.FC<AppProps> = ({
             {t('app.maintenance_title', 'Технические работы')}
           </div>
           <div style={{ fontSize: 13, opacity: 0.9 }}>
-            {maintenance.message || t('app.maintenance_message', 'Сервис временно недоступен.')}
+            {maintenance.message ||
+              t('app.maintenance_message', 'Сервис временно недоступен.')}
           </div>
         </div>
       )}
@@ -569,7 +591,11 @@ const App: React.FC<AppProps> = ({
               <div className="tariff-row">
                 <span className="tariff-label">{t('app.tariff_label')}:</span>
                 <span className="tariff-value">
-                  {billing ? (billing.unlimited ? `${displayPlanLabel} · ∞` : displayPlanLabel) : '—'}
+                  {billing
+                    ? billing.unlimited
+                      ? `${displayPlanLabel} · ∞`
+                      : displayPlanLabel
+                    : '—'}
                 </span>
               </div>
               {!billing?.unlimited && (
@@ -658,9 +684,10 @@ const App: React.FC<AppProps> = ({
           className="btn-back"
           onClick={() => {
             if (currentPage === 'superadmin') {
-              setCurrentPage('dashboard');
+              setCurrentPage('instances');
             } else {
               setSelectedInstance(null);
+              setCurrentPage('instances');
             }
           }}
         >
@@ -669,7 +696,9 @@ const App: React.FC<AppProps> = ({
       </header>
 
       <main className="main-content">
-        {currentPage === 'dashboard' && <Dashboard instanceId={selectedInstance.instanceid} />}
+        {currentPage === 'dashboard' && (
+          <Dashboard instanceId={selectedInstance.instanceid} />
+        )}
         {currentPage === 'tickets' && <Tickets instanceId={selectedInstance.instanceid} />}
         {currentPage === 'operators' && selectedInstance.role === 'owner' && (
           <Operators instanceId={selectedInstance.instanceid} />
