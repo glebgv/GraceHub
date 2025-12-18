@@ -86,6 +86,60 @@ class MasterDatabase:
             pass
         return key
 
+    async def get_single_tenant(self) -> Dict[str, Any]:
+        data = await self.get_platform_setting("single_tenant", default=None)
+        if not data:
+            return {"enabled": False, "allowed_user_ids": []}
+        return {
+            "enabled": bool(data.get("enabled", False)),
+            "allowed_user_ids": list(data.get("allowed_user_ids") or []),
+        }
+
+    async def set_single_tenant(self, enabled: bool, allowed_user_ids: List[int]) -> None:
+        allowed_user_ids = sorted({int(x) for x in allowed_user_ids})
+        await self.set_platform_setting(
+            "single_tenant",
+            {"enabled": bool(enabled), "allowed_user_ids": allowed_user_ids},
+        )
+
+    async def get_platform_setting(
+        self,
+        key: str,
+        default: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Возвращает JSON-значение настройки platform_settings.key.
+        Если ключ не найден — вернёт default (по умолчанию None).
+        """
+        row = await self.fetchone(
+            "SELECT value FROM platform_settings WHERE key = %s LIMIT 1",
+            (key,),
+        )
+        if not row:
+            return default
+        # DictCursor вернёт row["value"]
+        return row["value"]
+
+
+    async def set_platform_setting(
+        self,
+        key: str,
+        value: Dict[str, Any],
+    ) -> None:
+        """
+        Upsert: создаёт/обновляет platform_settings.key = value.
+        """
+        await self.execute(
+            """
+            INSERT INTO platform_settings (key, value, created_at, updated_at)
+            VALUES (%s, %s, NOW(), NOW())
+            ON CONFLICT (key) DO UPDATE
+            SET value = EXCLUDED.value,
+                updated_at = NOW()
+            """,
+            (key, psycopg2.extras.Json(value)),
+        )
+
     async def track_operator_activity(self, instance_id: str, user_id: int, username: str) -> None:
         """
         Обновляет/создаёт оператора по активности в OpenChat.
@@ -739,6 +793,26 @@ class MasterDatabase:
                 PRIMARY KEY (instance_id, chat_id)
             )
             """
+        )
+
+        # ------------------------------------------------------------------------
+        # platform_settings (master-bot / platform-level settings)
+        # ------------------------------------------------------------------------
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS platform_settings (
+                key         TEXT PRIMARY KEY,
+                value       JSONB NOT NULL DEFAULT '{}'::jsonb,
+                created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+
+        # Индекс для выборок по JSON (если будешь искать по value->...):
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_platform_settings_value_gin "
+            "ON platform_settings USING GIN (value)"
         )
 
         # usage_stats

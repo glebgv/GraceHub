@@ -10,11 +10,17 @@ type LangCode = 'ru' | 'en' | 'es' | 'hi' | 'zh';
 interface FirstLaunchProps {
   onAddBotClick: (token: string) => Promise<void> | void;
   instanceId?: string | null;
+
+  // NEW (for superadmin without instances)
+  isSuperadmin?: boolean;
+  onOpenAdmin?: () => void;
 }
 
 const FirstLaunch: React.FC<FirstLaunchProps> = ({
   onAddBotClick,
   instanceId,
+  isSuperadmin,
+  onOpenAdmin,
 }) => {
   const { t, i18n } = useTranslation();
 
@@ -38,9 +44,9 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
   };
 
   const handleLanguageClick = (lang: LangCode) => {
-    setLanguage(lang);          // мгновенно подсвечиваем кнопку
-    i18n.changeLanguage(lang);  // меняем язык в UI
-    void saveLanguage(lang);    // асинхронно сохраняем на бэке
+    setLanguage(lang); // мгновенно подсвечиваем кнопку
+    i18n.changeLanguage(lang); // меняем язык в UI
+    void saveLanguage(lang); // асинхронно сохраняем на бэке
   };
 
   const handleSubmitToken = async (token: string) => {
@@ -64,22 +70,47 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
             style={{
               display: 'flex',
               alignItems: 'center',
+              justifyContent: 'space-between',
               gap: 8,
               marginBottom: 8,
             }}
           >
-            <img
-              src={logo}
-              alt="GraceHub"
-              style={{
-                width: 32,
-                height: 32,
-                borderRadius: 10,
-              }}
-            />
-            <span style={{ fontSize: 22, fontWeight: 600 }}>
-              {t('app.title')}
-            </span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <img
+                src={logo}
+                alt="GraceHub"
+                style={{
+                  width: 32,
+                  height: 32,
+                  borderRadius: 10,
+                }}
+              />
+              <span style={{ fontSize: 22, fontWeight: 600 }}>
+                {t('app.title')}
+              </span>
+            </div>
+
+            {/* NEW: Admin button (same markup as in App.tsx bottom menu) */}
+            {isSuperadmin && onOpenAdmin && (
+              <button
+                className="nav-button"
+                type="button"
+                onClick={onOpenAdmin}
+                title="Superadmin"
+                style={{
+                  padding: 0,
+                  width: 44,
+                  minWidth: 44,
+                  flex: '0 0 auto',
+                }}
+              >
+                <span className="nav-icon">🛡️</span>
+                {/* Оставляем тот же nav-label, но скрываем, чтобы было как "иконка" справа сверху */}
+                <span className="nav-label" style={{ display: 'none' }}>
+                  Admin
+                </span>
+              </button>
+            )}
           </div>
 
           <p

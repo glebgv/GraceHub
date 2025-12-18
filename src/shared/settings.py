@@ -69,8 +69,8 @@ CHAT_RATE_LIMIT = int(os.getenv("CHAT_RATE_LIMIT", "20"))
 MAX_INSTANCES_PER_USER = int(os.getenv("MAX_INSTANCES_PER_USER", "5"))
 
 
-SINGLE_TENANT_OWNER_ONLY = os.getenv("GRACEHUB_SINGLE_TENANT_OWNER_ONLY", "0") == "1"
-OWNER_TELEGRAM_ID = int(os.getenv("GRACEHUB_OWNER_TELEGRAM_ID", "0")) or None
+#SINGLE_TENANT_OWNER_ONLY = os.getenv("GRACEHUB_SINGLE_TENANT_OWNER_ONLY", "0") == "1"
+#OWNER_TELEGRAM_ID = int(os.getenv("GRACEHUB_OWNER_TELEGRAM_ID", "0")) or None
 
 
 WORKER_MONITOR_INTERVAL = int(os.getenv("WORKER_MONITOR_INTERVAL", "600"))
@@ -109,3 +109,25 @@ YOOKASSA_TEST_MODE = os.getenv("YOOKASSA_TEST_MODE", "0").strip().lower() in ("1
 YOOKASSA_PRICE_RUB_LITE = float(os.getenv("YOOKASSA_PRICE_RUB_LITE", "0"))
 YOOKASSA_PRICE_RUB_PRO = float(os.getenv("YOOKASSA_PRICE_RUB_PRO", "0"))
 YOOKASSA_PRICE_RUB_ENTERPRISE = float(os.getenv("YOOKASSA_PRICE_RUB_ENTERPRISE", "0"))
+
+
+# === ADMIN / ROLES ===
+# Пример env: GRACEHUB_SUPERADMIN_TELEGRAM_IDS="123456789,987654321"
+_SUPERADMIN_RAW = os.getenv("GRACEHUB_SUPERADMIN_TELEGRAM_IDS", "").strip()
+
+def _parse_int_list_csv(value: str) -> list[int]:
+    if not value:
+        return []
+    out: list[int] = []
+    for part in value.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            out.append(int(part))
+        except ValueError:
+            # игнорируем мусор типа "abc"
+            continue
+    return out
+
+SUPERADMIN_TELEGRAM_IDS: list[int] = _parse_int_list_csv(_SUPERADMIN_RAW)

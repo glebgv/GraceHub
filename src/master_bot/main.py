@@ -104,6 +104,11 @@ class MasterBot:
         lang = await self.get_user_lang(user_id)
         return LANGS.get(lang, LANGS[self.default_lang])
 
+    async def get_single_tenant_config(self) -> dict:
+        data = await self.db.getplatformsetting("miniapp_public", default={})
+        st = (data or {}).get("single_tenant") or {}
+        enabled = bool(st.get("enabled", False))
+        return {"enabled": enabled}
 
     async def _notify_owner_invalid_token(
         self,
@@ -259,15 +264,22 @@ class MasterBot:
                         e,
                     )
 
-
     async def _run_billing_cycle(self) -> None:
         """
         Один цикл биллингового крона:
         - пересчитать флаги;
         - отправить уведомления.
         """
-        if settings.SINGLE_TENANT_OWNER_ONLY:
-            return
+        # single-tenant mode: billing cron disabled (config from DB, not .env)
+        try:
+            miniapp_public = await self.db.get_platform_setting("miniapp_public", default={})
+            single_tenant = (miniapp_public or {}).get("single_tenant") or {}
+            single_tenant_enabled = bool(single_tenant.get("enabled", False))
+            if single_tenant_enabled:
+                return
+        except Exception as e:
+            logger.exception("BillingCron: failed to read single_tenant config: %s", e)
+            # если конфиг не прочитался — не ломаем биллинг, продолжаем как обычно
 
         try:
             await self.db.update_billing_flags()
@@ -285,6 +297,7 @@ class MasterBot:
             await self._billing_notify_paused()
         except Exception as e:
             logger.exception("BillingCron: notify_paused failed: %s", e)
+
 
     async def run_billing_cron_loop(self, interval_seconds: int = 3600) -> None:
         logger.info("BillingCron: starting loop with interval=%s sec", interval_seconds)

@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field
 from shared import settings
 from enum import Enum
 from urllib.parse import parse_qsl, unquote, quote
+from fastapi import APIRouter
 
 from .main import MasterBot
 
@@ -261,6 +262,13 @@ class YooKassaStatusResponse(BaseModel):
     status: str  # pending/succeeded/canceled/waiting_for_capture
     payment_id: str | None = None
     period_applied: bool = False
+
+class PlatformSettingUpsert(BaseModel):
+    value: Dict[str, Any]
+
+class SingleTenantConfig(BaseModel):
+    enabled: bool = False
+    allowed_user_ids: List[int] = Field(default_factory=list)
 
 # ========================================================================
 # Telegram Validation
@@ -1150,6 +1158,132 @@ async def lifespan(app: FastAPI):
     yield
     logger.info("Mini App API завершает работу")
 
+def get_global_roles_for_user(user_id: int) -> list[str]:
+    ids = getattr(settings, "SUPERADMIN_TELEGRAM_IDS", None)
+    if not ids:
+        return []
+    # ids может быть list[int] или строка "1,2,3" — приведи к list[int]
+    if isinstance(ids, str):
+        ids_list = [int(x.strip()) for x in ids.split(",") if x.strip().isdigit()]
+    else:
+        ids_list = [int(x) for x in ids]
+    return ["superadmin"] if user_id in ids_list else []
+
+async def get_current_user(
+    authorization: Optional[str] = Header(None),
+) -> Dict[str, Any]:
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Отсутствует токен")
+
+    token = authorization[7:]
+    try:
+        session = session_manager.validate_session(token)
+
+        # совместимость ключей
+        user_id = session.get("user_id") or session.get("userid")
+        session["user_id"] = user_id
+
+        # роли через нормализатор (поддерживает и "1,2,3", и list[int])
+        session["roles"] = get_global_roles_for_user(user_id) if user_id else []
+
+        return session
+    except ValueError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+
+async def get_single_tenant_config(db) -> SingleTenantConfig:
+    # ожидаем, что вся публичная конфигурация miniapp лежит в одном ключе
+    raw = await db.get_platform_setting("miniapp_public", default=None)
+
+    logger.warning("get_single_tenant_config: raw miniapp_public=%r", raw)
+
+    if not raw:
+        return SingleTenantConfig(enabled=False, allowed_user_ids=[])
+
+    # raw может быть dict (если db уже делает json.loads), либо строка JSON
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            logger.exception("get_single_tenant_config: failed to json.loads(miniapp_public)")
+            return SingleTenantConfig(enabled=False, allowed_user_ids=[])
+
+    if not isinstance(raw, dict):
+        logger.warning("get_single_tenant_config: miniapp_public is not dict (type=%s)", type(raw))
+        return SingleTenantConfig(enabled=False, allowed_user_ids=[])
+
+    st = raw.get("singleTenant") or {}
+    if not isinstance(st, dict):
+        logger.warning("get_single_tenant_config: singleTenant is not dict (type=%s)", type(st))
+        return SingleTenantConfig(enabled=False, allowed_user_ids=[])
+
+    enabled = bool(st.get("enabled", False))
+
+    allowed_ids: List[int] = []
+    # новый формат (несколько)
+    if isinstance(st.get("allowedUserIds"), list):
+        for x in st["allowedUserIds"]:
+            try:
+                allowed_ids.append(int(x))
+            except Exception:
+                continue
+
+    # обратная совместимость со старым форматом (один)
+    if not allowed_ids and st.get("ownerTelegramId") is not None:
+        try:
+            allowed_ids = [int(st["ownerTelegramId"])]
+        except Exception:
+            allowed_ids = []
+
+    # убираем дубликаты, сохраняем порядок
+    allowed_ids = list(dict.fromkeys(allowed_ids))
+
+    cfg = SingleTenantConfig(enabled=enabled, allowed_user_ids=allowed_ids)
+    logger.warning(
+        "get_single_tenant_config: parsed enabled=%s allowed_user_ids=%s",
+        cfg.enabled,
+        cfg.allowed_user_ids,
+    )
+    return cfg
+
+def _parse_superadmin_ids() -> set[int]:
+    raw = os.getenv("GRACEHUB_SUPERADMIN_TELEGRAM_IDS", "").strip()
+    if not raw:
+        return set()
+    items = [x.strip() for x in raw.split(",") if x.strip()]
+    out: set[int] = set()
+    for x in items:
+        try:
+            out.add(int(x))
+        except ValueError:
+            continue
+    return out
+
+
+async def require_superadmin(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+) -> Dict[str, Any]:
+    superadmins = _parse_superadmin_ids()
+    uid = int(current_user.get("userid") or 0)
+    if uid not in superadmins:
+        raise HTTPException(status_code=403, detail="Superadmin only")
+    return current_user
+
+
+async def require_superadmin(currentuser: Dict[str, Any] = Depends(get_current_user)) -> None:
+    roles = currentuser.get("roles") or []
+    if "superadmin" not in roles:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+manage_router = APIRouter(
+    prefix="/manage",
+    tags=["manage"],
+    dependencies=[Depends(require_superadmin)],
+)
+
+@manage_router.get("/health")
+async def manage_health():
+    return {"status": "ok"}
+
 
 def create_miniapp_app(
     master_db,
@@ -1162,6 +1296,7 @@ def create_miniapp_app(
     global telegram_validator, session_manager, miniapp_db, master_bot
 
     app = FastAPI(title="GraceHub Mini App API", debug=debug, lifespan=lifespan)
+    app.include_router(manage_router)
 
     app.add_middleware(
         CORSMiddleware,
@@ -1194,19 +1329,6 @@ def create_miniapp_app(
     # ====================================================================
     # Dependencies
     # ====================================================================
-
-    async def get_current_user(
-        authorization: Optional[str] = Header(None),
-    ) -> Dict[str, Any]:
-        if not authorization or not authorization.startswith("Bearer "):
-            raise HTTPException(status_code=401, detail="Отсутствует токен")
-
-        token = authorization[7:]
-        try:
-            session = session_manager.validate_session(token)
-            return session
-        except ValueError as e:
-            raise HTTPException(status_code=401, detail=str(e))
 
     async def require_instance_access(
         instance_id: str,
@@ -1749,6 +1871,66 @@ def create_miniapp_app(
             cur_status = "pending"
         return {"status": cur_status}
 
+    @app.get("/api/platform/single-tenant", response_model=SingleTenantConfig)
+    async def get_single_tenant_config_endpoint(
+        current_user: Dict[str, Any] = Depends(require_superadmin),
+    ):
+        # Читаем ТОЛЬКО из miniapp_public.singleTenant
+        return await get_single_tenant_config(master_db)
+
+
+    @app.post("/api/platform/single-tenant", response_model=SingleTenantConfig)
+    async def set_single_tenant_config_endpoint(
+        payload: SingleTenantConfig,
+        current_user: Dict[str, Any] = Depends(require_superadmin),
+    ):
+        # 1) нормализуем список id
+        allowed: List[int] = []
+        for x in (payload.allowed_user_ids or []):
+            try:
+                allowed.append(int(x))
+            except (TypeError, ValueError):
+                continue
+        allowed = sorted(set(allowed))
+
+        # 2) safety: нельзя включить single-tenant без allowlist
+        if bool(payload.enabled) and not allowed:
+            raise HTTPException(
+                status_code=400,
+                detail="allowed_user_ids must not be empty when enabled=true",
+            )
+
+        # 3) safety: не дать супер-админу случайно выкинуть самого себя из allowlist
+        if bool(payload.enabled):
+            cur_uid = int(current_user.get("userid") or 0)
+            if cur_uid and cur_uid not in allowed:
+                allowed.append(cur_uid)
+                allowed = sorted(set(allowed))
+
+        # 4) читаем текущий miniapp_public
+        raw = await master_db.get_platform_setting("miniapp_public", default=None)
+        if not raw:
+            raw = {}
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except Exception:
+                raw = {}
+        if not isinstance(raw, dict):
+            raw = {}
+
+        # 5) обновляем raw["singleTenant"]
+        raw["singleTenant"] = {
+            "enabled": bool(payload.enabled),
+            "allowedUserIds": allowed,
+        }
+
+        # 6) сохраняем обратно miniapp_public
+        await master_db.set_platform_setting("miniapp_public", raw)
+
+        # 7) возвращаем нормализованный конфиг
+        return SingleTenantConfig(enabled=bool(payload.enabled), allowed_user_ids=allowed)
+
     @app.post("/api/auth/telegram", response_model=AuthResponse)
     async def auth_telegram(req: TelegramAuthRequest, request: Request):
         init_header = request.headers.get("X-Telegram-Init-Data")
@@ -1771,12 +1953,66 @@ def create_miniapp_app(
         if not user_id:
             raise HTTPException(status_code=401, detail="user_id не найден в initData")
 
-        if settings.SINGLE_TENANT_OWNER_ONLY:
-            owner_id = settings.OWNER_TELEGRAM_ID
-            if not owner_id or user_id != owner_id:
+        logger.info(
+            "auth_telegram: validated telegram user_id=%s username=%s first_name=%s last_name=%s",
+            user_id,
+            user_data.get("username"),
+            user_data.get("first_name"),
+            user_data.get("last_name"),
+        )
+
+        # ------------------------------------------------------------------
+        # Глобальные роли (platform-level): superadmin только из ENV
+        # ------------------------------------------------------------------
+        roles: list[str] = []
+        try:
+            superadmins = _parse_superadmin_ids()
+            is_superadmin = int(user_id) in superadmins
+            if is_superadmin:
+                roles.append("superadmin")
+            logger.info(
+                "auth_telegram: superadmin_check user_id=%s is_superadmin=%s superadmins_count=%s",
+                user_id,
+                is_superadmin,
+                len(superadmins),
+            )
+        except Exception:
+            logger.exception("auth_telegram: failed to evaluate GRACEHUB_SUPERADMIN_TELEGRAM_IDS")
+
+        # ------------------------------------------------------------------
+        # single-tenant mode (from DB: platform_settings.single_tenant)
+        # schema: {"enabled": bool, "allowed_user_ids": [int, ...]}
+        # ------------------------------------------------------------------
+        single_tenant = await get_single_tenant_config(miniapp_db.db)
+
+        logger.warning(
+            "auth_telegram: single_tenant config enabled=%s allowed_user_ids=%s (len=%s) user_id=%s",
+            single_tenant.enabled,
+            single_tenant.allowed_user_ids,
+            len(single_tenant.allowed_user_ids or []),
+            user_id,
+        )
+
+        if single_tenant.enabled:
+            allowed = {int(x) for x in (single_tenant.allowed_user_ids or [])}
+
+            logger.warning(
+                "auth_telegram: single_tenant check user_id=%s allowed=%s result=%s",
+                user_id,
+                sorted(allowed),
+                int(user_id) in allowed,
+            )
+
+            if int(user_id) not in allowed:
+                logger.warning(
+                    "auth_telegram: single_tenant DENY user_id=%s username=%s allowed=%s",
+                    user_id,
+                    user_data.get("username"),
+                    sorted(allowed),
+                )
                 raise HTTPException(
                     status_code=403,
-                    detail="панель доступна только владельцу",
+                    detail="панель доступна только разрешённым пользователям",
                 )
 
         await miniapp_db.upsert_user(
@@ -1787,7 +2023,6 @@ def create_miniapp_app(
             language=user_data.get("language_code"),
         )
 
-        # тут уже masterbot виден
         instances = await master_bot.db.get_user_instances_with_meta(user_id)
 
         default_instance_id: str | None = None
@@ -1804,8 +2039,9 @@ def create_miniapp_app(
         token = session_manager.create_session(user_id, user_data.get("username"))
 
         logger.info(
-            "auth_telegram: user_id=%s instances=%s default_instance_id=%s",
+            "auth_telegram: user_id=%s roles=%s instances=%s default_instance_id=%s",
             user_id,
+            roles,
             [i["instance_id"] for i in instances],
             default_instance_id,
         )
@@ -1816,7 +2052,7 @@ def create_miniapp_app(
             first_name=user_data.get("first_name"),
             last_name=user_data.get("last_name"),
             language=user_data.get("language_code"),
-            roles=[],
+            roles=roles,
             instances=[
                 {
                     "instance_id": inst["instance_id"],
@@ -1829,8 +2065,9 @@ def create_miniapp_app(
         )
 
         logger.info(
-            "auth_telegram RESPONSE user_id=%s user.instances=%s default_instance_id=%s",
+            "auth_telegram RESPONSE user_id=%s roles=%s user.instances=%s default_instance_id=%s",
             user_id,
+            roles,
             [i["instance_id"] for i in user_response.instances],
             default_instance_id,
         )
@@ -1865,6 +2102,8 @@ def create_miniapp_app(
 
         await miniapp_db.db.cancel_billing_invoice(invoice_id)
         return TonInvoiceCancelResponse(invoice_id=invoice_id, status="cancelled")
+
+
 
     @app.get("/api/saas/plans", response_model=list[SaasPlanOut])
     async def get_saas_plans():
@@ -2031,6 +2270,23 @@ def create_miniapp_app(
 
         return {"ok": True, "status": st}
 
+    @app.get("/api/platform/settings")
+    async def get_platform_settings(current_user: Dict[str, Any] = Depends(get_current_user)):
+        # при желании: ограничить superadmin’ом
+        # await require_superadmin(current_user)
+
+        data = await master_db.get_platform_setting("miniapp_public", default={})
+        return {"key": "miniapp_public", "value": data}
+
+    @app.post("/api/platform/settings/{key}")
+    async def set_platform_settings(
+        key: str,
+        payload: PlatformSettingUpsert,
+        current_user: Dict[str, Any] = Depends(get_current_user),
+    ):
+        await require_superadmin(current_user)
+        await master_db.set_platform_setting(key, payload.value)
+        return {"status": "ok"}
 
     @app.get("/api/instances/{instance_id}/billing", response_model=BillingInfo)
     async def get_instance_billing_endpoint(
@@ -2047,8 +2303,9 @@ def create_miniapp_app(
         if not billing:
             raise HTTPException(status_code=404, detail="Billing not found for this instance")
 
-        # single-tenant режим: безлимитный тариф
-        if settings.SINGLE_TENANT_OWNER_ONLY:
+        # single-tenant режим: безлимитный тариф (config from DB)
+        single_tenant = await get_single_tenant_config(miniapp_db.db)
+        if single_tenant.enabled:
             return BillingInfo(
                 instance_id=billing["instance_id"],
                 plan_code=billing["plan_code"],
@@ -2230,19 +2487,32 @@ def create_miniapp_app(
 
     @app.get("/api/me", response_model=UserResponse)
     async def get_me(current_user: Dict[str, Any] = Depends(get_current_user)):
-        instances = await master_bot.db.get_user_instances_with_meta(current_user["user_id"])
+        user_id = current_user["user_id"]
+
+        # Глобальные роли (platform-level)
+        roles: list[str] = []
+        try:
+            if user_id in getattr(settings, "SUPERADMIN_TELEGRAM_IDS", []):
+                roles.append("superadmin")
+        except Exception:
+            logger.exception("get_me: failed to evaluate SUPERADMIN_TELEGRAM_IDS")
+
+        instances = await master_bot.db.get_user_instances_with_meta(user_id)
 
         return UserResponse(
-            user_id=current_user["user_id"],
+            user_id=user_id,
             username=current_user.get("username"),
             first_name=None,
             last_name=None,
             language=None,
-            roles=[],
+            roles=roles,
             instances=[
                 {
                     "instance_id": inst["instance_id"],
-                    "role": "owner",
+                    # если эти поля есть в meta — лучше вернуть их (как в auth_telegram)
+                    "bot_username": inst.get("bot_username") or "",
+                    "bot_name": inst.get("bot_name") or "",
+                    "role": inst.get("role") or "owner",
                 }
                 for inst in instances
             ],

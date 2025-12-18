@@ -1,5 +1,5 @@
 // src/App.tsx
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import './App.css';
 import Dashboard from './pages/Dashboard';
 import InstancesList from './pages/InstancesList';
@@ -7,6 +7,7 @@ import Tickets from './pages/Tickets';
 import Operators from './pages/Operators';
 import Settings from './pages/Settings';
 import Billing from './pages/Billing';
+import SuperAdmin from './pages/SuperAdmin';
 import { apiClient } from './api/client';
 import FirstLaunch from './pages/FirstLaunch';
 import { useTranslation } from 'react-i18next';
@@ -20,7 +21,7 @@ interface AppProps {
   initDataRaw: string | null;
 }
 
-type Page = 'dashboard' | 'tickets' | 'operators' | 'settings' | 'billing';
+type Page = 'dashboard' | 'tickets' | 'operators' | 'settings' | 'billing' | 'superadmin';
 
 type Instance = {
   instanceid: string;
@@ -42,6 +43,8 @@ type BillingState = {
   overLimit: boolean;
   unlimited: boolean;
 };
+
+type PlatformSettings = Record<string, any>;
 
 const App: React.FC<AppProps> = ({
   instanceIdFromUrl,
@@ -66,10 +69,26 @@ const App: React.FC<AppProps> = ({
   } | null>(null);
 
   const [showAddModal, setShowAddModal] = useState(false);
-
   const [showBindHelpModal, setShowBindHelpModal] = useState(false);
 
   const [billing, setBilling] = useState<BillingState | null>(null);
+
+  // NEW: platform settings (platform_settings["miniapp_public"])
+  const [platformSettings, setPlatformSettings] = useState<PlatformSettings>({});
+  const [platformSettingsLoaded, setPlatformSettingsLoaded] = useState(false);
+
+  const isSuperadmin = useMemo(() => {
+    const roles = user?.roles || [];
+    return Array.isArray(roles) && roles.includes('superadmin');
+  }, [user]);
+
+  // ---- derived helpers from platform settings ----
+  const maintenance = useMemo(() => {
+    const ps = platformSettings || {};
+    const enabled = !!ps.maintenance_enabled;
+    const message = (ps.maintenance_message as string | undefined) || '';
+    return { enabled, message };
+  }, [platformSettings]);
 
   useEffect(() => {
     const initApp = async () => {
@@ -185,8 +204,7 @@ const App: React.FC<AppProps> = ({
             botusername: src.botusername || src.bot_username || '',
             botname: src.botname || src.bot_name || '',
             role: src.role || 'owner',
-            openchatusername:
-              src.openchatusername || src.openchat_username || null,
+            openchatusername: src.openchatusername || src.openchat_username || null,
             generalpanelchatid:
               src.generalpanelchatid || src.general_panel_chat_id || null,
           }),
@@ -213,9 +231,7 @@ const App: React.FC<AppProps> = ({
             }
             const defId = authResponse.default_instance_id;
             if (defId) {
-              const fromList = normalizedList.find(
-                (i) => i.instanceid === defId,
-              );
+              const fromList = normalizedList.find((i) => i.instanceid === defId);
               if (fromList) {
                 return fromList;
               }
@@ -248,6 +264,27 @@ const App: React.FC<AppProps> = ({
     initApp();
   }, [instanceIdFromUrl, adminIdFromUrl, initDataRaw, currentUserId, t]);
 
+  // NEW: load platform settings once token is set (after initApp)
+  useEffect(() => {
+    const loadPlatformSettings = async () => {
+      if (!user) return;
+      if (platformSettingsLoaded) return;
+
+      try {
+        const res = await apiClient.getPlatformSettings();
+        // backend: { key: "miniapp_public", value: {...} }
+        setPlatformSettings(res?.value || {});
+      } catch (e) {
+        console.warn('[App] getPlatformSettings failed (ignored)', e);
+        setPlatformSettings({});
+      } finally {
+        setPlatformSettingsLoaded(true);
+      }
+    };
+
+    loadPlatformSettings();
+  }, [user, platformSettingsLoaded]);
+
   useEffect(() => {
     const loadSettings = async () => {
       if (!selectedInstance) {
@@ -264,13 +301,9 @@ const App: React.FC<AppProps> = ({
 
         const openchat = (s as any).openchat || {};
         const id =
-          openchat.general_panel_chat_id ??
-          (s as any).generalpanelchatid ??
-          null;
+          openchat.general_panel_chat_id ?? (s as any).generalpanelchatid ?? null;
         const username =
-          openchat.openchat_username ??
-          (s as any).openchatusername ??
-          null;
+          openchat.openchat_username ?? (s as any).openchatusername ?? null;
 
         console.log('[App] settings for header:', { openchat, id, username, lang });
 
@@ -320,10 +353,7 @@ const App: React.FC<AppProps> = ({
       setLoading(true);
       setError(null);
 
-      console.log(
-        '[App] createInstanceByToken, preview:',
-        token.slice(0, 10),
-      );
+      console.log('[App] createInstanceByToken, preview:', token.slice(0, 10));
 
       const created = await apiClient.createInstanceByToken({ token });
 
@@ -343,7 +373,6 @@ const App: React.FC<AppProps> = ({
       setIsFirstLaunch(false);
       setCurrentPage('dashboard');
 
-      // онбординг бинда, если чат ещё не привязан
       if (!normalized.generalpanelchatid) {
         setShowBindHelpModal(true);
       }
@@ -436,19 +465,45 @@ const App: React.FC<AppProps> = ({
     );
   }
 
-  if (isFirstLaunch && instances.length === 0) {
+  // FirstLaunch screen
+  if (isFirstLaunch && instances.length === 0 && !(currentPage === 'superadmin' && isSuperadmin)) {
     return (
       <div className="app-container" style={{ justifyContent: 'flex-start' }}>
         <FirstLaunch
           onAddBotClick={handleCreateInstanceByToken}
           instanceId={null}
+          isSuperadmin={isSuperadmin}
+          onOpenAdmin={() => {
+            setIsFirstLaunch(false);
+            setCurrentPage('superadmin');
+          }}
         />
         {footerBranding}
       </div>
     );
   }
 
+  // No selected instance branch
   if (!selectedInstance) {
+    if (currentPage === 'superadmin' && isSuperadmin) {
+      return (
+        <div className="app-container">
+          <SuperAdmin
+            onBack={() => {
+              // ✅ back from superadmin when no instances
+              if (instances.length === 0) {
+                setCurrentPage('dashboard');
+                setIsFirstLaunch(true);
+                return;
+              }
+              setCurrentPage('dashboard');
+            }}
+          />
+          {footerBranding}
+        </div>
+      );
+    }
+
     return (
       <div className="app-container">
         <InstancesList
@@ -459,6 +514,13 @@ const App: React.FC<AppProps> = ({
           }}
           onAddBotClick={() => setShowAddModal(true)}
           onDeleteInstance={handleDeleteInstance}
+          onOpenSuperAdmin={
+            isSuperadmin
+              ? () => {
+                  setCurrentPage('superadmin');
+                }
+              : undefined
+          }
         />
         {footerBranding}
         {showAddModal && (
@@ -482,6 +544,24 @@ const App: React.FC<AppProps> = ({
 
   return (
     <div className="app-container">
+      {maintenance.enabled && (
+        <div
+          className="card"
+          style={{
+            borderColor: 'rgba(220, 38, 38, 0.35)',
+            background: 'rgba(220, 38, 38, 0.08)',
+            marginBottom: 12,
+          }}
+        >
+          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>
+            {t('app.maintenance_title', 'Технические работы')}
+          </div>
+          <div style={{ fontSize: 13, opacity: 0.9 }}>
+            {maintenance.message || t('app.maintenance_message', 'Сервис временно недоступен.')}
+          </div>
+        </div>
+      )}
+
       <header className="app-header">
         <div className="header-content">
           <div className="header-right">
@@ -489,11 +569,7 @@ const App: React.FC<AppProps> = ({
               <div className="tariff-row">
                 <span className="tariff-label">{t('app.tariff_label')}:</span>
                 <span className="tariff-value">
-                  {billing
-                    ? billing.unlimited
-                      ? `${displayPlanLabel} · ∞`
-                      : displayPlanLabel
-                    : '—'}
+                  {billing ? (billing.unlimited ? `${displayPlanLabel} · ∞` : displayPlanLabel) : '—'}
                 </span>
               </div>
               {!billing?.unlimited && (
@@ -501,16 +577,12 @@ const App: React.FC<AppProps> = ({
                   <div className="tariff-row">
                     <span className="tariff-label">До:</span>
                     <span className="tariff-value">
-                      {billing
-                        ? new Date(billing.periodEnd).toLocaleDateString()
-                        : '—'}
+                      {billing ? new Date(billing.periodEnd).toLocaleDateString() : '—'}
                     </span>
                   </div>
                   <div className="tariff-row">
                     <span className="tariff-label">Осталось дней:</span>
-                    <span className="tariff-value">
-                      {billing ? billing.daysLeft : '—'}
-                    </span>
+                    <span className="tariff-value">{billing ? billing.daysLeft : '—'}</span>
                   </div>
                 </>
               )}
@@ -582,26 +654,37 @@ const App: React.FC<AppProps> = ({
           </div>
         </div>
 
-        <button className="btn-back" onClick={() => setSelectedInstance(null)}>
+        <button
+          className="btn-back"
+          onClick={() => {
+            if (currentPage === 'superadmin') {
+              setCurrentPage('dashboard');
+            } else {
+              setSelectedInstance(null);
+            }
+          }}
+        >
           ←
         </button>
       </header>
 
       <main className="main-content">
-        {currentPage === 'dashboard' && (
-          <Dashboard instanceId={selectedInstance.instanceid} />
-        )}
-        {currentPage === 'tickets' && (
-          <Tickets instanceId={selectedInstance.instanceid} />
-        )}
+        {currentPage === 'dashboard' && <Dashboard instanceId={selectedInstance.instanceid} />}
+        {currentPage === 'tickets' && <Tickets instanceId={selectedInstance.instanceid} />}
         {currentPage === 'operators' && selectedInstance.role === 'owner' && (
           <Operators instanceId={selectedInstance.instanceid} />
         )}
         {currentPage === 'settings' && selectedInstance.role === 'owner' && (
           <Settings instanceId={selectedInstance.instanceid} />
         )}
-        {currentPage === 'billing' && (
-          <Billing instanceId={selectedInstance.instanceid} />
+        {currentPage === 'billing' && <Billing instanceId={selectedInstance.instanceid} />}
+
+        {currentPage === 'superadmin' && isSuperadmin && (
+          <SuperAdmin
+            onBack={() => {
+              setCurrentPage('dashboard');
+            }}
+          />
         )}
       </main>
 
@@ -616,6 +699,7 @@ const App: React.FC<AppProps> = ({
             <span className="nav-icon">📊</span>
             <span className="nav-label">{t('nav.dashboard')}</span>
           </button>
+
           <button
             className={`nav-button ${currentPage === 'tickets' ? 'active' : ''}`}
             onClick={() => setCurrentPage('tickets')}
@@ -623,30 +707,27 @@ const App: React.FC<AppProps> = ({
             <span className="nav-icon">🎫</span>
             <span className="nav-label">{t('nav.tickets')}</span>
           </button>
+
           {selectedInstance.role === 'owner' && (
             <>
               <button
-                className={`nav-button ${
-                  currentPage === 'operators' ? 'active' : ''
-                }`}
+                className={`nav-button ${currentPage === 'operators' ? 'active' : ''}`}
                 onClick={() => setCurrentPage('operators')}
               >
                 <span className="nav-icon">👥</span>
                 <span className="nav-label">{t('nav.operators')}</span>
               </button>
+
               <button
-                className={`nav-button ${
-                  currentPage === 'settings' ? 'active' : ''
-                }`}
+                className={`nav-button ${currentPage === 'settings' ? 'active' : ''}`}
                 onClick={() => setCurrentPage('settings')}
               >
                 <span className="nav-icon">⚙️</span>
                 <span className="nav-label">{t('nav.settings')}</span>
               </button>
+
               <button
-                className={`nav-button ${
-                  currentPage === 'billing' ? 'active' : ''
-                }`}
+                className={`nav-button ${currentPage === 'billing' ? 'active' : ''}`}
                 onClick={() => setCurrentPage('billing')}
               >
                 <span className="nav-icon">💳</span>
@@ -654,6 +735,9 @@ const App: React.FC<AppProps> = ({
               </button>
             </>
           )}
+
+          {/* ✅ Admin button removed from bottom nav.
+              SuperAdmin entry point is now only via FirstLaunch / InstancesList. */}
         </div>
       </nav>
 
@@ -666,14 +750,9 @@ const App: React.FC<AppProps> = ({
 
       {showBindHelpModal && (
         <div className="modal-backdrop" onClick={() => setShowBindHelpModal(false)}>
-          <div
-            className="modal"
-            onClick={(e) => e.stopPropagation()}
-          >
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
-              <h3 className="modal-title">
-                {t('bindHelp.title')}
-              </h3>
+              <h3 className="modal-title">{t('bindHelp.title')}</h3>
               <button
                 type="button"
                 className="modal-close"
@@ -683,12 +762,8 @@ const App: React.FC<AppProps> = ({
               </button>
             </div>
             <div className="modal-body">
-              <p style={{ marginBottom: 8 }}>
-                {t('bindHelp.paragraph1')}
-              </p>
-              <p style={{ marginBottom: 8 }}>
-                {t('bindHelp.paragraph2')}
-              </p>
+              <p style={{ marginBottom: 8 }}>{t('bindHelp.paragraph1')}</p>
+              <p style={{ marginBottom: 8 }}>{t('bindHelp.paragraph2')}</p>
               <p style={{ marginBottom: 0 }}>
                 {t('bindHelp.paragraph3', {
                   bot_username: selectedInstance.botusername,

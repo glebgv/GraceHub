@@ -15,19 +15,31 @@ const Dashboard: React.FC<DashboardProps> = ({ instanceId }) => {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const loadStats = async () => {
+    let cancelled = false;
+
+    const load = async () => {
+      setLoading(true);
       try {
-        const data = await apiClient.getStats(instanceId);
-        setStats(data);
+        const statsData = await apiClient.getStats(instanceId);
+
+        if (cancelled) return;
+
+        setStats(statsData);
         setError(null);
       } catch (err: any) {
-        setError(err.message);
+        if (cancelled) return;
+        setError(err?.message || 'Unknown error');
       } finally {
+        if (cancelled) return;
         setLoading(false);
       }
     };
 
-    loadStats();
+    load();
+
+    return () => {
+      cancelled = true;
+    };
   }, [instanceId]);
 
   if (loading) {
@@ -46,8 +58,16 @@ const Dashboard: React.FC<DashboardProps> = ({ instanceId }) => {
     return <div className="card">{t('dashboard.noData')}</div>;
   }
 
-  const tickets = stats.tickets_by_status || {};
+  // Бекенд отдаёт ticketsbystatus / avgfirstresponsesec / uniqueusers / usage.apicalls
+  // Но в UI раньше использовались snake_case поля — оставляем поддержку обоих вариантов, чтобы не ломать.
+  const tickets = stats.tickets_by_status || stats.ticketsbystatus || {};
   const usage = stats.usage || {};
+
+  const avgFirstResponseSec = stats.avg_first_response_sec ?? stats.avgfirstresponsesec ?? 0;
+  const uniqueUsers = stats.unique_users ?? stats.uniqueusers ?? 0;
+
+  const apiCalls = usage.api_calls ?? usage.apicalls ?? 0;
+  const messages = usage.messages ?? 0;
 
   return (
     <div style={{ padding: '12px' }}>
@@ -65,14 +85,17 @@ const Dashboard: React.FC<DashboardProps> = ({ instanceId }) => {
             <div className="stat-label">{t('dashboard.ticketsNew')}</div>
             <div className="stat-value">{tickets.new || 0}</div>
           </div>
+
           <div className="stat-block">
             <div className="stat-label">{t('dashboard.ticketsInProgress')}</div>
             <div className="stat-value">{tickets.inprogress || 0}</div>
           </div>
+
           <div className="stat-block">
             <div className="stat-label">{t('dashboard.ticketsAnswered')}</div>
             <div className="stat-value">{tickets.answered || 0}</div>
           </div>
+
           <div className="stat-block">
             <div className="stat-label">{t('dashboard.ticketsClosed')}</div>
             <div className="stat-value">{tickets.closed || 0}</div>
@@ -92,22 +115,24 @@ const Dashboard: React.FC<DashboardProps> = ({ instanceId }) => {
         >
           <div className="stat-block">
             <div className="stat-label">{t('dashboard.usageMessages')}</div>
-            <div className="stat-value">{usage.messages || 0}</div>
+            <div className="stat-value">{messages}</div>
           </div>
+
           <div className="stat-block">
             <div className="stat-label">{t('dashboard.usageApiCalls')}</div>
-            <div className="stat-value">{usage.api_calls || 0}</div>
+            <div className="stat-value">{apiCalls}</div>
           </div>
         </div>
       </div>
 
       <div className="card">
         <div className="stat-label">{t('dashboard.avgResponseLabel')}</div>
-        <div className="stat-value">{stats.avg_first_response_sec || 0}s</div>
+        <div className="stat-value">{avgFirstResponseSec}s</div>
+
         <div className="stat-label" style={{ marginTop: '12px' }}>
           {t('dashboard.uniqueUsersLabel')}
         </div>
-        <div className="stat-value">{stats.unique_users || 0}</div>
+        <div className="stat-value">{uniqueUsers}</div>
       </div>
     </div>
   );

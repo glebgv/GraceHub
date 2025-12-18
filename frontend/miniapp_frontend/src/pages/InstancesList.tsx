@@ -11,6 +11,7 @@ interface InstancesListProps {
   instances: Instance[];
   onSelect: (inst: Instance) => void;
   onAddBotClick?: () => void;
+  onOpenSuperAdmin?: () => void; // ✅ NEW
   // заглушка под удаление; App может просто логгировать или фильтровать список
   onDeleteInstance?: (inst: Instance) => Promise<void> | void;
 }
@@ -19,6 +20,7 @@ const InstancesList: React.FC<InstancesListProps> = ({
   instances,
   onSelect,
   onAddBotClick,
+  onOpenSuperAdmin,
   onDeleteInstance,
 }) => {
   console.log('[InstancesList] instances prop:', instances);
@@ -28,16 +30,22 @@ const InstancesList: React.FC<InstancesListProps> = ({
 
   if (!instances || instances.length === 0) {
     return (
-      <div
-        className="app-container"
-        style={{ justifyContent: 'center', alignItems: 'center' }}
-      >
+      <div className="app-container" style={{ justifyContent: 'center', alignItems: 'center' }}>
         <div className="text-center">
           <div style={{ fontSize: '32px', marginBottom: '12px' }}>📂</div>
           <h2>Нет инстансов для выбора</h2>
           <p style={{ color: 'var(--tg-color-text-secondary)', fontSize: '13px' }}>
             Здесь будут боты, к которым у вас есть доступ.
           </p>
+
+          {/* ✅ NEW: кнопка SuperAdmin даже когда нет инстансов */}
+          {onOpenSuperAdmin && (
+            <div style={{ marginTop: 12 }}>
+              <button type="button" onClick={onOpenSuperAdmin} className="btn btn--secondary">
+                🛡 Admin
+              </button>
+            </div>
+          )}
         </div>
       </div>
     );
@@ -81,25 +89,48 @@ const InstancesList: React.FC<InstancesListProps> = ({
           </p>
         </div>
 
-        {onAddBotClick && (
-          <button
-            type="button"
-            onClick={onAddBotClick}
-            className="btn btn--primary"
-            style={{
-              padding: '4px 10px',
-              fontSize: 14,
-              borderRadius: 999,
-              display: 'flex',
-              alignItems: 'center',
-              gap: 4,
-              whiteSpace: 'nowrap',
-            }}
-          >
-            <span>➕</span>
-            <span>Бот</span>
-          </button>
-        )}
+        {/* ✅ NEW: правая группа кнопок */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {onOpenSuperAdmin && (
+            <button
+              type="button"
+              onClick={onOpenSuperAdmin}
+              className="btn btn--secondary"
+              style={{
+                padding: '4px 10px',
+                fontSize: 14,
+                borderRadius: 999,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                whiteSpace: 'nowrap',
+              }}
+            >
+              <span>🛡</span>
+              <span>Admin</span>
+            </button>
+          )}
+
+          {onAddBotClick && (
+            <button
+              type="button"
+              onClick={onAddBotClick}
+              className="btn btn--primary"
+              style={{
+                padding: '4px 10px',
+                fontSize: 14,
+                borderRadius: 999,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 4,
+                whiteSpace: 'nowrap',
+              }}
+            >
+              <span>➕</span>
+              <span>Бот</span>
+            </button>
+          )}
+        </div>
       </div>
 
       {instances.map((inst) => (
@@ -116,9 +147,7 @@ const InstancesList: React.FC<InstancesListProps> = ({
                 <span style={{ marginRight: '8px' }}>🤖</span>
                 {inst.botname}
               </div>
-              <div className="list-item-subtitle">
-                @{inst.botusername}
-              </div>
+              <div className="list-item-subtitle">@{inst.botusername}</div>
             </div>
 
             <div
@@ -157,15 +186,8 @@ const InstancesList: React.FC<InstancesListProps> = ({
 
       {/* Модальное окно подтверждения удаления */}
       {instanceToDelete && (
-        <div
-          className="modal-backdrop"
-          onClick={() => !deleting && setInstanceToDelete(null)}
-        >
-          <div
-            className="modal"
-            onClick={(e) => e.stopPropagation()}
-            style={{ maxWidth: 360 }}
-          >
+        <div className="modal-backdrop" onClick={() => !deleting && setInstanceToDelete(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 360 }}>
             <div className="modal-header">
               <h2 className="modal-title">Удалить бота?</h2>
               <button
@@ -180,12 +202,8 @@ const InstancesList: React.FC<InstancesListProps> = ({
             </div>
 
             <div className="modal-body">
-              <p style={{ marginBottom: 12 }}>
-                Вы действительно хотите удалить инстанс:
-              </p>
-              <p style={{ fontWeight: 600, marginBottom: 4 }}>
-                {instanceToDelete.botname}
-              </p>
+              <p style={{ marginBottom: 12 }}>Вы действительно хотите удалить инстанс:</p>
+              <p style={{ fontWeight: 600, marginBottom: 4 }}>{instanceToDelete.botname}</p>
               <p
                 style={{
                   marginTop: 0,

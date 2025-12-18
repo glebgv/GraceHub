@@ -1327,3 +1327,12 @@ select.form-control {
     opacity: 1;
   }
 }
+
+
+
+/* Sticky header for SuperAdmin page */
+.superadmin-sticky {
+  position: sticky;
+  top: var(--space-12); /* .app-container имеет padding 12px */
+  z-index: 50;
+}
