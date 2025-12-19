@@ -91,12 +91,11 @@ class PlatformInstanceDefaultsCache:
                 return self._cached_value
 
         # ВАЖНО: тут используй реальный метод твоей MasterDatabase.
-        # В мастере у тебя встречаются getplatformsetting(...) и get_platform_setting(...),
         # нужно привести к одному правильному имени.
         try:
             data = await self.db.get_platform_setting("miniapp_public", default={})
         except AttributeError:
-            data = await self.db.getplatformsetting("miniapp_public", default={})
+            data = await self.db.get_platform_setting("miniapp_public", default={})
 
         instance_defaults = (data or {}).get("instanceDefaults") or {}
 

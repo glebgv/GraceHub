@@ -106,7 +106,7 @@ class MasterBot:
         return LANGS.get(lang, LANGS[self.default_lang])
 
     async def get_single_tenant_config(self) -> dict:
-        data = await self.db.getplatformsetting("miniapp_public", default={})
+        data = await self.db.get_platform_setting("miniapp_public", default={})
         st = (data or {}).get("single_tenant") or {}
         enabled = bool(st.get("enabled", False))
         return {"enabled": enabled}

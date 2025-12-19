@@ -860,7 +860,6 @@ class MasterDatabase:
         # Таблицы mini app
         self._create_miniapp_tables(cur)
 
-        # Таблицы worker (перенос с SQLite)
         self._create_worker_tables(cur)
 
         # Таблицы биллинга SaaS
@@ -961,7 +960,6 @@ class MasterDatabase:
 
     def _create_worker_tables(self, cur) -> None:
         """
-        Worker-часть, перенесённая из SQLite в Postgres.
         Все таблицы содержат instance_id.
         """
 
@@ -2158,17 +2156,3 @@ class MasterDatabase:
                 (user_id, user_id, user_id, lang_code),
             )
         self.conn.commit()
-
-
-class WorkerDatabase:
-    """
-    Stub-класс для обратной совместимости.
-    Вся логика перенесена в MasterDatabase/worker-таблицы Postgres.
-    Новые воркеры должны напрямую использовать MasterDatabase.
-    """
-
-    def __init__(self, dbpath: str):
-        raise RuntimeError(
-            "WorkerDatabase на SQLite больше не поддерживается. "
-            "Используй MasterDatabase и worker-таблицы в Postgres."
-        )
