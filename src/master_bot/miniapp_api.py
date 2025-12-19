@@ -1876,16 +1876,47 @@ def create_miniapp_app(
     async def _toncenter_get_transactions(address: str, limit: int = 30) -> list[dict]:
         """
         Получаем последние транзакции по адресу через TonCenter API v2.
-        Ожидается, что settings.TON_API_BASE_URL = 'https://toncenter.com/api/v2' или testnet.
+
+        Основной источник конфигурации:
+        platformsettings.miniapp_public.payments.ton.apiBaseUrl
+        platformsettings.miniapp_public.payments.ton.apiKey (optional)
+
+        Fallback:
+        shared.settings.TON_API_BASE_URL / shared.settings.TON_API_KEY
         """
-        base_url = settings.TON_API_BASE_URL.rstrip("/")
-        url = f"{base_url}/getTransactions"
+        import json
+        import httpx
+
+        # 1) load miniapp_public
+        try:
+            raw = await miniapp_db.db.get_platform_setting("miniapp_public", default=None)
+        except Exception:
+            raw = None
+
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except Exception:
+                raw = None
+
+        raw = raw if isinstance(raw, dict) else {}
+        ton_cfg = (((raw.get("payments") or {}).get("ton")) or {})
+
+        # 2) base url + api key from DB with fallback to settings
+        base_url = str(ton_cfg.get("apiBaseUrl") or "").strip() or str(getattr(settings, "TON_API_BASE_URL", "") or "").strip()
+        if not base_url:
+            raise HTTPException(status_code=500, detail="TON: apiBaseUrl not configured (miniapp_public.payments.ton.apiBaseUrl)")
+
+        api_key = str(ton_cfg.get("apiKey") or "").strip() or str(getattr(settings, "TON_API_KEY", "") or "").strip()
+
+        url = f"{base_url.rstrip('/')}/getTransactions"
 
         headers: Dict[str, str] = {}
-        if getattr(settings, "TON_API_KEY", None):
-            headers["X-API-Key"] = settings.TON_API_KEY
+        if api_key:
+            headers["X-API-Key"] = api_key
 
         params = {"address": address, "limit": limit}
+
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.get(url, params=params, headers=headers)
             resp.raise_for_status()
@@ -1893,10 +1924,10 @@ def create_miniapp_app(
 
         if not data.get("ok"):
             raise RuntimeError(f"TonCenter error: {data.get('error')}")
+
         result = data.get("result")
-        # TonCenter v2 может возвращать result либо как JSON-объект, либо как строку.
-        # Для упрощения считаем, что это уже список транзакций (смотри свою фактическую схему).
         return result or []
+
 
     def _maybe_b64decode(s: str) -> str:
         """Попытка декодировать base64 в обычный текст. Если не получится — вернём как есть."""
@@ -1941,6 +1972,8 @@ def create_miniapp_app(
         Важно: apply_saas_plan_for_invoice вызываем только если mark_billing_invoice_paid_ton
         реально обновил строку (pending/cancelled -> paid). Это защищает от гонок/двойного поллинга.
         """
+        import json
+
         inv = await miniapp_db.db.get_billing_invoice(invoice_id)
         if not inv:
             raise HTTPException(status_code=404, detail="Invoice not found")
@@ -1952,9 +1985,26 @@ def create_miniapp_app(
         if inv.get("status") == "paid":
             return {"status": "paid", "tx_hash": inv.get("provider_tx_hash")}
 
-        wallet = settings.TON_WALLET_ADDRESS
+        # --- TON config from DB (platformsettings.miniapp_public.payments.ton.*) ---
+        try:
+            raw = await miniapp_db.db.get_platform_setting("miniapp_public", default=None)
+        except Exception:
+            raw = None
+
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except Exception:
+                raw = None
+
+        raw = raw if isinstance(raw, dict) else {}
+        ton_cfg = (((raw.get("payments") or {}).get("ton")) or {})
+
+        wallet = str(ton_cfg.get("walletAddress") or "").strip()
         if not wallet:
-            raise HTTPException(status_code=500, detail="TON_WALLET_ADDRESS not configured")
+            # (опциональный fallback на env, если вдруг нужно)
+            # wallet = str(getattr(settings, "TON_WALLET_ADDRESS", "") or "").strip()
+            raise HTTPException(status_code=500, detail="TON: walletAddress not configured (miniapp_public.payments.ton.walletAddress)")
 
         need_amount = inv.get("amount_minor_units") or 0
         if need_amount <= 0:
@@ -2339,16 +2389,39 @@ def create_miniapp_app(
         return None
 
     async def _yookassa_get_payment(payment_id: str) -> dict:
-        if not settings.YOOKASSA_SHOP_ID or not settings.YOOKASSA_SECRET_KEY:
-            raise HTTPException(status_code=500, detail="YOOKASSA credentials not configured")
+        import json
+        import httpx
+
+        # читаем креды из platformsettings.miniapp_public
+        try:
+            raw = await miniapp_db.db.get_platform_setting("miniapp_public", default=None)
+        except Exception:
+            raw = None
+
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except Exception:
+                raw = None
+
+        raw = raw if isinstance(raw, dict) else {}
+        yk_cfg = (((raw.get("payments") or {}).get("yookassa")) or {})
+
+        shop_id = str(yk_cfg.get("shopId") or "").strip()
+        secret_key = str(yk_cfg.get("secretKey") or "").strip()
+
+        if not shop_id or not secret_key:
+            raise HTTPException(status_code=500, detail="ЮKassa credentials not configured (miniapp_public.payments.yookassa.shopId/secretKey)")
+
         url = f"https://api.yookassa.ru/v3/payments/{payment_id}"
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.get(
                 url,
-                auth=(str(settings.YOOKASSA_SHOP_ID), str(settings.YOOKASSA_SECRET_KEY)),
+                auth=(shop_id, secret_key),
             )
             resp.raise_for_status()
             return resp.json()
+
 
     @app.get("/api/billing/yookassa/status", response_model=YooKassaStatusResponse)
     async def yookassa_invoice_status(
