@@ -270,9 +270,37 @@ class SingleTenantConfig(BaseModel):
     enabled: bool = False
     allowed_user_ids: List[int] = Field(default_factory=list)
 
+class SuperadminsUpsert(BaseModel):
+    ids: List[int] = Field(default_factory=list)
+
+class SuperadminsResponse(BaseModel):
+    ids: List[int] = Field(default_factory=list)
+
+
 # ========================================================================
 # Telegram Validation
 # ========================================================================
+
+def normalize_ids(v: Any) -> List[int]:
+    if not v:
+        return []
+    out: List[int] = []
+    if isinstance(v, list):
+        for x in v:
+            try:
+                n = int(x)
+                if n > 0:
+                    out.append(n)
+            except Exception:
+                continue
+    else:
+        try:
+            n = int(v)
+            if n > 0:
+                out.append(n)
+        except Exception:
+            pass
+    return sorted(list(dict.fromkeys(out)))
 
 
 class TelegramAuthValidator:
@@ -1245,34 +1273,53 @@ async def get_single_tenant_config(db) -> SingleTenantConfig:
     )
     return cfg
 
-def _parse_superadmin_ids() -> set[int]:
-    raw = os.getenv("GRACEHUB_SUPERADMIN_TELEGRAM_IDS", "").strip()
+
+
+async def _parse_superadmin_ids() -> set[int]:
+    # miniapp_db создаётся в create_miniapp_app и содержит masterdb в miniappdb.db [file:56]
+    if miniapp_db is None or getattr(miniapp_db, "db", None) is None:
+        return set()
+
+    raw = await miniapp_db.db.get_platform_setting("miniapp_public", default=None)
     if not raw:
         return set()
-    items = [x.strip() for x in raw.split(",") if x.strip()]
-    out: set[int] = set()
-    for x in items:
+
+    # на случай, если драйвер вернул JSON строкой
+    if isinstance(raw, str):
         try:
-            out.add(int(x))
-        except ValueError:
-            continue
+            raw = json.loads(raw)
+        except Exception:
+            return set()
+
+    if not isinstance(raw, dict):
+        return set()
+
+    ids = raw.get("superadmins") or []
+    out: set[int] = set()
+
+    if isinstance(ids, list):
+        for x in ids:
+            try:
+                n = int(x)
+                if n > 0:
+                    out.add(n)
+            except Exception:
+                continue
+
     return out
 
 
 async def require_superadmin(
     current_user: Dict[str, Any] = Depends(get_current_user),
 ) -> Dict[str, Any]:
-    superadmins = _parse_superadmin_ids()
-    uid = int(current_user.get("userid") or 0)
+    superadmins = await _parse_superadmin_ids()
+
+    uid = current_user.get("user_id") or current_user.get("userid") or current_user.get("userId")
+    uid = int(uid or 0)
+
     if uid not in superadmins:
         raise HTTPException(status_code=403, detail="Superadmin only")
     return current_user
-
-
-async def require_superadmin(currentuser: Dict[str, Any] = Depends(get_current_user)) -> None:
-    roles = currentuser.get("roles") or []
-    if "superadmin" not in roles:
-        raise HTTPException(status_code=403, detail="Forbidden")
 
 manage_router = APIRouter(
     prefix="/manage",
@@ -1878,6 +1925,27 @@ def create_miniapp_app(
         # Читаем ТОЛЬКО из miniapp_public.singleTenant
         return await get_single_tenant_config(master_db)
 
+    @app.get("/api/platform/superadmins", response_model=SuperadminsResponse)
+    async def get_platform_superadmins(currentuser: Dict[str, Any] = Depends(get_current_user)):
+        await require_superadmin(currentuser)  # твой superadmin-guard
+        raw = await masterdb.get_platform_setting("miniapp_public", default={})
+        if not isinstance(raw, dict):
+            raw = {}
+        ids = normalize_ids(raw.get("superadmins"))
+        return SuperadminsResponse(ids=ids)
+
+    @app.post("/api/platform/superadmins", response_model=SuperadminsResponse)
+    async def set_platform_superadmins(payload: SuperadminsUpsert, currentuser: Dict[str, Any] = Depends(get_current_user)):
+        await require_superadmin(currentuser)
+
+        raw = await masterdb.get_platform_setting("miniapp_public", default={})
+        if not isinstance(raw, dict):
+            raw = {}
+
+        raw["superadmins"] = normalize_ids(payload.ids)
+
+        await masterdb.setplatformsetting("miniapp_public", raw)
+        return SuperadminsResponse(ids=raw["superadmins"])
 
     @app.post("/api/platform/single-tenant", response_model=SingleTenantConfig)
     async def set_single_tenant_config_endpoint(
@@ -1966,7 +2034,7 @@ def create_miniapp_app(
         # ------------------------------------------------------------------
         roles: list[str] = []
         try:
-            superadmins = _parse_superadmin_ids()
+            superadmins = await _parse_superadmin_ids()
             is_superadmin = int(user_id) in superadmins
             if is_superadmin:
                 roles.append("superadmin")
@@ -2272,9 +2340,8 @@ def create_miniapp_app(
 
     @app.get("/api/platform/settings")
     async def get_platform_settings(current_user: Dict[str, Any] = Depends(get_current_user)):
+        logger.warning("HIT get_platform_settings build=2025-12-19-1239")
         # при желании: ограничить superadmin’ом
-        # await require_superadmin(current_user)
-
         data = await master_db.get_platform_setting("miniapp_public", default={})
         return {"key": "miniapp_public", "value": data}
 
@@ -2487,15 +2554,23 @@ def create_miniapp_app(
 
     @app.get("/api/me", response_model=UserResponse)
     async def get_me(current_user: Dict[str, Any] = Depends(get_current_user)):
-        user_id = current_user["user_id"]
+        # Совместимость: где-то у тебя user_id, где-то userid.
+        user_id = (
+            current_user.get("user_id")
+            or current_user.get("userid")
+            or current_user.get("userId")
+        )
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Unauthorized")
 
-        # Глобальные роли (platform-level)
+        user_id = int(user_id)
         roles: list[str] = []
         try:
-            if user_id in getattr(settings, "SUPERADMIN_TELEGRAM_IDS", []):
+            superadmins = await _parse_superadmin_ids()
+            if user_id in superadmins:
                 roles.append("superadmin")
         except Exception:
-            logger.exception("get_me: failed to evaluate SUPERADMIN_TELEGRAM_IDS")
+            logger.exception("get_me: failed to evaluate superadmins from miniapp_public")
 
         instances = await master_bot.db.get_user_instances_with_meta(user_id)
 
@@ -2509,7 +2584,6 @@ def create_miniapp_app(
             instances=[
                 {
                     "instance_id": inst["instance_id"],
-                    # если эти поля есть в meta — лучше вернуть их (как в auth_telegram)
                     "bot_username": inst.get("bot_username") or "",
                     "bot_name": inst.get("bot_name") or "",
                     "role": inst.get("role") or "owner",

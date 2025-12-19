@@ -2,6 +2,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { apiClient } from '../api/client';
 import type { MiniappPublicSettings } from '../api/client';
+import logoRed from '../assets/logo-red.png';
 
 interface SuperAdminProps {
   onBack?: () => void;
@@ -131,7 +132,10 @@ function mergeDefaults(value: any): MiniappPublicSettings {
         v?.instanceDefaults?.antifloodMaxUserMessagesPerMinute,
         defaultSettings.instanceDefaults.antifloodMaxUserMessagesPerMinute,
       ),
-      workerMaxFileMb: safeNumber(v?.instanceDefaults?.workerMaxFileMb, defaultSettings.instanceDefaults.workerMaxFileMb),
+      workerMaxFileMb: safeNumber(
+        v?.instanceDefaults?.workerMaxFileMb,
+        defaultSettings.instanceDefaults.workerMaxFileMb,
+      ),
       maxInstancesPerUser: safeNumber(
         v?.instanceDefaults?.maxInstancesPerUser,
         defaultSettings.instanceDefaults.maxInstancesPerUser,
@@ -140,23 +144,24 @@ function mergeDefaults(value: any): MiniappPublicSettings {
   };
 }
 
+/**
+ * Детерминированный JSON stringify:
+ * - рекурсивно сортирует ключи объектов
+ * - не использует WeakSet (циклов в form быть не должно)
+ */
 function stableStringify(obj: any): string {
-  const seen = new WeakSet();
-  const sorter = (_k: string, v: any) => {
-    if (v && typeof v === 'object') {
-      if (seen.has(v)) return undefined;
-      seen.add(v);
-      if (Array.isArray(v)) return v;
-      return Object.keys(v)
-        .sort()
-        .reduce((acc: any, key) => {
-          acc[key] = v[key];
-          return acc;
-        }, {});
-    }
-    return v;
+  const normalize = (v: any): any => {
+    if (v === null || v === undefined) return v;
+    if (typeof v !== 'object') return v;
+
+    if (Array.isArray(v)) return v.map(normalize);
+
+    const out: Record<string, any> = {};
+    for (const k of Object.keys(v).sort()) out[k] = normalize(v[k]);
+    return out;
   };
-  return JSON.stringify(obj, sorter);
+
+  return JSON.stringify(normalize(obj));
 }
 
 const TrashIcon: React.FC<{ size?: number }> = ({ size = 18 }) => (
@@ -261,6 +266,42 @@ const ConfirmExitModal: React.FC<ConfirmExitModalProps> = ({ open, onExit, onSta
   );
 };
 
+type ConfirmDeleteModalProps = {
+  open: boolean;
+  title?: string;
+  text?: string;
+  confirmText?: string;
+  cancelText?: string;
+  danger?: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+};
+
+const ConfirmDeleteModal: React.FC<ConfirmDeleteModalProps> = ({
+  open,
+  title = 'Подтверждение',
+  text = 'Удалить?',
+  confirmText = 'Удалить',
+  cancelText = 'Отмена',
+  danger = true,
+  onConfirm,
+  onCancel,
+}) => {
+  return (
+    <BaseModal open={open} title={title} onClose={onCancel}>
+      <div style={{ marginBottom: 12, opacity: 0.9 }}>{text}</div>
+      <div className="flex gap-8" style={{ justifyContent: 'flex-end' }}>
+        <button type="button" className="btn btn-secondary" onClick={onCancel}>
+          {cancelText}
+        </button>
+        <button type="button" className={danger ? 'btn btn-danger' : 'btn btn-primary'} onClick={onConfirm}>
+          {confirmText}
+        </button>
+      </div>
+    </BaseModal>
+  );
+};
+
 function isHttpsUrl(s: string): boolean {
   try {
     const u = new URL(s);
@@ -344,6 +385,7 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
   const [initialSnapshot, setInitialSnapshot] = useState<string>(stableStringify(defaultSettings));
 
   const [newOwnerId, setNewOwnerId] = useState<string>('');
+  const [addOwnerOpen, setAddOwnerOpen] = useState(false);
 
   const [savedModalOpen, setSavedModalOpen] = useState(false);
   const [confirmExitOpen, setConfirmExitOpen] = useState(false);
@@ -352,6 +394,14 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
   const [addSuperadminValue, setAddSuperadminValue] = useState('');
 
   const [paymentErrors, setPaymentErrors] = useState<Record<string, string>>({});
+
+  // Confirm delete modal (shared for owners + superadmins)
+  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState<
+    | null
+    | { kind: 'superadmin'; id: number }
+    | { kind: 'owner'; id: number }
+  >(null);
 
   const isSuperadmin = useMemo(() => {
     const roles = me?.roles || [];
@@ -507,12 +557,43 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
     }));
   };
 
-  const removeSuperadmin = (id: number) => {
-    if (!confirm(`Удалить суперадмина ${id}?`)) return;
-    setForm((prev) => ({
-      ...prev,
-      superadmins: (prev.superadmins || []).filter((x) => x !== id),
-    }));
+  const requestDeleteOwner = (id: number) => {
+    setPendingDelete({ kind: 'owner', id });
+    setConfirmDeleteOpen(true);
+  };
+
+  const requestDeleteSuperadmin = (id: number) => {
+    setPendingDelete({ kind: 'superadmin', id });
+    setConfirmDeleteOpen(true);
+  };
+
+  const confirmDelete = () => {
+    if (!pendingDelete) {
+      setConfirmDeleteOpen(false);
+      return;
+    }
+
+    if (pendingDelete.kind === 'superadmin') {
+      const id = pendingDelete.id;
+      setForm((prev) => ({
+        ...prev,
+        superadmins: (prev.superadmins || []).filter((x) => x !== id),
+      }));
+    }
+
+    if (pendingDelete.kind === 'owner') {
+      const id = pendingDelete.id;
+      setForm((prev) => ({
+        ...prev,
+        singleTenant: {
+          ...prev.singleTenant,
+          allowedUserIds: (prev.singleTenant.allowedUserIds || []).filter((x) => x !== id),
+        },
+      }));
+    }
+
+    setConfirmDeleteOpen(false);
+    setPendingDelete(null);
   };
 
   const openAddSuperadmin = () => {
@@ -539,6 +620,20 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
     setAddSuperadminValue('');
   };
 
+  const openAddOwner = () => {
+    setNewOwnerId('');
+    setAddOwnerOpen(true);
+  };
+
+  const submitAddOwner = () => {
+    addOwnerId();
+    const raw = newOwnerId.trim();
+    const id = Number(raw);
+    if (raw && Number.isFinite(id) && id > 0) {
+      setAddOwnerOpen(false);
+    }
+  };
+
   const handleBack = () => {
     if (!onBack) return;
 
@@ -560,8 +655,40 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
     );
   }
 
+  const confirmTitle =
+    pendingDelete?.kind === 'superadmin'
+      ? 'Удалить суперадмина'
+      : pendingDelete?.kind === 'owner'
+        ? 'Удалить owner ID'
+        : 'Подтверждение';
+
+  const confirmText =
+    pendingDelete?.kind === 'superadmin'
+      ? `Удалить суперадмина ${pendingDelete.id}?`
+      : pendingDelete?.kind === 'owner'
+        ? `Удалить owner ID ${pendingDelete.id}?`
+        : 'Удалить?';
+
   return (
     <div style={{ padding: '12px', paddingBottom: '72px' }}>
+      {/* Header */}
+      <div className="card" style={{ marginBottom: 16 }}>
+        <div className="cardbody">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <img
+              src={logoRed}
+              alt="GraceHub"
+              style={{
+                width: 32,
+                height: 32,
+                borderRadius: 10,
+              }}
+            />
+            <span style={{ fontSize: 22, fontWeight: 600 }}>GraceHub Admin Panel</span>
+          </div>
+        </div>
+      </div>
+
       <InfoModal
         open={savedModalOpen}
         title="Saved"
@@ -577,6 +704,48 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
           onBack?.();
         }}
       />
+
+      <ConfirmDeleteModal
+        open={confirmDeleteOpen}
+        title={confirmTitle}
+        text={confirmText}
+        confirmText="Удалить"
+        cancelText="Отмена"
+        danger
+        onCancel={() => {
+          setConfirmDeleteOpen(false);
+          setPendingDelete(null);
+        }}
+        onConfirm={confirmDelete}
+      />
+
+      <BaseModal open={addOwnerOpen} title="Добавить owner ID" onClose={() => setAddOwnerOpen(false)}>
+        <div className="form-group">
+          <label className="form-label">Telegram user_id</label>
+          <input
+            className="form-input"
+            type="number"
+            value={newOwnerId}
+            onChange={(e) => setNewOwnerId(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                submitAddOwner();
+              }
+            }}
+            placeholder="Введите user_id"
+          />
+        </div>
+
+        <div className="flex gap-8" style={{ justifyContent: 'flex-end' }}>
+          <button type="button" className="btn btn-secondary" onClick={() => setAddOwnerOpen(false)}>
+            Cancel
+          </button>
+          <button type="button" className="btn btn-primary" onClick={submitAddOwner}>
+            Add
+          </button>
+        </div>
+      </BaseModal>
 
       <BaseModal open={addSuperadminOpen} title="Добавить суперадмина" onClose={() => setAddSuperadminOpen(false)}>
         <div className="form-group">
@@ -606,7 +775,6 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
         </div>
       </BaseModal>
 
-      {/* НЕ sticky: заголовок + back */}
       <div className="card">
         <div className="card-header">
           <div className="card-title">Superadmin panel</div>
@@ -618,7 +786,6 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
         </div>
       </div>
 
-      {/* Липкая кнопка сохранения — как в Settings */}
       {dirty && (
         <div
           className="card"
@@ -648,7 +815,6 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
         </div>
       )}
 
-      {/* Single tenant */}
       <div className="card" style={{ marginTop: 12 }}>
         <h3 style={{ margin: '0 0 12px 0', fontSize: '14px' }}>Single-tenant</h3>
 
@@ -663,7 +829,6 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
             ariaLabel="Toggle single-tenant"
             onChange={(checked) => {
               setForm((p) => {
-                // При включении single-tenant — сразу принудительно отключаем все payments в UI/данных формы
                 if (checked) {
                   return {
                     ...p,
@@ -679,14 +844,12 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
                   };
                 }
 
-                // При выключении single-tenant — НЕ включаем платежи автоматически (оставляем как есть)
                 return {
                   ...p,
                   singleTenant: { ...p.singleTenant, enabled: false },
                 };
               });
 
-              // чистим ошибки, чтобы не висели в режиме где блок скрыт
               setPaymentErrors({});
             }}
           />
@@ -696,25 +859,9 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
           <div className="form-group" style={{ marginTop: 8 }}>
             <label className="form-label">Owner Telegram IDs</label>
 
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-              <input
-                className="form-input"
-                type="number"
-                value={newOwnerId}
-                onChange={(e) => setNewOwnerId(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault();
-                    addOwnerId();
-                  }
-                }}
-                placeholder="Введите user_id"
-                style={{ maxWidth: 320 }}
-              />
-              <button className="btn btn-secondary" type="button" onClick={addOwnerId}>
-                Add
-              </button>
-            </div>
+            <button className="btn btn-secondary" type="button" onClick={openAddOwner} disabled={saving}>
+              Add
+            </button>
 
             <div style={{ marginTop: 12 }}>
               {(form.singleTenant.allowedUserIds || []).length === 0 ? (
@@ -736,7 +883,7 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
                     <button
                       type="button"
                       className="btn btn-outline"
-                      onClick={() => removeOwnerId(id)}
+                      onClick={() => requestDeleteOwner(id)}
                       title={`Удалить ${id}`}
                       aria-label={`Удалить ${id}`}
                       style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}
@@ -755,7 +902,6 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
         )}
       </div>
 
-      {/* Superadmins */}
       <div className="card" style={{ marginTop: 12 }}>
         <h3 style={{ margin: '0 0 12px 0', fontSize: '14px' }}>Superadmins</h3>
 
@@ -784,7 +930,7 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
                 <button
                   type="button"
                   className="btn btn-outline"
-                  onClick={() => removeSuperadmin(id)}
+                  onClick={() => requestDeleteSuperadmin(id)}
                   title={`Удалить ${id}`}
                   aria-label={`Удалить ${id}`}
                   style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}
@@ -802,7 +948,7 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
         <h3 style={{ margin: '0 0 12px 0', fontSize: '14px' }}>Instance defaults</h3>
 
         <div className="form-group">
-          <label className="form-label">ANTIFLOOD_MAX_USER_MESSAGES_PER_MINUTE</label>
+          <label className="form-label">Лимит сообщений в минуту(рекомендуется до 30)</label>
           <input
             className="form-input"
             type="number"
@@ -817,7 +963,7 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
         </div>
 
         <div className="form-group">
-          <label className="form-label">WORKER_MAX_FILE_MB</label>
+          <label className="form-label">Лимит вложений</label>
           <input
             className="form-input"
             type="number"
@@ -832,7 +978,7 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
         </div>
 
         <div className="form-group">
-          <label className="form-label">MAX_INSTANCES_PER_USER</label>
+          <label className="form-label">Лимит подключаемых ботов</label>
           <input
             className="form-input"
             type="number"
@@ -869,10 +1015,7 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
           </div>
         ) : (
           <>
-            <div
-              className="form-group"
-              style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
-            >
+            <div className="form-group" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <label className="form-label" style={{ marginBottom: 0 }}>
                 Telegram Stars
               </label>
@@ -889,10 +1032,7 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
               />
             </div>
 
-            <div
-              className="form-group"
-              style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
-            >
+            <div className="form-group" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <label className="form-label" style={{ marginBottom: 0 }}>
                 TON
               </label>
@@ -1124,10 +1264,7 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
               </div>
             )}
 
-            <div
-              className="form-group"
-              style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
-            >
+            <div className="form-group" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <label className="form-label" style={{ marginBottom: 0 }}>
                 YooKassa
               </label>
