@@ -1679,30 +1679,44 @@ def create_miniapp_app(
             # YooKassa (redirect confirmation_url)
             # -------------------------
             if payment_method == "yookassa":
+                raw = await get_miniapp_public()
+                payments = raw.get("payments") or {}
+                yk_cfg = payments.get("yookassa") or {}
+
+                # config from SuperAdmin / DB (platformsettings.miniapp_public.payments.yookassa.*)
+                shop_id = str(yk_cfg.get("shopId") or "").strip()
+                secret_key = str(yk_cfg.get("secretKey") or "").strip()
+                return_url = str(yk_cfg.get("returnUrl") or "").strip()
+                test_mode = bool(yk_cfg.get("testMode", False))
+
                 logger.info(
-                    "billing.create_invoice yookassa config request_id=%s shop_id_set=%s secret_set=%s return_url_set=%s",
+                    "billing.create_invoice yookassa config request_id=%s shop_id_set=%s secret_set=%s return_url_set=%s test_mode=%s",
                     request_id,
-                    bool(getattr(settings, "YOOKASSA_SHOP_ID", None)),
-                    bool(getattr(settings, "YOOKASSA_SECRET_KEY", None)),
-                    bool(getattr(settings, "YOOKASSA_RETURN_URL", None)),
+                    bool(shop_id),
+                    bool(secret_key),
+                    bool(return_url),
+                    test_mode,
                 )
-                if not settings.YOOKASSA_SHOP_ID or not settings.YOOKASSA_SECRET_KEY:
-                    raise HTTPException(status_code=500, detail="YOOKASSA_SHOP_ID/YOOKASSA_SECRET_KEY не настроены")
-                if not settings.YOOKASSA_RETURN_URL:
-                    raise HTTPException(status_code=500, detail="YOOKASSA_RETURN_URL не настроен")
+
+                if not shop_id or not secret_key:
+                    raise HTTPException(status_code=500, detail="ЮKassa: shopId/secretKey не настроены в панели администратора")
+                if not return_url:
+                    raise HTTPException(status_code=500, detail="ЮKassa: returnUrl не настроен в панели администратора")
 
                 plan = req.plan_code.lower()
                 price_map_rub = {
-                    "lite": float(os.getenv("YOOKASSA_PRICE_RUB_LITE", "0")),
-                    "pro": float(os.getenv("YOOKASSA_PRICE_RUB_PRO", "0")),
-                    "enterprise": float(os.getenv("YOOKASSA_PRICE_RUB_ENTERPRISE", "0")),
+                    "lite": float(yk_cfg.get("priceRubLite", 0) or 0),
+                    "pro": float(yk_cfg.get("priceRubPro", 0) or 0),
+                    "enterprise": float(yk_cfg.get("priceRubEnterprise", 0) or 0),
                 }
+
                 logger.info(
                     "billing.create_invoice yookassa price_map request_id=%s plan=%s price_map_rub=%s periods=%s",
                     request_id, plan, price_map_rub, periods,
                 )
+
                 if plan not in price_map_rub or price_map_rub[plan] <= 0:
-                    raise HTTPException(status_code=400, detail="Этот тариф нельзя оплатить в ЮKassa (цена не настроена)")
+                    raise HTTPException(status_code=400, detail="Этот тариф нельзя оплатить в ЮKassa (цена не настроена в панели администратора)")
 
                 amount_rub = float(price_map_rub[plan]) * float(periods)
                 amount_minor_units = int(round(amount_rub * 100))
@@ -1743,11 +1757,13 @@ def create_miniapp_app(
                 idempotence_key = str(uuid.uuid4())
                 yk_url = "https://api.yookassa.ru/v3/payments"
 
+                description = f"SaaS {req.plan_code} x{periods} (invoice {invoice_id})"
+
                 body = {
                     "amount": {"value": amount_value, "currency": "RUB"},
-                    "confirmation": {"type": "redirect", "return_url": settings.YOOKASSA_RETURN_URL},
+                    "confirmation": {"type": "redirect", "return_url": return_url},
                     "capture": True,
-                    "description": f"SaaS {req.plan_code} x{periods} (invoice {invoice_id})",
+                    "description": description,
                     "metadata": {
                         "saas_invoice_id": invoice_id,
                         "instance_id": account_instance_id,
@@ -1755,6 +1771,7 @@ def create_miniapp_app(
                         "plan_code": req.plan_code,
                         "periods": periods,
                         "request_id": request_id,
+                        "test_mode": test_mode,
                     },
                 }
 
@@ -1767,7 +1784,7 @@ def create_miniapp_app(
                     async with httpx.AsyncClient(timeout=20.0) as client:
                         resp = await client.post(
                             yk_url,
-                            auth=(str(settings.YOOKASSA_SHOP_ID), str(settings.YOOKASSA_SECRET_KEY)),
+                            auth=(shop_id, secret_key),
                             headers={
                                 "Idempotence-Key": idempotence_key,
                                 "Content-Type": "application/json",
@@ -1854,7 +1871,6 @@ def create_miniapp_app(
                 request_id, int((time.monotonic() - t0) * 1000),
             )
             raise HTTPException(status_code=500, detail=f"Internal error (request_id={request_id})")
-
 
 
     async def _toncenter_get_transactions(address: str, limit: int = 30) -> list[dict]:

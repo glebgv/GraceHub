@@ -53,6 +53,9 @@ const defaultSettings: MiniappPublicSettings = {
   },
 };
 
+const TON_MAINNET_DEFAULT_API = 'https://toncenter.com/api/v2';
+const TON_TESTNET_DEFAULT_API = defaultSettings.payments.ton.apiBaseUrl;
+
 function safeNumber(v: any, fallback: number) {
   const n = Number(v);
   return Number.isFinite(n) ? n : fallback;
@@ -945,7 +948,6 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
                 }}
               >
                 <div>{id}</div>
-
                 <button
                   type="button"
                   className="btn btn-outline"
@@ -1104,7 +1106,10 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
                         ...p,
                         payments: {
                           ...p.payments,
-                          telegramStars: { ...p.payments.telegramStars, priceStarsEnterprise: Number(e.target.value) },
+                          telegramStars: {
+                            ...p.payments.telegramStars,
+                            priceStarsEnterprise: Number(e.target.value),
+                          },
                         },
                       }))
                     }
@@ -1146,12 +1151,38 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
                   <select
                     className="form-select"
                     value={form.payments.ton.network}
-                    onChange={(e) =>
-                      setForm((p) => ({
-                        ...p,
-                        payments: { ...p.payments, ton: { ...p.payments.ton, network: e.target.value as any } },
-                      }))
-                    }
+                    onChange={(e) => {
+                      const next = e.target.value as any;
+
+                      setForm((p) => {
+                        const prevNet = p.payments.ton.network;
+                        const prevApi = (p.payments.ton.apiBaseUrl || '').trim();
+
+                        // Автоподмена API URL при смене сети, если URL равен дефолтному для предыдущей сети.
+                        const shouldAutoSwitchApi =
+                          (prevNet === 'testnet' && prevApi === TON_TESTNET_DEFAULT_API) ||
+                          (prevNet === 'mainnet' && prevApi === TON_MAINNET_DEFAULT_API);
+
+                        return {
+                          ...p,
+                          payments: {
+                            ...p.payments,
+                            ton: {
+                              ...p.payments.ton,
+                              network: next,
+                              apiBaseUrl: shouldAutoSwitchApi
+                                ? next === 'mainnet'
+                                  ? TON_MAINNET_DEFAULT_API
+                                  : TON_TESTNET_DEFAULT_API
+                                : p.payments.ton.apiBaseUrl,
+                            },
+                          },
+                        };
+                      });
+
+                      // На смене сети сбросим ошибку API URL, т.к. могли подставить корректный дефолт.
+                      setPaymentErrors((prev) => ({ ...prev, ton_api: '' }));
+                    }}
                   >
                     <option value="testnet">Testnet</option>
                     <option value="mainnet">Mainnet</option>
@@ -1217,7 +1248,9 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
                 </div>
 
                 <div className="form-group">
-                  <label className="form-label">API key</label>
+                  <label className="form-label">
+                    API key <small style={{ opacity: 0.7 }}>(необязательно)</small>
+                  </label>
                   <input
                     className="form-input"
                     value={form.payments.ton.apiKey}
