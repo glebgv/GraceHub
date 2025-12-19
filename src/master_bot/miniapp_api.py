@@ -1390,10 +1390,8 @@ def create_miniapp_app(
 
 
     async def assert_payment_method_enabled(payment_method: str) -> None:
-        # platformsettings key: miniapppublic
-        raw = await miniappdb.db.getplatformsetting("miniapppublic", default=None)
+        raw = await miniappdb.db.get_platform_setting("miniapp_public", default=None)
         if not raw:
-            # если настройка отсутствует — считаем, что всё выключено (fail-closed)
             raise HTTPException(status_code=400, detail="Методы оплаты отключены администратором")
 
         if isinstance(raw, str):
@@ -1409,12 +1407,17 @@ def create_miniapp_app(
         if not isinstance(enabled, dict):
             raise HTTPException(status_code=400, detail="Методы оплаты отключены администратором")
 
-        # backend payment_method у тебя: "telegram_stars" | "ton" | "yookassa"
+        pm = payment_method
+        if hasattr(pm, "value"):
+            pm = pm.value
+        pm = str(pm).strip().lower()
+
         key = {
             "telegram_stars": "telegramStars",
+            "telegramstars": "telegramStars",  # можно убрать, если строго только underscore
             "ton": "ton",
             "yookassa": "yookassa",
-        }.get(str(payment_method))
+        }.get(pm)
 
         if not key:
             raise HTTPException(status_code=400, detail="Неизвестный метод оплаты")
@@ -1447,7 +1450,18 @@ def create_miniapp_app(
         t0 = time.monotonic()
 
         user_id = current_user["user_id"]
-        payment_method = getattr(req, "payment_method", "telegram_stars")
+
+        # IMPORTANT: req.payment_method может быть Enum (PaymentMethod.telegram_stars)
+        # Нормализуем в строку: "telegram_stars" | "ton" | "yookassa"
+        payment_method = (
+            getattr(req, "payment_method", None)
+            or getattr(req, "paymentmethod", None)
+            or "telegram_stars"
+        )
+        if hasattr(payment_method, "value"):
+            payment_method = payment_method.value
+        payment_method = str(payment_method).strip().lower()
+
         periods = req.periods
 
         logger.info(
@@ -1457,20 +1471,20 @@ def create_miniapp_app(
 
         # helper: server-side guard for globally disabled payment methods
         async def assert_payment_method_enabled(pm: str) -> None:
-            # payment_method in this API: "telegram_stars" | "ton" | "yookassa"
+            pm = str(pm).strip().lower()
+
             method_key = {
                 "telegram_stars": "telegramStars",
                 "ton": "ton",
                 "yookassa": "yookassa",
-            }.get(str(pm))
+            }.get(pm)
 
             if not method_key:
-                # let the main flow handle "unknown payment method"
                 raise HTTPException(status_code=400, detail="Неизвестный метод оплаты")
 
-            # Source of truth: platformsettings key "miniapppublic"
+            # Source of truth: platformsettings key "miniapp_public"
             try:
-                raw = await miniapp_db.db.get_platform_setting("miniapppublic", default=None)
+                raw = await miniapp_db.db.get_platform_setting("miniapp_public", default=None)
             except Exception:
                 raw = None
 
@@ -1495,10 +1509,10 @@ def create_miniapp_app(
                 raise HTTPException(status_code=400, detail=f"Метод оплаты отключён: {pm}")
 
         try:
-            # 1) Доступ к инстансу (как было)
+            # 1) Доступ к инстансу
             await require_instance_access(instance_id, current_user)
 
-            # 1.5) NEW: server-side guard (admin disabled payments)
+            # 1.5) Guard: админ мог выключить метод оплаты
             await assert_payment_method_enabled(payment_method)
 
             # 2) Продукт
@@ -1651,7 +1665,6 @@ def create_miniapp_app(
             # YooKassa (redirect confirmation_url)
             # -------------------------
             if payment_method == "yookassa":
-                # 0) конфиг
                 logger.info(
                     "billing.create_invoice yookassa config request_id=%s shop_id_set=%s secret_set=%s return_url_set=%s",
                     request_id,
@@ -1664,7 +1677,6 @@ def create_miniapp_app(
                 if not settings.YOOKASSA_RETURN_URL:
                     raise HTTPException(status_code=500, detail="YOOKASSA_RETURN_URL не настроен")
 
-                # 1) маппинг цены
                 plan = req.plan_code.lower()
                 price_map_rub = {
                     "lite": float(os.getenv("YOOKASSA_PRICE_RUB_LITE", "0")),
@@ -1687,7 +1699,6 @@ def create_miniapp_app(
                     request_id, amount_rub, amount_value, amount_minor_units,
                 )
 
-                # 2) создаём invoice в БД
                 try:
                     invoice_id = await miniapp_db.db.insert_billing_invoice(
                         instance_id=account_instance_id,
@@ -1701,7 +1712,7 @@ def create_miniapp_app(
                         status="pending",
                         payment_method="yookassa",
                         currency="RUB",
-                        amount_minor_units=amount_minor_units,  # копейки
+                        amount_minor_units=amount_minor_units,
                     )
                 except Exception:
                     logger.exception(
@@ -1715,7 +1726,6 @@ def create_miniapp_app(
                     request_id, invoice_id,
                 )
 
-                # 3) создаём payment в YooKassa
                 idempotence_key = str(uuid.uuid4())
                 yk_url = "https://api.yookassa.ru/v3/payments"
 
@@ -1730,7 +1740,7 @@ def create_miniapp_app(
                         "user_id": user_id,
                         "plan_code": req.plan_code,
                         "periods": periods,
-                        "request_id": request_id,  # удобно для отладки и вебхуков
+                        "request_id": request_id,
                     },
                 }
 
@@ -1792,7 +1802,6 @@ def create_miniapp_app(
 
                 payload = f"yookassa:{yk_payment_id}"
 
-                # 4) обновляем invoice_link/payload
                 try:
                     await miniapp_db.db.update_billing_invoice_link_and_payload(
                         invoice_id=invoice_id,
@@ -2430,8 +2439,38 @@ def create_miniapp_app(
         current_user: Dict[str, Any] = Depends(get_current_user),
     ):
         await require_superadmin(current_user)
+
+        # 1) сохраняем как и раньше (platformsettings.key -> JSONB value)
         await master_db.set_platform_setting(key, payload.value)
+
+        # 2) если обновили miniapp_public — синхронизируем Stars-цены в таблицы биллинга
+        if key == "miniapp_public":
+            v = payload.value or {}
+            payments = v.get("payments") or {}
+            tg_stars = payments.get("telegramStars") or {}
+
+            price_lite = tg_stars.get("priceStarsLite")
+            price_pro = tg_stars.get("priceStarsPro")
+            price_ent = tg_stars.get("priceStarsEnterprise")
+
+            mapping = [
+                ("lite", price_lite),
+                ("pro", price_pro),
+                ("enterprise", price_ent),
+            ]
+
+            for plancode, price in mapping:
+                if price is None:
+                    continue
+
+                # валидация + запись в saasplans
+                await master_db.update_saas_plan_price_stars(plancode, int(price))
+
+                # обновляем billingproducts.amountstars, т.к. create_invoice берёт сумму именно оттуда
+                await master_db.sync_billing_product_amount_from_plan(plancode)
+
         return {"status": "ok"}
+
 
     @app.get("/api/instances/{instance_id}/billing", response_model=BillingInfo)
     async def get_instance_billing_endpoint(

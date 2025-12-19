@@ -1975,6 +1975,47 @@ class MasterDatabase:
                     (code, plan_id, title, description, amount_stars),
                 )
 
+    async def update_saas_plan_price_stars(self, plancode: str, price_stars: int) -> None:
+        code = (plancode or "").strip().lower()
+        if code not in ("lite", "pro", "enterprise", "demo"):
+            raise ValueError(f"Unsupported plancode for Stars price update: {plancode}")
+
+        try:
+            price = int(price_stars)
+        except Exception:
+            raise ValueError(f"Invalid price_stars: {price_stars}")
+
+        if price < 0:
+            raise ValueError("price_stars must be >= 0")
+
+        await self.execute(
+            """
+            UPDATE saas_plans
+            SET price_stars = %s,
+                updated_at = NOW()
+            WHERE code = %s
+            """,
+            (price, code),
+        )
+
+    async def sync_billing_product_amount_from_plan(self, plancode: str) -> None:
+        code = (plancode or "").strip().lower()
+        if code not in ("lite", "pro", "enterprise", "demo"):
+            raise ValueError(f"Unsupported plancode for billing product sync: {plancode}")
+
+        await self.execute(
+            """
+            UPDATE billing_products AS bp
+            SET amount_stars = sp.price_stars,
+                updated_at = NOW()
+            FROM saas_plans AS sp
+            WHERE bp.plan_id = sp.plan_id
+                AND sp.code = %s
+                AND bp.is_active = TRUE
+            """,
+            (code,),
+        )
+
 
     async def ensure_default_billing(self, instance_id: str) -> None:
         """
