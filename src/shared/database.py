@@ -73,6 +73,30 @@ class MasterDatabase:
         await self.create_tables()
         logger.info(f"Master database (Postgres) initialized: {self.dsn}")
 
+    async def count_instances_for_user(self, userid: int) -> int:
+        row = await self.fetchone(
+            "SELECT COUNT(*) AS cnt FROM bot_instances WHERE user_id = %s",
+            (userid,),
+        )
+        return int(row["cnt"]) if row else 0
+
+    async def get_max_instances_per_user(self) -> int:
+        raw = await self.get_platform_setting("miniapp_public", default=None)
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except Exception:
+                raw = None
+        raw = raw if isinstance(raw, dict) else {}
+        inst = raw.get("instanceDefaults") or {}
+        inst = inst if isinstance(inst, dict) else {}
+        try:
+            v = int(inst.get("maxInstancesPerUser") or 0)
+        except Exception:
+            v = 0
+        return max(v, 0)
+
+
     def get_or_create_encryption_key(self) -> bytes:
         keyfile = Path(settings.ENCRYPTION_KEY_FILE)
         keyfile.parent.mkdir(parents=True, exist_ok=True)

@@ -41,7 +41,6 @@ def setup_logging() -> None:
     """
     Логируем в отдельный файл на инстанс, либо в общий logs/worker.log.
     """
-    # Пытаемся использовать instance_id для имени файла
     instance_id = (
         getattr(settings, "WORKER_INSTANCE_ID", None)
         or os.getenv("WORKER_INSTANCE_ID", "unknown")
@@ -53,10 +52,8 @@ def setup_logging() -> None:
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
     logging.basicConfig(
-        level=getattr(
-            logging, getattr(settings, "LOG_LEVEL", "INFO").upper(), logging.INFO
-        ),
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        level=getattr(logging, getattr(settings, "LOG_LEVEL", "INFO").upper(), logging.INFO),
+        format="%(asctime)s [pid=%(process)d] - %(name)s - %(levelname)s - %(message)s",
         handlers=[
             logging.FileHandler(log_path, encoding="utf-8"),
             logging.StreamHandler(),
@@ -77,6 +74,39 @@ class AdminStates(StatesGroup):
     wait_blacklist_search = State()
 
 
+class PlatformInstanceDefaultsCache:
+    def __init__(self, db: MasterDatabase, ttl_seconds: int = 15):
+        self.db = db
+        self.ttl_seconds = ttl_seconds
+        self._cached_at: datetime | None = None
+        self._cached_value: tuple[int, int] | None = None
+
+    async def get(self) -> tuple[int, int]:
+        now = datetime.now(timezone.utc)
+
+        if self._cached_at and self._cached_value:
+            age = (now - self._cached_at).total_seconds()
+            if age < self.ttl_seconds:
+                return self._cached_value
+
+        # ВАЖНО: тут используй реальный метод твоей MasterDatabase.
+        # В мастере у тебя встречаются getplatformsetting(...) и get_platform_setting(...),
+        # нужно привести к одному правильному имени.
+        try:
+            data = await self.db.get_platform_setting("miniapp_public", default={})
+        except AttributeError:
+            data = await self.db.getplatformsetting("miniapp_public", default={})
+
+        instance_defaults = (data or {}).get("instanceDefaults") or {}
+
+        antiflood = int(instance_defaults.get("antiflood_limit_per_min") or 0)
+        max_file_mb = int(instance_defaults.get("max_file_mb") or 10)
+
+        self._cached_at = now
+        self._cached_value = (antiflood, max_file_mb)
+        return self._cached_value
+
+
 class GraceHubWorker:
     """
     Отдельный воркер для одного инстанса бота.
@@ -92,12 +122,10 @@ class GraceHubWorker:
         "spam": "⬛️",
     }
 
-    # допустимые статусы тикетов
     ALLOWED_TICKET_STATUSES = {"new", "inprogress", "answered", "escalated", "closed", "spam"}
 
-    # верхние лимиты
-    MAX_USER_TEXT = 4096     # сообщения в Telegram
-    MAX_DB_TEXT = 2000       # тексты, которые пишем в БД
+    MAX_USER_TEXT = 4096
+    MAX_DB_TEXT = 2000
 
     @staticmethod
     def _safe_trim(text: str, limit: int) -> str:
@@ -121,16 +149,33 @@ class GraceHubWorker:
         self.lang_code = "ru"
         self.texts = LANGS[self.lang_code]
 
-        self.max_file_mb: int = getattr(settings, "WORKER_MAX_FILE_MB", 50)
+        # --- глобальные дефолты из БД (SuperAdmin -> miniapp_public.instanceDefaults) ---
+        self._platform_defaults = PlatformInstanceDefaultsCache(self.db, ttl_seconds=15)
+
+        # локальные значения, которые обновляются из БД (через _refresh_limits_from_db)
+        self.antiflood_limit_per_min: int = 0
+        self.max_file_mb: int = 10
         self.max_file_bytes: int = self.max_file_mb * 1024 * 1024
+
         # Храним скользящее окно значений в минуту. Для антифлуда
         self.user_msg_timestamps: dict[int, deque[datetime]] = {}
         self.user_session_messages: Dict[int, int] = {}
-        # хендлеры можно регать сразу, БД для этого не нужна
+
         self.register_handlers()
 
-    def _is_user_flooding(self, userid: int) -> bool:
-        limit = getattr(settings, "ANTIFLOOD_MAX_USER_MESSAGES_PER_MINUTE", 0)
+    async def _refresh_limits_from_db(self) -> None:
+        antiflood, max_file_mb = await self._platform_defaults.get()
+
+        self.antiflood_limit_per_min = antiflood
+
+        if max_file_mb != self.max_file_mb:
+            self.max_file_mb = max_file_mb
+            self.max_file_bytes = self.max_file_mb * 1024 * 1024
+
+    async def _is_user_flooding(self, userid: int) -> bool:
+        await self._refresh_limits_from_db()
+
+        limit = self.antiflood_limit_per_min
         if not limit or limit <= 0:
             return False
 
@@ -142,11 +187,9 @@ class GraceHubWorker:
             dq = deque()
             self.user_msg_timestamps[userid] = dq
 
-        # выкидываем старые записи
         while dq and now - dq[0] > window:
             dq.popleft()
 
-        # добавляем текущую
         dq.append(now)
 
         return len(dq) > limit
@@ -158,13 +201,13 @@ class GraceHubWorker:
         self.lang_code = code
         self.texts = LANGS[code]
 
-
     async def _check_file_size(self, file_id: str) -> bool:
+        # гарантируем, что лимит актуальный (с TTL)
+        await self._refresh_limits_from_db()
+
         tg_file = await self.bot.get_file(file_id)
         size = getattr(tg_file, "file_size", None) or 0
-        if size > self.max_file_bytes:
-            return False
-        return True
+        return size <= self.max_file_bytes
 
     async def global_error_handler(self, exception: Exception) -> bool:
         """
@@ -2781,7 +2824,7 @@ class GraceHubWorker:
             return
 
         # Антифлуд: сообщения в минуту от пользователя
-        if self._is_user_flooding(user_id):
+        if await self._is_user_flooding(user_id):
             await self._send_safe_message(
                 chat_id=message.chat.id,
                 text=self.texts.too_many_messages,

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 
 interface Instance {
   instanceid: string;
@@ -10,10 +10,32 @@ interface Instance {
 interface InstancesListProps {
   instances: Instance[];
   onSelect: (inst: Instance) => void;
+
+  // Открыть UI добавления бота (модалка/экран) — как у тебя было
   onAddBotClick?: () => void;
-  onOpenSuperAdmin?: () => void; // ✅ NEW
+
+  onOpenSuperAdmin?: () => void;
+
   // заглушка под удаление; App может просто логгировать или фильтровать список
   onDeleteInstance?: (inst: Instance) => Promise<void> | void;
+
+  /**
+   * NEW: если App поймал ошибку лимита (например из createInstanceByToken),
+   * он может передать сюда текст, чтобы InstancesList показал красивую модалку.
+   * Пример: "⚠️ Достигнут лимит подключаемых ботов: 1/1"
+   */
+  limitMessage?: string | null;
+
+  /**
+   * NEW: коллбек "На главную" из модалки лимита.
+   * Обычно это: закрыть add-bot модалку + показать список инстансов.
+   */
+  onGoHome?: () => void;
+
+  /**
+   * NEW: уведомить App, что модалка лимита закрыта (чтобы App сбросил limitMessage).
+   */
+  onDismissLimitMessage?: () => void;
 }
 
 const InstancesList: React.FC<InstancesListProps> = ({
@@ -22,34 +44,37 @@ const InstancesList: React.FC<InstancesListProps> = ({
   onAddBotClick,
   onOpenSuperAdmin,
   onDeleteInstance,
+
+  limitMessage,
+  onGoHome,
+  onDismissLimitMessage,
 }) => {
   console.log('[InstancesList] instances prop:', instances);
 
   const [instanceToDelete, setInstanceToDelete] = useState<Instance | null>(null);
   const [deleting, setDeleting] = useState(false);
 
-  if (!instances || instances.length === 0) {
-    return (
-      <div className="app-container" style={{ justifyContent: 'center', alignItems: 'center' }}>
-        <div className="text-center">
-          <div style={{ fontSize: '32px', marginBottom: '12px' }}>📂</div>
-          <h2>Нет инстансов для выбора</h2>
-          <p style={{ color: 'var(--tg-color-text-secondary)', fontSize: '13px' }}>
-            Здесь будут боты, к которым у вас есть доступ.
-          </p>
+  // локальное состояние модалки лимита (чтобы можно было анимировать/закрывать по клику)
+  const [limitModalOpen, setLimitModalOpen] = useState(false);
 
-          {/* ✅ NEW: кнопка SuperAdmin даже когда нет инстансов */}
-          {onOpenSuperAdmin && (
-            <div style={{ marginTop: 12 }}>
-              <button type="button" onClick={onOpenSuperAdmin} className="btn btn--secondary">
-                🛡 Admin
-              </button>
-            </div>
-          )}
-        </div>
-      </div>
-    );
-  }
+  const normalizedLimitText = useMemo(() => {
+    const t = (limitMessage ?? '').trim();
+    return t.length ? t : '';
+  }, [limitMessage]);
+
+  useEffect(() => {
+    setLimitModalOpen(!!normalizedLimitText);
+  }, [normalizedLimitText]);
+
+  const closeLimitModal = () => {
+    setLimitModalOpen(false);
+    onDismissLimitMessage?.();
+  };
+
+  const goHomeFromLimitModal = () => {
+    closeLimitModal();
+    onGoHome?.();
+  };
 
   const handleConfirmDelete = async () => {
     if (!instanceToDelete || !onDeleteInstance) {
@@ -64,6 +89,67 @@ const InstancesList: React.FC<InstancesListProps> = ({
       setInstanceToDelete(null);
     }
   };
+
+  const addBotDisabled = deleting || limitModalOpen;
+
+  if (!instances || instances.length === 0) {
+    return (
+      <div className="app-container" style={{ justifyContent: 'center', alignItems: 'center' }}>
+        <div className="text-center">
+          <div style={{ fontSize: '32px', marginBottom: '12px' }}>📂</div>
+          <h2>Нет инстансов для выбора</h2>
+          <p style={{ color: 'var(--tg-color-text-secondary)', fontSize: '13px' }}>
+            Здесь будут боты, к которым у вас есть доступ.
+          </p>
+
+          {/* Правая группа кнопок даже когда нет инстансов */}
+          <div style={{ marginTop: 12, display: 'flex', gap: 8, justifyContent: 'center' }}>
+            {onOpenSuperAdmin && (
+              <button type="button" onClick={onOpenSuperAdmin} className="btn btn--secondary">
+                🛡 Admin
+              </button>
+            )}
+
+            {onAddBotClick && (
+              <button
+                type="button"
+                onClick={onAddBotClick}
+                className="btn btn--primary"
+                disabled={addBotDisabled}
+                title={addBotDisabled ? 'Сейчас действие недоступно' : 'Добавить бота'}
+              >
+                ➕ Бот
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Модалка лимита (показывается даже если список пустой) */}
+        {limitModalOpen && normalizedLimitText && (
+          <div className="modal-backdrop" onClick={closeLimitModal}>
+            <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 360 }}>
+              <div className="modal-header">
+                <h2 className="modal-title">Ограничение</h2>
+                <button className="modal-close" onClick={closeLimitModal} type="button" aria-label="Close">
+                  ✕
+                </button>
+              </div>
+
+              <div className="modal-body">
+                <p style={{ marginBottom: 12 }}>{normalizedLimitText}</p>
+
+                <div className="modal-footer">
+                  <button type="button" className="btn btn--primary" onClick={goHomeFromLimitModal}>
+                    На главную
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div style={{ padding: '12px' }}>
@@ -89,7 +175,7 @@ const InstancesList: React.FC<InstancesListProps> = ({
           </p>
         </div>
 
-        {/* ✅ NEW: правая группа кнопок */}
+        {/* правая группа кнопок */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           {onOpenSuperAdmin && (
             <button
@@ -116,6 +202,7 @@ const InstancesList: React.FC<InstancesListProps> = ({
               type="button"
               onClick={onAddBotClick}
               className="btn btn--primary"
+              disabled={addBotDisabled}
               style={{
                 padding: '4px 10px',
                 fontSize: 14,
@@ -124,7 +211,9 @@ const InstancesList: React.FC<InstancesListProps> = ({
                 alignItems: 'center',
                 gap: 4,
                 whiteSpace: 'nowrap',
+                opacity: addBotDisabled ? 0.7 : 1,
               }}
+              title={addBotDisabled ? 'Сейчас действие недоступно' : 'Добавить бота'}
             >
               <span>➕</span>
               <span>Бот</span>
@@ -139,7 +228,6 @@ const InstancesList: React.FC<InstancesListProps> = ({
           className="card"
           style={{ cursor: 'pointer', transition: 'all 200ms', position: 'relative' }}
           onClick={() => onSelect(inst)}
-          onTouchEnd={() => onSelect(inst)}
         >
           <div className="list-item">
             <div className="list-item-info">
@@ -167,6 +255,7 @@ const InstancesList: React.FC<InstancesListProps> = ({
                   title="Удалить бота"
                   onClick={() => setInstanceToDelete(inst)}
                   className="btn btn--outline btn--sm"
+                  disabled={deleting}
                   style={{
                     padding: '4px 8px',
                     borderRadius: 999,
@@ -174,6 +263,7 @@ const InstancesList: React.FC<InstancesListProps> = ({
                     alignItems: 'center',
                     justifyContent: 'center',
                     fontSize: 14,
+                    opacity: deleting ? 0.7 : 1,
                   }}
                 >
                   🗑
@@ -230,6 +320,30 @@ const InstancesList: React.FC<InstancesListProps> = ({
                   disabled={deleting}
                 >
                   {deleting ? 'Удаляем…' : 'Удалить'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Модалка лимита поверх списка */}
+      {limitModalOpen && normalizedLimitText && (
+        <div className="modal-backdrop" onClick={closeLimitModal}>
+          <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 360 }}>
+            <div className="modal-header">
+              <h2 className="modal-title">Ограничение</h2>
+              <button className="modal-close" onClick={closeLimitModal} type="button" aria-label="Close">
+                ✕
+              </button>
+            </div>
+
+            <div className="modal-body">
+              <p style={{ marginBottom: 12 }}>{normalizedLimitText}</p>
+
+              <div className="modal-footer">
+                <button type="button" className="btn btn--primary" onClick={goHomeFromLimitModal}>
+                  На главную
                 </button>
               </div>
             </div>

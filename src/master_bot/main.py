@@ -33,7 +33,8 @@ LOG_DIR = BASE_DIR / "logs"
 LOG_DIR.mkdir(exist_ok=True, parents=True)
 LOG_FILE = LOG_DIR / "masterbot.log"
 
-formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+formatter = logging.Formatter("%(asctime)s [pid=%(process)d] - %(name)s - %(levelname)s - %(message)s")
+
 fh = logging.FileHandler(LOG_FILE, encoding="utf-8")
 fh.setLevel(logging.INFO)
 fh.setFormatter(formatter)
@@ -333,10 +334,10 @@ class MasterBot:
         worker_path = Path(__file__).resolve().parent.parent / "worker" / "main.py"
 
         proc = subprocess.Popen(
-            [sys.executable, str(worker_path)],
-            env=env,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.STDOUT,
+        [sys.executable, str(worker_path)],
+        env=env,
+        stdout=None,   # или subprocess.PIPE, но тогда надо читать
+        stderr=None,
         )
         self.worker_procs[instance_id] = proc
         logger.info(f"Spawned worker process for instance {instance_id} (pid={proc.pid})")
@@ -492,25 +493,32 @@ class MasterBot:
         Возвращает BotInstance.
         """
 
-        # 1. Проверка формата токена (как в process_bot_token)
+        # 0) Лимит подключаемых ботов (0 = без лимита)
+        limit = await self.db.get_max_instances_per_user()
+        if limit > 0:
+            current = await self.db.count_instances_for_user(owner_user_id)
+            if current >= limit:
+                raise ValueError(f"Достигнут лимит подключаемых ботов: {current}/{limit}")
+
+        # 1) Проверка формата токена (как в process_bot_token)
         if not self.validate_token_format(token):
             raise ValueError("Неверный формат токена")
 
-        # 2. Проверка токена через getMe
+        # 2) Проверка токена через getMe
         test_bot = Bot(token=token)
         try:
             me = await test_bot.get_me()
         finally:
             await test_bot.session.close()
 
-        # 3. Проверка, что такого бота ещё нет
+        # 3) Проверка, что такого бота ещё нет
         existing = await self.db.get_instance_by_token_hash(
             self.security.hash_token(token)
         )
         if existing:
             raise ValueError("Этот бот уже добавлен в систему")
 
-        # 4. Создание инстанса + запуск воркера (ровно как в create_bot_instance)
+        # 4) Создание инстанса + запуск воркера (ровно как в create_bot_instance)
         instance = await self.create_bot_instance(
             user_id=owner_user_id,
             token=token,
@@ -519,6 +527,7 @@ class MasterBot:
         )
 
         return instance
+
 
     async def handle_billing_main_menu(self, callback: CallbackQuery):
         user_id = callback.from_user.id

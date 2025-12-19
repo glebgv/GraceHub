@@ -542,7 +542,7 @@ class MiniAppDB:
 
     async def get_worker_setting(self, instanceid: str, key: str) -> Optional[str]:
         row = await self.db.fetchone(
-            "SELECT value FROM worker_settings WHERE instanc_eid = %s AND key = %s",
+            "SELECT value FROM worker_settings WHERE instance_id = %s AND key = %s",
             (instanceid, key),
         )
         return row["value"] if row else None
@@ -550,7 +550,7 @@ class MiniAppDB:
     async def set_worker_setting(self, instanceid: str, key: str, value: str) -> None:
         await self.db.execute(
             """
-            INSERT INTO worker_settings (instanc_eid, key, value)
+            INSERT INTO worker_settings (instance_id, key, value)
             VALUES (%s, %s, %s)
             ON CONFLICT (instance_id, key) DO UPDATE
               SET value = EXCLUDED.value

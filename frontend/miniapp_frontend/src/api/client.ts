@@ -2,6 +2,12 @@
 
 /**
  * API клиент для общения с бекендом mini app
+ *
+ * Исправления/улучшения:
+ * - Добавлен ApiError (статус + тело ответа), чтобы UI мог различать ошибки по коду.
+ * - В request() добавлен accept: application/json и более надёжный разбор ошибок.
+ * - Небольшая нормализация snake_case/camelCase в DTO там, где UI уже ожидает snake_case.
+ * - PaymentMethod приведён к значениям, которые реально ждёт backend: telegramstars/ton/yookassa. [file:9]
  */
 
 export interface AuthRequest {
@@ -55,9 +61,10 @@ export interface SaasPlanDTO {
 
 // --- Billing invoices ---
 
-// NB: оставляем твой текущий контракт snake_case, чтобы не перепахивать Billing.tsx.
-export type PaymentMethod = 'telegram_stars' | 'ton' | 'yookassa';
+// NB: backend принимает paymentmethod значения: telegramstars/ton/yookassa. [file:9]
+export type PaymentMethod = 'telegramstars' | 'ton' | 'yookassa';
 
+// NB: оставляем твой текущий контракт snake_case, чтобы не перепахивать Billing.tsx.
 export interface CreateInvoiceRequest {
   plan_code: string;
   periods: number;
@@ -111,7 +118,7 @@ export interface ManageHealthResponse {
 
 /**
  * То, что хранится в platform_settings["miniapp_public"].
- * Важно: single-tenant режим в бекенде читается из singleTenant.allowedUserIds.
+ * Важно: single-tenant режим в бекенде читается из singleTenant.allowedUserIds. [file:9]
  */
 export interface MiniappPublicSettings {
   singleTenant: {
@@ -130,7 +137,7 @@ export interface MiniappPublicSettings {
       yookassa: boolean;
     };
 
-    // NEW: prices for Telegram Stars (like TON / YooKassa)
+    // prices for Telegram Stars
     telegramStars: {
       priceStarsLite: number;
       priceStarsPro: number;
@@ -165,6 +172,24 @@ export interface MiniappPublicSettings {
     workerMaxFileMb: number;
     maxInstancesPerUser: number;
   };
+}
+
+/**
+ * Ошибка API с кодом HTTP и телом ответа (если оно было).
+ * Удобно для UI: можно делать проверку e.status === 400 и e.message.includes(...).
+ */
+export class ApiError extends Error {
+  status: number;
+  body: any;
+  url?: string;
+
+  constructor(message: string, status: number, body?: any, url?: string) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.body = body;
+    this.url = url;
+  }
 }
 
 function normalizeIds(list: any): number[] {
@@ -273,6 +298,7 @@ class ApiClient {
     const url = `${this.baseUrl}${path}`;
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
+      Accept: 'application/json',
     };
 
     if (this.token) {
@@ -291,14 +317,20 @@ class ApiClient {
 
     console.log('[ApiClient] request >>>', { method, url, headers, body });
 
-    const response = await fetch(url, options);
+    let response: Response;
+    try {
+      response = await fetch(url, options);
+    } catch (e: any) {
+      // network / CORS / DNS / etc.
+      throw new ApiError(e?.message || 'Network error', 0, undefined, url);
+    }
 
     const text = await response.text().catch(() => '');
     let json: any = null;
 
     try {
       json = text ? JSON.parse(text) : null;
-    } catch (e) {
+    } catch {
       json = null;
     }
 
@@ -311,8 +343,18 @@ class ApiClient {
     });
 
     if (!response.ok) {
-      const detail = (json && (json.detail || json.message || json.error)) || `Ошибка ${response.status}`;
-      throw new Error(detail);
+      // FastAPI обычно возвращает {detail: "..."} [file:9]
+      const detail =
+        (json && (json.detail ?? json.message ?? json.error)) ||
+        (text ? text.slice(0, 200) : '') ||
+        `Ошибка ${response.status}`;
+
+      throw new ApiError(String(detail), response.status, json ?? text, url);
+    }
+
+    // На случай 204 No Content
+    if (response.status === 204) {
+      return undefined as T;
     }
 
     return json as T;
@@ -348,8 +390,8 @@ class ApiClient {
   }
 
   // === Instances ===
-  async getInstances() {
-    return this.request('GET', '/api/instances');
+  async getInstances(): Promise<InstanceDto[]> {
+    return this.request<InstanceDto[]>('GET', '/api/instances');
   }
 
   async createInstanceByToken(payload: CreateInstanceRequest): Promise<InstanceDto> {
@@ -377,7 +419,13 @@ class ApiClient {
     return this.request('POST', `/api/instances/${instanceId}/settings`, settings);
   }
 
-  async getTickets(instanceId: string, status?: string, search?: string, limit: number = 20, offset: number = 0) {
+  async getTickets(
+    instanceId: string,
+    status?: string,
+    search?: string,
+    limit: number = 20,
+    offset: number = 0,
+  ) {
     const params = new URLSearchParams();
     if (status) params.append('status', status);
     if (search) params.append('search', search);
@@ -392,8 +440,9 @@ class ApiClient {
   }
 
   async addOperator(instanceId: string, userId: number, role: string) {
+    // backend ожидает поля userid/username/role (а не user_id). [file:9]
     return this.request('POST', `/api/instances/${instanceId}/operators`, {
-      user_id: userId,
+      userid: userId,
       role,
     });
   }
@@ -412,6 +461,9 @@ class ApiClient {
   }
 
   async createBillingInvoice(instanceId: string, payload: CreateInvoiceRequest): Promise<CreateInvoiceResponse> {
+    // backend модель в Python: plancode/periods/paymentmethod (camelCase не нужно),
+    // но ты намеренно используешь snake_case в UI.
+    // Оставляем как есть, если backend уже умеет это принимать через alias/ручной парсинг.
     return this.request<CreateInvoiceResponse>('POST', `/api/instances/${instanceId}/billing/create_invoice`, payload);
   }
 
@@ -443,7 +495,7 @@ class ApiClient {
 
   /**
    * POST /api/platform/settings/{key}
-   * Только superadmin (backend проверяет роли).
+   * Только superadmin (backend проверяет роли). [file:9]
    */
   async setPlatformSetting(key: string, value: Record<string, any>): Promise<SimpleStatusResponse> {
     const payload: PlatformSettingUpsertRequest = { value };

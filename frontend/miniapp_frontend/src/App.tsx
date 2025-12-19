@@ -8,7 +8,7 @@ import Operators from './pages/Operators';
 import Settings from './pages/Settings';
 import Billing from './pages/Billing';
 import SuperAdmin from './pages/SuperAdmin';
-import { apiClient } from './api/client';
+import { apiClient, ApiError } from './api/client';
 import FirstLaunch from './pages/FirstLaunch';
 import { useTranslation } from 'react-i18next';
 import i18n from './i18n';
@@ -86,6 +86,9 @@ const App: React.FC<AppProps> = ({
   // NEW: platform settings (platform_settings["miniapp_public"])
   const [platformSettings, setPlatformSettings] = useState<PlatformSettings>({});
   const [platformSettingsLoaded, setPlatformSettingsLoaded] = useState(false);
+
+  // NEW: отдельное состояние под "лимит инстансов", чтобы не уводить в глобальный error-screen
+  const [limitMessage, setLimitMessage] = useState<string | null>(null);
 
   const isSuperadmin = useMemo(() => {
     const roles = user?.roles || [];
@@ -208,17 +211,14 @@ const App: React.FC<AppProps> = ({
         });
 
         const userInstancesRaw = authResponse.user.instances || [];
-        const normalizedList: Instance[] = userInstancesRaw.map(
-          (src: any): Instance => ({
-            instanceid: src.instanceid || src.instance_id,
-            botusername: src.botusername || src.bot_username || '',
-            botname: src.botname || src.bot_name || '',
-            role: src.role || 'owner',
-            openchatusername: src.openchatusername || src.openchat_username || null,
-            generalpanelchatid:
-              src.generalpanelchatid || src.general_panel_chat_id || null,
-          }),
-        );
+        const normalizedList: Instance[] = userInstancesRaw.map((src: any): Instance => ({
+          instanceid: src.instanceid || src.instance_id,
+          botusername: src.botusername || src.bot_username || '',
+          botname: src.botname || src.bot_name || '',
+          role: src.role || 'owner',
+          openchatusername: src.openchatusername || src.openchat_username || null,
+          generalpanelchatid: src.generalpanelchatid || src.general_panel_chat_id || null,
+        }));
 
         setInstances(normalizedList);
 
@@ -313,10 +313,8 @@ const App: React.FC<AppProps> = ({
         }
 
         const openchat = (s as any).openchat || {};
-        const id =
-          openchat.general_panel_chat_id ?? (s as any).generalpanelchatid ?? null;
-        const username =
-          openchat.openchat_username ?? (s as any).openchatusername ?? null;
+        const id = openchat.general_panel_chat_id ?? (s as any).generalpanelchatid ?? null;
+        const username = openchat.openchat_username ?? (s as any).openchatusername ?? null;
 
         console.log('[App] settings for header:', { openchat, id, username, lang });
 
@@ -362,6 +360,7 @@ const App: React.FC<AppProps> = ({
     try {
       setLoading(true);
       setError(null);
+      setLimitMessage(null);
 
       console.log('[App] createInstanceByToken, preview:', token.slice(0, 10));
 
@@ -388,13 +387,45 @@ const App: React.FC<AppProps> = ({
       if (!normalized.generalpanelchatid) {
         setShowBindHelpModal(true);
       }
+
+      // закрываем модалку добавления на успех
+      setShowAddModal(false);
     } catch (err: any) {
       console.error('[App] createInstanceByToken error', err);
+
       const fallback = t('firstLaunch.create_error_fallback');
+
+      // если это ApiError со статусом 400/403 — показываем как лимит/ограничение (не уводим на error-screen)
+      if (err instanceof ApiError) {
+        const msg = typeof err?.message === 'string' ? err.message.trim() : '';
+        const text = msg.length ? msg : fallback;
+
+        // эвристика: любые "лимит/limit/maximum/max instances" считаем лимитным сообщением
+        const lower = text.toLowerCase();
+        const looksLikeLimit =
+          lower.includes('лимит') ||
+          lower.includes('limit') ||
+          lower.includes('maximum') ||
+          lower.includes('max') ||
+          lower.includes('instances');
+
+        if (err.status === 400 || err.status === 403) {
+          if (looksLikeLimit) {
+            setLimitMessage(text);
+            // важное: add-modal можно закрыть, чтобы пользователь не “застрял” в форме
+            setShowAddModal(false);
+            // возвращаем на список инстансов
+            setCurrentPage('instances');
+            return;
+          }
+        }
+      }
+
       const message =
         typeof err?.message === 'string' && err.message.trim().length > 0
           ? err.message
           : fallback;
+
       setError(message);
     } finally {
       setLoading(false);
@@ -461,15 +492,14 @@ const App: React.FC<AppProps> = ({
     );
   }
 
+  // ВАЖНО: error-screen оставляем только для "фатальных" ошибок.
+  // Лимит/ограничение показываем поверх InstancesList, не ломая UX.
   if (error) {
     return (
       <div className="app-container error">
         <div className="card">
           <p>⚠️ {error}</p>
-          <p
-            className="text-center"
-            style={{ fontSize: 12, marginTop: 10, opacity: 0.7 }}
-          >
+          <p className="text-center" style={{ fontSize: 12, marginTop: 10, opacity: 0.7 }}>
             {t('app.open_from_telegram_hint')}
           </p>
         </div>
@@ -501,7 +531,7 @@ const App: React.FC<AppProps> = ({
   }
 
   const showInstancesPage = currentPage === 'instances';
-  const showSuperAdminPage = currentPage === 'superadmin'; // NEW
+  const showSuperAdminPage = currentPage === 'superadmin';
 
   // For header labels (avoid crashing if selectedInstance is null)
   const hasChat = !!chatInfo?.id;
@@ -511,9 +541,7 @@ const App: React.FC<AppProps> = ({
       ? billing.planName || billing.planCode
       : '—';
 
-  const displayPlanLabel = billing?.unlimited
-    ? t('app.tariff_private_mode')
-    : planLabel;
+  const displayPlanLabel = billing?.unlimited ? t('app.tariff_private_mode') : planLabel;
 
   // NEW: hide global header/nav on instances + superadmin
   const showGlobalHeader = !showInstancesPage && !showSuperAdminPage && !!selectedInstance;
@@ -535,8 +563,7 @@ const App: React.FC<AppProps> = ({
             {t('app.maintenance_title', 'Технические работы')}
           </div>
           <div style={{ fontSize: 13, opacity: 0.9 }}>
-            {maintenance.message ||
-              t('app.maintenance_message', 'Сервис временно недоступен.')}
+            {maintenance.message || t('app.maintenance_message', 'Сервис временно недоступен.')}
           </div>
         </div>
       )}
@@ -562,16 +589,12 @@ const App: React.FC<AppProps> = ({
                     <div className="tariff-row">
                       <span className="tariff-label">До:</span>
                       <span className="tariff-value">
-                        {billing
-                          ? new Date(billing.periodEnd).toLocaleDateString()
-                          : '—'}
+                        {billing ? new Date(billing.periodEnd).toLocaleDateString() : '—'}
                       </span>
                     </div>
                     <div className="tariff-row">
                       <span className="tariff-label">Осталось дней:</span>
-                      <span className="tariff-value">
-                        {billing ? billing.daysLeft : '—'}
-                      </span>
+                      <span className="tariff-value">{billing ? billing.daysLeft : '—'}</span>
                     </div>
                   </>
                 )}
@@ -667,11 +690,19 @@ const App: React.FC<AppProps> = ({
               setSelectedInstance(inst);
               setCurrentPage('dashboard');
             }}
-            onAddBotClick={() => setShowAddModal(true)}
+            onAddBotClick={() => {
+              setLimitMessage(null);
+              setShowAddModal(true);
+            }}
             onDeleteInstance={handleDeleteInstance}
-            onOpenSuperAdmin={
-              isSuperadmin ? () => setCurrentPage('superadmin') : undefined
-            }
+            onOpenSuperAdmin={isSuperadmin ? () => setCurrentPage('superadmin') : undefined}
+            // NEW: лимитная модалка поверх списка
+            limitMessage={limitMessage}
+            onDismissLimitMessage={() => setLimitMessage(null)}
+            onGoHome={() => {
+              setShowAddModal(false);
+              setCurrentPage('instances');
+            }}
           />
         )}
 
@@ -682,16 +713,12 @@ const App: React.FC<AppProps> = ({
         {currentPage === 'tickets' && selectedInstance && (
           <Tickets instanceId={selectedInstance.instanceid} />
         )}
-        {currentPage === 'operators' &&
-          selectedInstance &&
-          selectedInstance.role === 'owner' && (
-            <Operators instanceId={selectedInstance.instanceid} />
-          )}
-        {currentPage === 'settings' &&
-          selectedInstance &&
-          selectedInstance.role === 'owner' && (
-            <Settings instanceId={selectedInstance.instanceid} />
-          )}
+        {currentPage === 'operators' && selectedInstance && selectedInstance.role === 'owner' && (
+          <Operators instanceId={selectedInstance.instanceid} />
+        )}
+        {currentPage === 'settings' && selectedInstance && selectedInstance.role === 'owner' && (
+          <Settings instanceId={selectedInstance.instanceid} />
+        )}
         {currentPage === 'billing' && selectedInstance && (
           <Billing instanceId={selectedInstance.instanceid} />
         )}
