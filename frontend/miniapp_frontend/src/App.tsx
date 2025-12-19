@@ -65,7 +65,7 @@ const App: React.FC<AppProps> = ({
   const [instances, setInstances] = useState<Instance[]>([]);
   const [selectedInstance, setSelectedInstance] = useState<Instance | null>(null);
 
-  // ✅ Start app from InstancesList screen
+  // ✅ Always start from InstancesList screen
   const [currentPage, setCurrentPage] = useState<Page>('instances');
 
   const [loading, setLoading] = useState(true);
@@ -233,26 +233,26 @@ const App: React.FC<AppProps> = ({
           return;
         }
 
+        // Можно оставить авто-выбор (для последующих экранов).
+        // Но первый экран всё равно будет instances.
         if (resolvedInstance) {
           setSelectedInstance(resolvedInstance);
         } else {
           setSelectedInstance((prev) => {
-            if (prev) {
-              return prev;
-            }
+            if (prev) return prev;
+
             const defId = authResponse.default_instance_id;
             if (defId) {
               const fromList = normalizedList.find((i) => i.instanceid === defId);
-              if (fromList) {
-                return fromList;
-              }
+              if (fromList) return fromList;
             }
+
             return normalizedList[0] ?? null;
           });
         }
 
-        // ✅ If instance is auto-selected, switch to dashboard
-        setCurrentPage('dashboard');
+        // ✅ Always land on InstancesList after init
+        setCurrentPage('instances');
 
         setLoading(false);
         console.log('[App.initApp] done (resolvedInstance) =', resolvedInstance);
@@ -286,7 +286,6 @@ const App: React.FC<AppProps> = ({
 
       try {
         const res = await apiClient.getPlatformSettings();
-        // backend: { key: "miniapp_public", value: {...} }
         setPlatformSettings(res?.value || {});
       } catch (e) {
         console.warn('[App] getPlatformSettings failed (ignored)', e);
@@ -321,10 +320,7 @@ const App: React.FC<AppProps> = ({
 
         console.log('[App] settings for header:', { openchat, id, username, lang });
 
-        setChatInfo({
-          id,
-          username,
-        });
+        setChatInfo({ id, username });
       } catch (e) {
         console.warn('[App] getSettings for header/lang failed', e);
         setChatInfo(null);
@@ -385,6 +381,8 @@ const App: React.FC<AppProps> = ({
       setInstances((prev) => [...prev, normalized]);
       setSelectedInstance(normalized);
       setIsFirstLaunch(false);
+
+      // после добавления бота логично открыть дашборд именно этого бота
       setCurrentPage('dashboard');
 
       if (!normalized.generalpanelchatid) {
@@ -417,7 +415,7 @@ const App: React.FC<AppProps> = ({
         if (selectedInstance?.instanceid === inst.instanceid) {
           if (filtered.length > 0) {
             setSelectedInstance(filtered[0]);
-            setCurrentPage('settings');
+            setCurrentPage('instances'); // после удаления возвращаемся к списку
           } else {
             setSelectedInstance(null);
             setIsFirstLaunch(true);
@@ -502,56 +500,9 @@ const App: React.FC<AppProps> = ({
     );
   }
 
-  // No selected instance branch
-  if (!selectedInstance) {
-    if (currentPage === 'superadmin' && isSuperadmin) {
-      return (
-        <div className="app-container">
-          <SuperAdmin
-            onBack={() => {
-              // ✅ back from superadmin when no instances
-              if (instances.length === 0) {
-                setCurrentPage('instances');
-                setIsFirstLaunch(true);
-                return;
-              }
-              setCurrentPage('instances');
-            }}
-          />
-          {footerBranding}
-        </div>
-      );
-    }
+  const showInstancesPage = currentPage === 'instances';
 
-    return (
-      <div className="app-container">
-        <InstancesList
-          instances={instances}
-          onSelect={(inst) => {
-            setSelectedInstance(inst);
-            setCurrentPage('dashboard');
-          }}
-          onAddBotClick={() => setShowAddModal(true)}
-          onDeleteInstance={handleDeleteInstance}
-          onOpenSuperAdmin={
-            isSuperadmin
-              ? () => {
-                  setCurrentPage('superadmin');
-                }
-              : undefined
-          }
-        />
-        {footerBranding}
-        {showAddModal && (
-          <AddBotModal
-            onClose={() => setShowAddModal(false)}
-            onSubmitToken={handleCreateInstanceByToken}
-          />
-        )}
-      </div>
-    );
-  }
-
+  // For header labels (avoid crashing if selectedInstance is null)
   const hasChat = !!chatInfo?.id;
 
   const planLabel =
@@ -565,6 +516,7 @@ const App: React.FC<AppProps> = ({
 
   return (
     <div className="app-container">
+      {/* Maintenance banner can stay global */}
       {maintenance.enabled && (
         <div
           className="card"
@@ -584,134 +536,165 @@ const App: React.FC<AppProps> = ({
         </div>
       )}
 
-      <header className="app-header">
-        <div className="header-content">
-          <div className="header-right">
-            <div className="tariff-card">
-              <div className="tariff-row">
-                <span className="tariff-label">{t('app.tariff_label')}:</span>
-                <span className="tariff-value">
-                  {billing
-                    ? billing.unlimited
-                      ? `${displayPlanLabel} · ∞`
-                      : displayPlanLabel
-                    : '—'}
-                </span>
+      {/* Hide header when on Instances page */}
+      {!showInstancesPage && selectedInstance && (
+        <header className="app-header">
+          <div className="header-content">
+            <div className="header-right">
+              <div className="tariff-card">
+                <div className="tariff-row">
+                  <span className="tariff-label">{t('app.tariff_label')}:</span>
+                  <span className="tariff-value">
+                    {billing
+                      ? billing.unlimited
+                        ? `${displayPlanLabel} · ∞`
+                        : displayPlanLabel
+                      : '—'}
+                  </span>
+                </div>
+                {!billing?.unlimited && (
+                  <>
+                    <div className="tariff-row">
+                      <span className="tariff-label">До:</span>
+                      <span className="tariff-value">
+                        {billing
+                          ? new Date(billing.periodEnd).toLocaleDateString()
+                          : '—'}
+                      </span>
+                    </div>
+                    <div className="tariff-row">
+                      <span className="tariff-label">Осталось дней:</span>
+                      <span className="tariff-value">
+                        {billing ? billing.daysLeft : '—'}
+                      </span>
+                    </div>
+                  </>
+                )}
               </div>
-              {!billing?.unlimited && (
-                <>
-                  <div className="tariff-row">
-                    <span className="tariff-label">До:</span>
-                    <span className="tariff-value">
-                      {billing ? new Date(billing.periodEnd).toLocaleDateString() : '—'}
-                    </span>
-                  </div>
-                  <div className="tariff-row">
-                    <span className="tariff-label">Осталось дней:</span>
-                    <span className="tariff-value">{billing ? billing.daysLeft : '—'}</span>
-                  </div>
-                </>
-              )}
-            </div>
-          </div>
-
-          <div>
-            <h1>{selectedInstance.botname || t('app.default_title')}</h1>
-            <div className="instance-badge">
-              {selectedInstance.botusername ? (
-                <>
-                  <a
-                    href={`https://t.me/${selectedInstance.botusername}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="bot-username-link"
-                  >
-                    @{selectedInstance.botusername}
-                  </a>
-                  {' · '}
-                  {selectedInstance.role}
-                </>
-              ) : (
-                selectedInstance.role
-              )}
             </div>
 
-            {hasChat ? (
-              <div
-                style={{
-                  marginTop: 4,
-                  fontSize: 11,
-                  color: 'var(--tg-color-success, #16a34a)',
-                }}
-              >
-                {t('app.chat_connected', { id: chatInfo?.id })}
+            <div>
+              <h1>{selectedInstance.botname || t('app.default_title')}</h1>
+              <div className="instance-badge">
+                {selectedInstance.botusername ? (
+                  <>
+                    <a
+                      href={`https://t.me/${selectedInstance.botusername}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="bot-username-link"
+                    >
+                      @{selectedInstance.botusername}
+                    </a>
+                    {' · '}
+                    {selectedInstance.role}
+                  </>
+                ) : (
+                  selectedInstance.role
+                )}
               </div>
-            ) : (
-              <div
-                style={{
-                  marginTop: 4,
-                  fontSize: 11,
-                  color: 'var(--tg-color-error, #dc2626)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 8,
-                  flexWrap: 'wrap',
-                }}
-              >
-                {t('app.chat_not_connected')}
-                <button
-                  type="button"
-                  onClick={() => setShowBindHelpModal(true)}
+
+              {hasChat ? (
+                <div
                   style={{
-                    border: 'none',
-                    background: 'transparent',
-                    padding: 0,
-                    margin: 0,
+                    marginTop: 4,
                     fontSize: 11,
-                    textDecoration: 'underline',
-                    cursor: 'pointer',
-                    color: 'inherit',
+                    color: 'var(--tg-color-success, #16a34a)',
                   }}
                 >
-                  {t('app.chat_not_connected_more')}
-                </button>
-              </div>
-            )}
+                  {t('app.chat_connected', { id: chatInfo?.id })}
+                </div>
+              ) : (
+                <div
+                  style={{
+                    marginTop: 4,
+                    fontSize: 11,
+                    color: 'var(--tg-color-error, #dc2626)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    flexWrap: 'wrap',
+                  }}
+                >
+                  {t('app.chat_not_connected')}
+                  <button
+                    type="button"
+                    onClick={() => setShowBindHelpModal(true)}
+                    style={{
+                      border: 'none',
+                      background: 'transparent',
+                      padding: 0,
+                      margin: 0,
+                      fontSize: 11,
+                      textDecoration: 'underline',
+                      cursor: 'pointer',
+                      color: 'inherit',
+                    }}
+                  >
+                    {t('app.chat_not_connected_more')}
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
-        </div>
 
-        <button
-          className="btn-back"
-          onClick={() => {
-            if (currentPage === 'superadmin') {
+          <button
+            className="btn-back"
+            onClick={() => {
+              if (currentPage === 'superadmin') {
+                setCurrentPage('instances');
+                return;
+              }
               setCurrentPage('instances');
-            } else {
-              setSelectedInstance(null);
-              setCurrentPage('instances');
-            }
-          }}
-        >
-          ←
-        </button>
-      </header>
+            }}
+          >
+            ←
+          </button>
+        </header>
+      )}
 
       <main className="main-content">
-        {currentPage === 'dashboard' && (
+        {/* ✅ InstancesList as a real page */}
+        {currentPage === 'instances' && (
+          <InstancesList
+            instances={instances}
+            onSelect={(inst) => {
+              setSelectedInstance(inst);
+              setCurrentPage('dashboard');
+            }}
+            onAddBotClick={() => setShowAddModal(true)}
+            onDeleteInstance={handleDeleteInstance}
+            onOpenSuperAdmin={
+              isSuperadmin ? () => setCurrentPage('superadmin') : undefined
+            }
+          />
+        )}
+
+        {/* Other pages require selectedInstance */}
+        {currentPage === 'dashboard' && selectedInstance && (
           <Dashboard instanceId={selectedInstance.instanceid} />
         )}
-        {currentPage === 'tickets' && <Tickets instanceId={selectedInstance.instanceid} />}
-        {currentPage === 'operators' && selectedInstance.role === 'owner' && (
-          <Operators instanceId={selectedInstance.instanceid} />
+        {currentPage === 'tickets' && selectedInstance && (
+          <Tickets instanceId={selectedInstance.instanceid} />
         )}
-        {currentPage === 'settings' && selectedInstance.role === 'owner' && (
-          <Settings instanceId={selectedInstance.instanceid} />
+        {currentPage === 'operators' &&
+          selectedInstance &&
+          selectedInstance.role === 'owner' && (
+            <Operators instanceId={selectedInstance.instanceid} />
+          )}
+        {currentPage === 'settings' &&
+          selectedInstance &&
+          selectedInstance.role === 'owner' && (
+            <Settings instanceId={selectedInstance.instanceid} />
+          )}
+        {currentPage === 'billing' && selectedInstance && (
+          <Billing instanceId={selectedInstance.instanceid} />
         )}
-        {currentPage === 'billing' && <Billing instanceId={selectedInstance.instanceid} />}
 
         {currentPage === 'superadmin' && isSuperadmin && (
           <SuperAdmin
             onBack={() => {
-              setCurrentPage('dashboard');
+              setCurrentPage('instances');
             }}
           />
         )}
@@ -719,56 +702,60 @@ const App: React.FC<AppProps> = ({
 
       {footerBranding}
 
-      <nav className="app-nav">
-        <div className="app-nav-inner">
-          <button
-            className={`nav-button ${currentPage === 'dashboard' ? 'active' : ''}`}
-            onClick={() => setCurrentPage('dashboard')}
-          >
-            <span className="nav-icon">📊</span>
-            <span className="nav-label">{t('nav.dashboard')}</span>
-          </button>
+      {/* Hide bottom nav on Instances page */}
+      {!showInstancesPage && selectedInstance && (
+        <nav className="app-nav">
+          <div className="app-nav-inner">
+            <button
+              className={`nav-button ${currentPage === 'dashboard' ? 'active' : ''}`}
+              onClick={() => setCurrentPage('dashboard')}
+            >
+              <span className="nav-icon">📊</span>
+              <span className="nav-label">{t('nav.dashboard')}</span>
+            </button>
 
-          <button
-            className={`nav-button ${currentPage === 'tickets' ? 'active' : ''}`}
-            onClick={() => setCurrentPage('tickets')}
-          >
-            <span className="nav-icon">🎫</span>
-            <span className="nav-label">{t('nav.tickets')}</span>
-          </button>
+            <button
+              className={`nav-button ${currentPage === 'tickets' ? 'active' : ''}`}
+              onClick={() => setCurrentPage('tickets')}
+            >
+              <span className="nav-icon">🎫</span>
+              <span className="nav-label">{t('nav.tickets')}</span>
+            </button>
 
-          {selectedInstance.role === 'owner' && (
-            <>
-              <button
-                className={`nav-button ${currentPage === 'operators' ? 'active' : ''}`}
-                onClick={() => setCurrentPage('operators')}
-              >
-                <span className="nav-icon">👥</span>
-                <span className="nav-label">{t('nav.operators')}</span>
-              </button>
+            {selectedInstance.role === 'owner' && (
+              <>
+                <button
+                  className={`nav-button ${
+                    currentPage === 'operators' ? 'active' : ''
+                  }`}
+                  onClick={() => setCurrentPage('operators')}
+                >
+                  <span className="nav-icon">👥</span>
+                  <span className="nav-label">{t('nav.operators')}</span>
+                </button>
 
-              <button
-                className={`nav-button ${currentPage === 'settings' ? 'active' : ''}`}
-                onClick={() => setCurrentPage('settings')}
-              >
-                <span className="nav-icon">⚙️</span>
-                <span className="nav-label">{t('nav.settings')}</span>
-              </button>
+                <button
+                  className={`nav-button ${
+                    currentPage === 'settings' ? 'active' : ''
+                  }`}
+                  onClick={() => setCurrentPage('settings')}
+                >
+                  <span className="nav-icon">⚙️</span>
+                  <span className="nav-label">{t('nav.settings')}</span>
+                </button>
 
-              <button
-                className={`nav-button ${currentPage === 'billing' ? 'active' : ''}`}
-                onClick={() => setCurrentPage('billing')}
-              >
-                <span className="nav-icon">💳</span>
-                <span className="nav-label">{t('nav.billing')}</span>
-              </button>
-            </>
-          )}
-
-          {/* ✅ Admin button removed from bottom nav.
-              SuperAdmin entry point is now only via FirstLaunch / InstancesList. */}
-        </div>
-      </nav>
+                <button
+                  className={`nav-button ${currentPage === 'billing' ? 'active' : ''}`}
+                  onClick={() => setCurrentPage('billing')}
+                >
+                  <span className="nav-icon">💳</span>
+                  <span className="nav-label">{t('nav.billing')}</span>
+                </button>
+              </>
+            )}
+          </div>
+        </nav>
+      )}
 
       {showAddModal && (
         <AddBotModal
@@ -795,7 +782,7 @@ const App: React.FC<AppProps> = ({
               <p style={{ marginBottom: 8 }}>{t('bindHelp.paragraph2')}</p>
               <p style={{ marginBottom: 0 }}>
                 {t('bindHelp.paragraph3', {
-                  bot_username: selectedInstance.botusername,
+                  bot_username: selectedInstance?.botusername,
                 })}
               </p>
             </div>

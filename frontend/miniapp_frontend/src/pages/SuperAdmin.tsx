@@ -963,7 +963,7 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
         </div>
 
         <div className="form-group">
-          <label className="form-label">Лимит вложений</label>
+          <label className="form-label">Лимит вложений(mb)</label>
           <input
             className="form-input"
             type="number"
