@@ -501,6 +501,7 @@ const App: React.FC<AppProps> = ({
   }
 
   const showInstancesPage = currentPage === 'instances';
+  const showSuperAdminPage = currentPage === 'superadmin'; // NEW
 
   // For header labels (avoid crashing if selectedInstance is null)
   const hasChat = !!chatInfo?.id;
@@ -513,6 +514,10 @@ const App: React.FC<AppProps> = ({
   const displayPlanLabel = billing?.unlimited
     ? t('app.tariff_private_mode')
     : planLabel;
+
+  // NEW: hide global header/nav on instances + superadmin
+  const showGlobalHeader = !showInstancesPage && !showSuperAdminPage && !!selectedInstance;
+  const showBottomNav = !showInstancesPage && !showSuperAdminPage && !!selectedInstance;
 
   return (
     <div className="app-container">
@@ -536,8 +541,8 @@ const App: React.FC<AppProps> = ({
         </div>
       )}
 
-      {/* Hide header when on Instances page */}
-      {!showInstancesPage && selectedInstance && (
+      {/* Hide header when on Instances page OR SuperAdmin page */}
+      {showGlobalHeader && (
         <header className="app-header">
           <div className="header-content">
             <div className="header-right">
@@ -574,9 +579,9 @@ const App: React.FC<AppProps> = ({
             </div>
 
             <div>
-              <h1>{selectedInstance.botname || t('app.default_title')}</h1>
+              <h1>{selectedInstance?.botname || t('app.default_title')}</h1>
               <div className="instance-badge">
-                {selectedInstance.botusername ? (
+                {selectedInstance?.botusername ? (
                   <>
                     <a
                       href={`https://t.me/${selectedInstance.botusername}`}
@@ -590,7 +595,7 @@ const App: React.FC<AppProps> = ({
                     {selectedInstance.role}
                   </>
                 ) : (
-                  selectedInstance.role
+                  selectedInstance?.role
                 )}
               </div>
 
@@ -702,8 +707,8 @@ const App: React.FC<AppProps> = ({
 
       {footerBranding}
 
-      {/* Hide bottom nav on Instances page */}
-      {!showInstancesPage && selectedInstance && (
+      {/* Hide bottom nav on Instances page OR SuperAdmin page */}
+      {showBottomNav && (
         <nav className="app-nav">
           <div className="app-nav-inner">
             <button
@@ -725,9 +730,7 @@ const App: React.FC<AppProps> = ({
             {selectedInstance.role === 'owner' && (
               <>
                 <button
-                  className={`nav-button ${
-                    currentPage === 'operators' ? 'active' : ''
-                  }`}
+                  className={`nav-button ${currentPage === 'operators' ? 'active' : ''}`}
                   onClick={() => setCurrentPage('operators')}
                 >
                   <span className="nav-icon">👥</span>
@@ -735,9 +738,7 @@ const App: React.FC<AppProps> = ({
                 </button>
 
                 <button
-                  className={`nav-button ${
-                    currentPage === 'settings' ? 'active' : ''
-                  }`}
+                  className={`nav-button ${currentPage === 'settings' ? 'active' : ''}`}
                   onClick={() => setCurrentPage('settings')}
                 >
                   <span className="nav-icon">⚙️</span>

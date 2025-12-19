@@ -1388,6 +1388,41 @@ def create_miniapp_app(
         if not has_access:
             raise HTTPException(status_code=403, detail="Нет доступа к этому инстансу")
 
+
+    async def assert_payment_method_enabled(payment_method: str) -> None:
+        # platformsettings key: miniapppublic
+        raw = await miniappdb.db.getplatformsetting("miniapppublic", default=None)
+        if not raw:
+            # если настройка отсутствует — считаем, что всё выключено (fail-closed)
+            raise HTTPException(status_code=400, detail="Методы оплаты отключены администратором")
+
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except Exception:
+                raw = None
+
+        if not isinstance(raw, dict):
+            raise HTTPException(status_code=400, detail="Методы оплаты отключены администратором")
+
+        enabled = ((raw.get("payments") or {}).get("enabled") or {})
+        if not isinstance(enabled, dict):
+            raise HTTPException(status_code=400, detail="Методы оплаты отключены администратором")
+
+        # backend payment_method у тебя: "telegram_stars" | "ton" | "yookassa"
+        key = {
+            "telegram_stars": "telegramStars",
+            "ton": "ton",
+            "yookassa": "yookassa",
+        }.get(str(payment_method))
+
+        if not key:
+            raise HTTPException(status_code=400, detail="Неизвестный метод оплаты")
+
+        if not bool(enabled.get(key, False)):
+            raise HTTPException(status_code=400, detail="Метод оплаты отключён администратором")
+
+
     # ====================================================================
     # Endpoints
     # ====================================================================
@@ -1405,6 +1440,7 @@ def create_miniapp_app(
         import uuid
         import time
         import httpx
+        import json
         from urllib.parse import quote
 
         request_id = str(uuid.uuid4())
@@ -1419,9 +1455,51 @@ def create_miniapp_app(
             request_id, instance_id, user_id, getattr(req, "plan_code", None), periods, payment_method,
         )
 
+        # helper: server-side guard for globally disabled payment methods
+        async def assert_payment_method_enabled(pm: str) -> None:
+            # payment_method in this API: "telegram_stars" | "ton" | "yookassa"
+            method_key = {
+                "telegram_stars": "telegramStars",
+                "ton": "ton",
+                "yookassa": "yookassa",
+            }.get(str(pm))
+
+            if not method_key:
+                # let the main flow handle "unknown payment method"
+                raise HTTPException(status_code=400, detail="Неизвестный метод оплаты")
+
+            # Source of truth: platformsettings key "miniapppublic"
+            try:
+                raw = await miniapp_db.db.get_platform_setting("miniapppublic", default=None)
+            except Exception:
+                raw = None
+
+            # Fail-closed: if settings missing/unreadable -> payments considered disabled
+            if not raw:
+                raise HTTPException(status_code=400, detail="Методы оплаты отключены администратором")
+
+            if isinstance(raw, str):
+                try:
+                    raw = json.loads(raw)
+                except Exception:
+                    raw = None
+
+            if not isinstance(raw, dict):
+                raise HTTPException(status_code=400, detail="Методы оплаты отключены администратором")
+
+            enabled_flags = ((raw.get("payments") or {}).get("enabled") or {})
+            if not isinstance(enabled_flags, dict):
+                raise HTTPException(status_code=400, detail="Методы оплаты отключены администратором")
+
+            if not bool(enabled_flags.get(method_key, False)):
+                raise HTTPException(status_code=400, detail=f"Метод оплаты отключён: {pm}")
+
         try:
             # 1) Доступ к инстансу (как было)
             await require_instance_access(instance_id, current_user)
+
+            # 1.5) NEW: server-side guard (admin disabled payments)
+            await assert_payment_method_enabled(payment_method)
 
             # 2) Продукт
             product = await miniapp_db.get_billing_product_by_plan_code(req.plan_code)

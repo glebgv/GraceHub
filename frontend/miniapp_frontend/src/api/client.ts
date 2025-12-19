@@ -111,7 +111,7 @@ export interface ManageHealthResponse {
 
 /**
  * То, что хранится в platform_settings["miniapp_public"].
- * Важно: single-tenant режим в бекенде читается из singleTenant.allowedUserIds. [file:52]
+ * Важно: single-tenant режим в бекенде читается из singleTenant.allowedUserIds.
  */
 export interface MiniappPublicSettings {
   singleTenant: {
@@ -129,6 +129,14 @@ export interface MiniappPublicSettings {
       ton: boolean;
       yookassa: boolean;
     };
+
+    // NEW: prices for Telegram Stars (like TON / YooKassa)
+    telegramStars: {
+      priceStarsLite: number;
+      priceStarsPro: number;
+      priceStarsEnterprise: number;
+    };
+
     ton: {
       network: 'testnet' | 'mainnet';
       walletAddress: string;
@@ -140,6 +148,7 @@ export interface MiniappPublicSettings {
       pricePerPeriodPro: number;
       pricePerPeriodEnterprise: number;
     };
+
     yookassa: {
       shopId: string;
       secretKey: string;
@@ -168,19 +177,32 @@ function normalizeIds(list: any): number[] {
   return Array.from(out).sort((a, b) => a - b);
 }
 
+function safeNumber(v: any, fallback: number) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+
 /**
  * Нормализация miniapp_public:
  * - гарантирует наличие singleTenant.allowedUserIds
- * - мигрирует старое singleTenant.ownerTelegramId -> allowedUserIds [file:52]
+ * - мигрирует старое singleTenant.ownerTelegramId -> allowedUserIds
+ * - гарантирует наличие payments.telegramStars.priceStars*
  */
 function normalizeMiniappPublicSettings(raw: any): MiniappPublicSettings {
   const v = raw || {};
   const st = v?.singleTenant || {};
+  const p = v?.payments || {};
+  const ts = p?.telegramStars || {};
 
   let allowed = normalizeIds(st?.allowedUserIds);
   if (allowed.length === 0 && st?.ownerTelegramId !== null && st?.ownerTelegramId !== undefined) {
     allowed = normalizeIds([st.ownerTelegramId]);
   }
+
+  // дефолты — такие же, как ты добавил в SuperAdmin.tsx (можешь подстроить)
+  const defaultStarsLite = 100;
+  const defaultStarsPro = 300;
+  const defaultStarsEnt = 999;
 
   return {
     ...v,
@@ -190,6 +212,25 @@ function normalizeMiniappPublicSettings(raw: any): MiniappPublicSettings {
       allowedUserIds: allowed,
       // ownerTelegramId оставляем как legacy-поле (не используем в UI, но не ломаем старые данные)
       ownerTelegramId: st?.ownerTelegramId === undefined ? undefined : st?.ownerTelegramId,
+    },
+    payments: {
+      ...p,
+      enabled: {
+        telegramStars: !!p?.enabled?.telegramStars,
+        ton: !!p?.enabled?.ton,
+        yookassa: !!p?.enabled?.yookassa,
+      },
+      telegramStars: {
+        priceStarsLite: safeNumber(ts?.priceStarsLite, defaultStarsLite),
+        priceStarsPro: safeNumber(ts?.priceStarsPro, defaultStarsPro),
+        priceStarsEnterprise: safeNumber(ts?.priceStarsEnterprise, defaultStarsEnt),
+      },
+      ton: {
+        ...(p?.ton || {}),
+      },
+      yookassa: {
+        ...(p?.yookassa || {}),
+      },
     },
   } as MiniappPublicSettings;
 }
@@ -394,7 +435,7 @@ class ApiClient {
 
   /**
    * GET /api/platform/settings
-   * Backend возвращает ключ "miniapp_public" и его value. [file:52]
+   * Backend возвращает ключ "miniapp_public" и его value.
    */
   async getPlatformSettings(): Promise<PlatformSettingsResponse> {
     return this.request<PlatformSettingsResponse>('GET', '/api/platform/settings');
@@ -402,7 +443,7 @@ class ApiClient {
 
   /**
    * POST /api/platform/settings/{key}
-   * Только superadmin (backend проверяет роли). [file:52]
+   * Только superadmin (backend проверяет роли).
    */
   async setPlatformSetting(key: string, value: Record<string, any>): Promise<SimpleStatusResponse> {
     const payload: PlatformSettingUpsertRequest = { value };
@@ -416,8 +457,9 @@ class ApiClient {
   }
 
   async setMiniappPublicSettings(value: MiniappPublicSettings): Promise<SimpleStatusResponse> {
-    // перед сохранением гарантируем нормальный массив id
+    // перед сохранением гарантируем нормальный массив id + наличие stars pricing
     const normalized = normalizeMiniappPublicSettings(value);
+
     // важно: ownerTelegramId не нужен; если он там остался — можно убрать, чтобы не плодить legacy
     const cleaned: any = {
       ...normalized,
@@ -426,6 +468,7 @@ class ApiClient {
         allowedUserIds: normalizeIds(normalized.singleTenant.allowedUserIds),
       },
     };
+
     return this.setPlatformSetting('miniapp_public', cleaned);
   }
 }

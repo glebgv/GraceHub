@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import ReactDOM from 'react-dom';
 import { apiClient, type PaymentMethod } from '../api/client';
 import { useTranslation } from 'react-i18next';
@@ -102,6 +102,14 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Global payments availability (from SuperAdmin / platformsettings: miniapppublic)
+  const [paymentsEnabled, setPaymentsEnabled] = useState<{
+    telegramStars: boolean;
+    ton: boolean;
+    yookassa: boolean;
+  }>({ telegramStars: true, ton: true, yookassa: true });
+  const [paymentsLoading, setPaymentsLoading] = useState(true);
+
   const [selectedPlan, setSelectedPlan] = useState<SaasPlanDTO | null>(null);
   const [selectedPeriod, setSelectedPeriod] = useState<PeriodOption | null>(periodOptions[0]);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -169,7 +177,68 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
     cursor: 'pointer',
   };
 
+  // Load global payment availability (SuperAdmin -> platformsettings: miniapppublic)
   useEffect(() => {
+    let cancelled = false;
+
+    const loadPaymentsEnabled = async () => {
+      try {
+        setPaymentsLoading(true);
+        const s = await apiClient.getMiniappPublicSettings();
+
+        if (cancelled) return;
+
+        setPaymentsEnabled({
+          telegramStars: !!s?.payments?.enabled?.telegramStars,
+          ton: !!s?.payments?.enabled?.ton,
+          yookassa: !!s?.payments?.enabled?.yookassa,
+        });
+      } catch (e: any) {
+        // Fail-open to avoid breaking billing if settings are temporarily unavailable
+        // (server-side still should validate method availability)
+        console.warn('Failed to load miniapp public settings for payments:', e?.message || e);
+        if (cancelled) return;
+
+        setPaymentsEnabled({ telegramStars: true, ton: true, yookassa: true });
+      } finally {
+        if (!cancelled) setPaymentsLoading(false);
+      }
+    };
+
+    loadPaymentsEnabled();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const paymentMethods: Array<{ value: PaymentMethod; label: string }> = useMemo(() => {
+    const out: Array<{ value: PaymentMethod; label: string }> = [];
+
+    if (paymentsEnabled.telegramStars) out.push({ value: 'telegram_stars', label: t('billing.payment_method_stars') });
+    if (paymentsEnabled.ton) out.push({ value: 'ton', label: t('billing.payment_method_ton') });
+    if (paymentsEnabled.yookassa) out.push({ value: 'yookassa', label: t('billing.payment_method_yookassa') });
+
+    return out;
+  }, [paymentsEnabled.telegramStars, paymentsEnabled.ton, paymentsEnabled.yookassa, t]);
+
+  const hasAnyPaymentMethods = paymentMethods.length > 0;
+
+  // NEW: если вообще нет методов оплаты — в Billing не показываем тарифы
+  const paymentsDisabledByAdmin = !hasAnyPaymentMethods;
+
+  // Load plans, but ONLY if payments are enabled
+  useEffect(() => {
+    if (paymentsLoading) return;
+
+    // если админ выключил ВСЕ методы — не грузим тарифы вообще
+    if (paymentsDisabledByAdmin) {
+      setPlans([]);
+      setLoading(false);
+      setError(null);
+      return;
+    }
+
     const loadPlans = async () => {
       try {
         setLoading(true);
@@ -183,8 +252,16 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
         setLoading(false);
       }
     };
+
     loadPlans();
-  }, []);
+  }, [paymentsLoading, paymentsDisabledByAdmin]);
+
+  // If selected method becomes unavailable (settings updated), reset to placeholder
+  useEffect(() => {
+    if (!paymentMethod) return;
+    const stillAllowed = paymentMethods.some((m) => m.value === paymentMethod);
+    if (!stillAllowed) setPaymentMethod('');
+  }, [paymentMethod, paymentMethods]);
 
   // Restore pending TON invoice after app restart
   useEffect(() => {
@@ -358,11 +435,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
     showCopied(t('billing.cancelled'));
   };
 
-  const pollYooKassaStatus = async (
-    invoiceId: number,
-    abortRef: { aborted: boolean },
-    timeoutMs: number = 120000,
-  ) => {
+  const pollYooKassaStatus = async (invoiceId: number, abortRef: { aborted: boolean }, timeoutMs: number = 120000) => {
     const started = Date.now();
     while (Date.now() - started < timeoutMs) {
       if (abortRef.aborted) throw new Error('aborted');
@@ -438,8 +511,21 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
     if (!selectedPlan || !selectedPeriod) return;
     if (!selectedPlan.productCode) return;
 
+    if (!hasAnyPaymentMethods) {
+      setSubmitError(t('billing.payment_failed'));
+      return;
+    }
+
     // важно: не даём отправить запрос с payment_method=''
     if (!paymentMethod) {
+      setSubmitError(t('billing.choose_payment_method'));
+      return;
+    }
+
+    // Extra client-side guard (server must validate too)
+    const stillAllowed = paymentMethods.some((m) => m.value === paymentMethod);
+    if (!stillAllowed) {
+      setPaymentMethod('');
       setSubmitError(t('billing.choose_payment_method'));
       return;
     }
@@ -563,9 +649,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
           }}
         >
           <div className="modal-header">
-            <h3 className="modal-title modal-title--gradient">
-              {t('billing.ton_requisites_title')}
-            </h3>
+            <h3 className="modal-title modal-title--gradient">{t('billing.ton_requisites_title')}</h3>
             <button
               type="button"
               className="modal-close"
@@ -679,9 +763,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
               <p style={{ marginTop: 10, fontSize: 12, color: 'var(--tg-color-error, #dc2626)' }}>{tonCheckError}</p>
             )}
 
-            <p style={{ marginTop: 10, fontSize: 12, opacity: 0.85 }}>
-              {t('billing.ton_manual_hint_short')}
-            </p>
+            <p style={{ marginTop: 10, fontSize: 12, opacity: 0.85 }}>{t('billing.ton_manual_hint_short')}</p>
           </div>
 
           <div className="modal-footer" style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -732,9 +814,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
           }}
         >
           <div className="modal-header">
-            <h3 className="modal-title modal-title--gradient">
-              {t('billing.yk_title')}
-            </h3>
+            <h3 className="modal-title modal-title--gradient">{t('billing.yk_title')}</h3>
             <button type="button" className="modal-close" onClick={() => setIsYkModalOpen(false)}>
               ✕
             </button>
@@ -756,9 +836,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
               </div>
             )}
 
-            <p style={{ marginTop: 0, fontSize: 13, opacity: 0.85 }}>
-              {t('billing.yk_hint')}
-            </p>
+            <p style={{ marginTop: 0, fontSize: 13, opacity: 0.85 }}>{t('billing.yk_hint')}</p>
 
             <div style={{ fontSize: 12, opacity: 0.8, wordBreak: 'break-all' }}>
               {t('billing.yk_invoice_id')}: {ykInvoice.invoiceId}
@@ -799,13 +877,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
     return ReactDOM.createPortal(content, document.body);
   };
 
-  const paymentMethods: Array<{ value: PaymentMethod; label: string }> = [
-    { value: 'telegram_stars', label: t('billing.payment_method_stars') },
-    { value: 'ton', label: t('billing.payment_method_ton') },
-    { value: 'yookassa', label: t('billing.payment_method_yookassa') },
-  ];
-
-  if (loading) {
+  if (loading || paymentsLoading) {
     return (
       <div style={{ padding: '12px' }}>
         <div className="card" style={{ textAlign: 'center', padding: '24px' }}>
@@ -829,6 +901,23 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
           <p style={{ margin: 0 }}>
             {t('billing.error_prefix')}: {error}
           </p>
+        </div>
+      </div>
+    );
+  }
+
+  // NEW: если оплаты нет — не показываем сетку тарифов, только жёлтую рамку
+  if (paymentsDisabledByAdmin) {
+    return (
+      <div style={{ padding: '12px' }}>
+        <div
+          className="card"
+          style={{
+            background: 'rgba(245, 158, 11, 0.12)',
+            borderColor: 'rgba(245, 158, 11, 0.25)',
+          }}
+        >
+          <p style={{ margin: 0 }}>{t('billing.payments_disabled_by_admin')}</p>
         </div>
       </div>
     );
@@ -873,9 +962,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
             }}
           >
             <div className="modal-header">
-              <h3 className="modal-title modal-title--gradient">
-                {t('billing.modal_title', { name: selectedPlan.planName })}
-              </h3>
+              <h3 className="modal-title modal-title--gradient">{t('billing.modal_title', { name: selectedPlan.planName })}</h3>
               <button type="button" className="modal-close" onClick={closeModal}>
                 ✕
               </button>
@@ -905,14 +992,29 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
 
               {/* Способ оплаты (dropdown) */}
               <div style={{ marginTop: 12 }}>
-                <div className="modal-section-title">
-                  {t('billing.payment_method_label')}
-                </div>
+                <div className="modal-section-title">{t('billing.payment_method_label')}</div>
+
+                {/* В этой модалке блок про "нет способов оплаты" можно оставить (на случай, если модалка уже открыта, а админ выключил оплаты). */}
+                {!hasAnyPaymentMethods && (
+                  <div
+                    style={{
+                      marginBottom: 10,
+                      padding: '10px 12px',
+                      borderRadius: 10,
+                      background: 'rgba(245, 158, 11, 0.12)',
+                      border: '1px solid rgba(245, 158, 11, 0.25)',
+                      fontSize: 12,
+                      lineHeight: 1.35,
+                    }}
+                  >
+                    {t('billing.payments_disabled_by_admin')}
+                  </div>
+                )}
 
                 <select
                   value={paymentMethod}
                   onChange={(e) => setPaymentMethod(e.target.value as PaymentMethod | '')}
-                  disabled={submitting || tonChecking || ykChecking}
+                  disabled={!hasAnyPaymentMethods || submitting || tonChecking || ykChecking}
                   className="modal-select"
                   style={{
                     width: '100%',
@@ -935,24 +1037,16 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
                   ))}
                 </select>
 
-                {paymentMethod === 'ton' && (
-                  <p style={{ marginTop: 8, fontSize: 12, opacity: 0.8 }}>
-                    {t('billing.ton_hint')}
-                  </p>
-                )}
+                {paymentMethod === 'ton' && <p style={{ marginTop: 8, fontSize: 12, opacity: 0.8 }}>{t('billing.ton_hint')}</p>}
 
                 {paymentMethod === 'yookassa' && (
-                  <p style={{ marginTop: 8, fontSize: 12, opacity: 0.8 }}>
-                    {t('billing.yk_hint_inline')}
-                  </p>
+                  <p style={{ marginTop: 8, fontSize: 12, opacity: 0.8 }}>{t('billing.yk_hint_inline')}</p>
                 )}
               </div>
 
               {/* Выбор периода */}
               <div style={{ marginTop: 12 }}>
-                <div className="modal-section-title">
-                  {t('billing.choose_period_label')}
-                </div>
+                <div className="modal-section-title">{t('billing.choose_period_label')}</div>
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                   {periodOptions.map((opt) => {
                     const isActive = opt.id === selectedPeriod.id;
@@ -962,25 +1056,27 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
                         type="button"
                         onClick={() => setSelectedPeriod(opt)}
                         className={`btn ${isActive ? 'btn--ghost' : 'btn--ghost'}`} // обе ghost, но active светлее
-                        style={{ 
+                        style={{
                           flex: '1 1 0',
                           position: 'relative',
                           // Активная: светлый фон + яркая обводка
                           backgroundColor: isActive ? 'rgba(255,255,255,0.15)' : 'transparent',
                           border: isActive ? '2px solid var(--tg-color-accent, #3b82f6)' : '1px solid rgba(148,163,184,0.3)',
                           color: isActive ? 'var(--tg-color-text)' : 'var(--tg-color-hint-color)',
-                          minHeight: '44px'
+                          minHeight: '44px',
                         }}
                         disabled={submitting || tonChecking || ykChecking}
                       >
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
                           <span>{t(opt.labelKey, { months: opt.multiplier })}</span>
                           {isActive && (
-                            <span style={{ 
-                              fontSize: '16px', 
-                              fontWeight: 'bold',
-                              color: 'var(--tg-color-accent, #3b82f6)'
-                            }}>
+                            <span
+                              style={{
+                                fontSize: '16px',
+                                fontWeight: 'bold',
+                                color: 'var(--tg-color-accent, #3b82f6)',
+                              }}
+                            >
                               ✓
                             </span>
                           )}
@@ -988,15 +1084,12 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
                       </button>
                     );
                   })}
-
                 </div>
               </div>
 
               {/* Итоговая цена и длительность */}
               <div style={{ marginTop: 16 }}>
-                <div className="modal-section-title">
-                  {t('billing.final_period_label')}
-                </div>
+                <div className="modal-section-title">{t('billing.final_period_label')}</div>
                 <div style={{ fontSize: 14, fontWeight: 500 }}>
                   {t('billing.period_and_limit', {
                     days: selectedPlan.periodDays * selectedPeriod.multiplier,
@@ -1037,7 +1130,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
               <button
                 type="button"
                 className="btn"
-                disabled={!selectedPlan.productCode || !paymentMethod || submitting || tonChecking || ykChecking}
+                disabled={!selectedPlan.productCode || !paymentMethod || !hasAnyPaymentMethods || submitting || tonChecking || ykChecking}
                 onClick={handleCreateInvoice}
               >
                 {submitting ? t('billing.button_processing') : t('billing.button_choose')}
@@ -1072,9 +1165,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
             }}
           >
             <div className="modal-header">
-              <h3 className="modal-title modal-title--gradient">
-                {t('billing.payment_success_title')}
-              </h3>
+              <h3 className="modal-title modal-title--gradient">{t('billing.payment_success_title')}</h3>
               <button
                 type="button"
                 className="modal-close"

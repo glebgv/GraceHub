@@ -20,6 +20,11 @@ const defaultSettings: MiniappPublicSettings = {
       ton: true,
       yookassa: false,
     },
+    telegramStars: {
+      priceStarsLite: 100,
+      priceStarsPro: 300,
+      priceStarsEnterprise: 999,
+    },
     ton: {
       network: 'testnet',
       walletAddress: '',
@@ -84,6 +89,20 @@ function mergeDefaults(value: any): MiniappPublicSettings {
         telegramStars: !!v?.payments?.enabled?.telegramStars,
         ton: !!v?.payments?.enabled?.ton,
         yookassa: !!v?.payments?.enabled?.yookassa,
+      },
+      telegramStars: {
+        priceStarsLite: safeNumber(
+          v?.payments?.telegramStars?.priceStarsLite,
+          defaultSettings.payments.telegramStars.priceStarsLite,
+        ),
+        priceStarsPro: safeNumber(
+          v?.payments?.telegramStars?.priceStarsPro,
+          defaultSettings.payments.telegramStars.priceStarsPro,
+        ),
+        priceStarsEnterprise: safeNumber(
+          v?.payments?.telegramStars?.priceStarsEnterprise,
+          defaultSettings.payments.telegramStars.priceStarsEnterprise,
+        ),
       },
       ton: {
         network: v?.payments?.ton?.network === 'mainnet' ? 'mainnet' : 'testnet',
@@ -948,7 +967,7 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
         <h3 style={{ margin: '0 0 12px 0', fontSize: '14px' }}>Instance defaults</h3>
 
         <div className="form-group">
-          <label className="form-label">Лимит сообщений в минуту(рекомендуется до 30)</label>
+          <label className="form-label">Лимит сообщений в минуту (рекомендуется до 30)</label>
           <input
             className="form-input"
             type="number"
@@ -963,7 +982,7 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
         </div>
 
         <div className="form-group">
-          <label className="form-label">Лимит вложений(mb)</label>
+          <label className="form-label">Лимит вложений (mb)</label>
           <input
             className="form-input"
             type="number"
@@ -1015,6 +1034,7 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
           </div>
         ) : (
           <>
+            {/* Telegram Stars */}
             <div className="form-group" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <label className="form-label" style={{ marginBottom: 0 }}>
                 Telegram Stars
@@ -1032,6 +1052,68 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
               />
             </div>
 
+            {form.payments.enabled.telegramStars && (
+              <div style={{ marginTop: 8 }}>
+                <div className="form-group">
+                  <label className="form-label">Price Lite (Stars)</label>
+                  <input
+                    className="form-input"
+                    type="number"
+                    min={0}
+                    value={form.payments.telegramStars.priceStarsLite}
+                    onChange={(e) =>
+                      setForm((p) => ({
+                        ...p,
+                        payments: {
+                          ...p.payments,
+                          telegramStars: { ...p.payments.telegramStars, priceStarsLite: Number(e.target.value) },
+                        },
+                      }))
+                    }
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label className="form-label">Price Pro (Stars)</label>
+                  <input
+                    className="form-input"
+                    type="number"
+                    min={0}
+                    value={form.payments.telegramStars.priceStarsPro}
+                    onChange={(e) =>
+                      setForm((p) => ({
+                        ...p,
+                        payments: {
+                          ...p.payments,
+                          telegramStars: { ...p.payments.telegramStars, priceStarsPro: Number(e.target.value) },
+                        },
+                      }))
+                    }
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label className="form-label">Price Ent (Stars)</label>
+                  <input
+                    className="form-input"
+                    type="number"
+                    min={0}
+                    value={form.payments.telegramStars.priceStarsEnterprise}
+                    onChange={(e) =>
+                      setForm((p) => ({
+                        ...p,
+                        payments: {
+                          ...p.payments,
+                          telegramStars: { ...p.payments.telegramStars, priceStarsEnterprise: Number(e.target.value) },
+                        },
+                      }))
+                    }
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* TON */}
             <div className="form-group" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <label className="form-label" style={{ marginBottom: 0 }}>
                 TON
@@ -1264,6 +1346,7 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
               </div>
             )}
 
+            {/* YooKassa */}
             <div className="form-group" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <label className="form-label" style={{ marginBottom: 0 }}>
                 YooKassa

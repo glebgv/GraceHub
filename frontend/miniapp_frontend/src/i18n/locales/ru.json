@@ -101,7 +101,8 @@
     "payment_success_title": "Оплата успешна",
     "payment_success_body": "Тариф {{name}} на {{months}} мес. успешно оплачен.",
     "payment_success_ok": "Ок",
-    "payment_failed": "Не удалось подтвердить оплату. Попробуйте ещё раз."
+    "payment_failed": "Не удалось подтвердить оплату. Попробуйте ещё раз.",
+    "payments_disabled_by_admin": "Методы оплаты отключены Суперадминистратором."
   },
   "firstLaunch": {
     "welcome": "Добро пожаловать в платформу управления ботами GraceHub!",
