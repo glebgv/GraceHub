@@ -80,6 +80,7 @@ class PlatformInstanceDefaultsCache:
         self.ttl_seconds = ttl_seconds
         self._cached_at: datetime | None = None
         self._cached_value: tuple[int, int] | None = None
+        self.ticket_keyboard_anchor: Dict[int, Dict[str, Any]] = {}
 
     async def get(self) -> tuple[int, int]:
         now = datetime.now(timezone.utc)
@@ -99,8 +100,19 @@ class PlatformInstanceDefaultsCache:
 
         instance_defaults = (data or {}).get("instanceDefaults") or {}
 
-        antiflood = int(instance_defaults.get("antiflood_limit_per_min") or 0)
-        max_file_mb = int(instance_defaults.get("max_file_mb") or 10)
+        # Совместимость:
+        # - старые/ожидаемые воркером имена: antiflood_limit_per_min / max_file_mb
+        # - реальные в БД (по твоему platform_settings.value): antifloodMaxUserMessagesPerMinute / workerMaxFileMb
+        antiflood = int(
+            instance_defaults.get("antifloodMaxUserMessagesPerMinute")
+            or instance_defaults.get("antiflood_limit_per_min")
+            or 0
+        )
+        max_file_mb = int(
+            instance_defaults.get("workerMaxFileMb")
+            or instance_defaults.get("max_file_mb")
+            or 10
+        )
 
         self._cached_at = now
         self._cached_value = (antiflood, max_file_mb)
@@ -162,6 +174,57 @@ class GraceHubWorker:
         self.user_session_messages: Dict[int, int] = {}
 
         self.register_handlers()
+        
+    async def _is_attachment_too_big(self, message: Message) -> bool:
+        await self.refresh_limits_from_db()  # если у тебя так называется; у тебя есть refreshlimitsfromdb [file:4]
+        maxbytes = self.maxfilebytes
+
+        # Собираем file_id для всех поддерживаемых типов
+        file_id = None
+
+        if message.photo:
+            file_id = message.photo[-1].file_id
+            size = message.photo[-1].file_size
+            if size and size > maxbytes:
+                return True
+        elif message.document:
+            file_id = message.document.file_id
+            size = message.document.file_size
+            if size and size > maxbytes:
+                return True
+        elif message.video:
+            file_id = message.video.file_id
+            size = message.video.file_size
+            if size and size > maxbytes:
+                return True
+        elif message.audio:
+            file_id = message.audio.file_id
+            size = message.audio.file_size
+            if size and size > maxbytes:
+                return True
+        elif message.voice:
+            file_id = message.voice.file_id
+            size = message.voice.file_size
+            if size and size > maxbytes:
+                return True
+        elif message.video_note:
+            file_id = message.video_note.file_id
+            size = message.video_note.file_size
+            if size and size > maxbytes:
+                return True
+        elif message.sticker:
+            file_id = message.sticker.file_id
+            size = message.sticker.file_size
+            if size and size > maxbytes:
+                return True
+
+        # Если size нет — проверяем через get_file()
+        if file_id:
+            ok = await self.check_file_size(file_id)  # True если <= maxbytes [file:4]
+            return not ok
+
+        return False
+
 
     async def _refresh_limits_from_db(self) -> None:
         antiflood, max_file_mb = await self._platform_defaults.get()
@@ -1145,8 +1208,8 @@ class GraceHubWorker:
                 e,
             )
             try:
-                sent = await self.sendsafemessage(
-                    chatid=chat_id,
+                sent = await self._send_safe_message(
+                    chat_id=chat_id,
                     text=self.texts.ticket_admin_prompt,
                     reply_markup=kb,
                 )
@@ -1389,48 +1452,6 @@ class GraceHubWorker:
 
     # ====================== НОВАЯ ЛОГИКА: КЛАВА ТОЛЬКО НА ПОСЛЕДНЕМ ======================
 
-    async def _clear_ticket_keyboards_for_user(
-        self,
-        chat_id: int,
-        user_id: int,
-        exclude_message_id: int,
-    ) -> None:
-        """
-        Убирает reply_markup у всех сообщений этого пользователя в данном OpenChat,
-        кроме exclude_message_id. Использует таблицу messages, если она есть.
-        """
-        if not self.db:
-            return
-
-        try:
-            rows = await self.db.fetchall(
-                """
-                SELECT message_id
-                FROM messages
-                WHERE instance_id = %s
-                AND chat_id = %s
-                AND user_id = %s
-                AND direction = 'user_to_openchat'
-                AND message_id <> %s
-                """,
-                (self.instance_id, chat_id, user_id, exclude_message_id),
-            )
-
-        except Exception as e:
-            logger.error(f"Failed to fetch messages for clearing keyboards: {e}")
-            return
-
-        for (mid,) in rows:
-            try:
-                await self.bot.edit_message_reply_markup(
-                    chat_id=chat_id,
-                    message_id=mid,
-                    reply_markup=None,
-                )
-            except Exception:
-                # Сообщения могли быть удалены/недоступны — игнорируем
-                continue
-
     async def store_forwarded_message(self, chat_id: int, message: Message, user_id: int) -> None:
         text_content = None
         if message.text:
@@ -1457,6 +1478,7 @@ class GraceHubWorker:
         Отправка входящего сообщения пользователя в привязанный OpenChat (в его топик)
         с сохранением маппинга для последующих реплеев администратора.
         """
+
         # Админа в OpenChat не форвардим
         if message.from_user and await self.is_admin(message.from_user.id):
             return
@@ -1490,7 +1512,6 @@ class GraceHubWorker:
         if ticket.get("status") == "billing_blocked":
             reason = ticket.get("billing_reason")
 
-            # Выбираем тексты для пользователя и владельцев по причине
             if reason == "limit_reached":
                 user_text = getattr(
                     self.texts,
@@ -1513,7 +1534,7 @@ class GraceHubWorker:
                     "billing_owner_demo_expired_message",
                     "⏳ Демо‑период бота закончился. Новые тикеты не создаются.",
                 )
-            else:  # 'no_billing' или иное
+            else:
                 user_text = getattr(
                     self.texts,
                     "billing_user_no_plan_message",
@@ -1525,7 +1546,7 @@ class GraceHubWorker:
                     "⚠️ Для этого бота не настроен активный тариф, обращения пользователей не доходят до системы поддержки.",
                 )
 
-            # Сообщение пользователю (обезличенное про владельцев)
+            # Сообщение пользователю
             try:
                 await self._send_safe_message(
                     chat_id=message.chat.id,
@@ -1557,20 +1578,15 @@ class GraceHubWorker:
 
         thread_id = ticket.get("thread_id")
         header = username or f"user {user_id}"
-
         now = datetime.now(timezone.utc)
-
         sent: Optional[Message] = None
 
         async def _send_into_thread(thread: int) -> Message:
             if message.text:
                 body = f"{header}:\n{message.text}"
-                return await self.bot.send_message(
-                    chat_id,
-                    body,
-                    message_thread_id=thread,
-                )
-            elif message.photo:
+                return await self.bot.send_message(chat_id, body, message_thread_id=thread)
+
+            if message.photo:
                 caption = message.caption or ""
                 cap = f"{header}:\n{caption}" if caption else header
                 return await self.bot.send_photo(
@@ -1579,7 +1595,8 @@ class GraceHubWorker:
                     caption=cap,
                     message_thread_id=thread,
                 )
-            elif message.video:
+
+            if message.video:
                 caption = message.caption or ""
                 cap = f"{header}:\n{caption}" if caption else header
                 return await self.bot.send_video(
@@ -1588,7 +1605,8 @@ class GraceHubWorker:
                     caption=cap,
                     message_thread_id=thread,
                 )
-            elif message.document:
+
+            if message.document:
                 caption = message.caption or ""
                 cap = f"{header}:\n{caption}" if caption else header
                 return await self.bot.send_document(
@@ -1597,7 +1615,8 @@ class GraceHubWorker:
                     caption=cap,
                     message_thread_id=thread,
                 )
-            elif message.audio:
+
+            if message.audio:
                 caption = message.caption or ""
                 cap = f"{header}:\n{caption}" if caption else header
                 return await self.bot.send_audio(
@@ -1606,26 +1625,24 @@ class GraceHubWorker:
                     caption=cap,
                     message_thread_id=thread,
                 )
-            elif message.voice:
+
+            if message.voice:
                 return await self.bot.send_voice(
                     chat_id,
                     message.voice.file_id,
                     caption=header,
                     message_thread_id=thread,
                 )
-            elif message.sticker:
+
+            if message.sticker:
                 return await self.bot.send_sticker(
                     chat_id,
                     message.sticker.file_id,
                     message_thread_id=thread,
                 )
-            else:
-                body = f"{header}: [{message.content_type}]"
-                return await self.bot.send_message(
-                    chat_id,
-                    body,
-                    message_thread_id=thread,
-                )
+
+            body = f"{header}: [{message.content_type}]"
+            return await self.bot.send_message(chat_id, body, message_thread_id=thread)
 
         # Rate-limit перед отправкой в OpenChat
         if not await self.ratelimiter.can_send(chat_id=chat_id):
@@ -1638,15 +1655,15 @@ class GraceHubWorker:
             sent = await _send_into_thread(thread_id)
         except Exception as e:
             err_text = str(e).lower()
-            
+
             # Flood control: Too Many Requests
             if "too many requests" in err_text or "flood control exceeded" in err_text:
                 retry_sec = 5
-                # пытаемся вытащить retry-after из текста ошибки
                 for token in err_text.split():
                     if token.isdigit():
                         retry_sec = int(token)
                         break
+
                 logger.warning(
                     "Flood control in forward_to_openchat, sleep %s sec (chat %s, ticket %s)",
                     retry_sec,
@@ -1654,7 +1671,7 @@ class GraceHubWorker:
                     ticket["id"],
                 )
                 await asyncio.sleep(retry_sec)
-                # одна повторная попытка
+
                 try:
                     sent = await _send_into_thread(thread_id)
                 except Exception as e2:
@@ -1664,6 +1681,7 @@ class GraceHubWorker:
                         e2,
                     )
                     return
+
             elif "message thread not found" in err_text or "message thread not found" in getattr(
                 getattr(e, "message", ""), "lower", lambda: ""
             )():
@@ -1674,6 +1692,7 @@ class GraceHubWorker:
                         name=self._format_ticket_title(ticket),
                     )
                     new_thread_id = ft.message_thread_id
+
                     await self.db.execute(
                         """
                         UPDATE tickets
@@ -1682,6 +1701,7 @@ class GraceHubWorker:
                         """,
                         (new_thread_id, now, self.instance_id, ticket["id"]),
                     )
+
                     ticket["thread_id"] = new_thread_id
                     thread_id = new_thread_id
 
@@ -1689,33 +1709,55 @@ class GraceHubWorker:
                 except Exception as e2:
                     logger.error(f"Failed to recreate forum topic for ticket {ticket['id']}: {e2}")
                     return
+
             else:
                 logger.error(f"Failed to forward to OpenChat: Telegram server says - {e}")
                 return
 
-        # ✅ УБРАНО: трекинг операторов (перенесён в handle_openchat_message)
-
-        # Сохраняем связь для корректного реплея админа клиенту
+        # Сохраняем связь для корректного реплея админа клиенту + сообщения в БД
         if sent:
-            # маппинг admin_message -> user
             await self.save_reply_mapping_v2(chat_id, sent.message_id, user_id)
 
-            # сохраняем запись в messages о сообщении пользователя в OpenChat
             await self.store_forwarded_message(
                 chat_id=chat_id,
                 message=sent,
                 user_id=user_id,
             )
 
-            # сначала убираем клавиатуру со всех предыдущих сообщений этого пользователя
-            await self._clear_ticket_keyboards_for_user(
-                chat_id=chat_id,
-                user_id=user_id,
-                exclude_message_id=sent.message_id,
-            )
+            # ------------------------------------------------------------
+            # КЛАВИАТУРА: переносим НЕ чаще чем раз в 60 минут на тикет
+            #
+            # Требование: в __init__ должен быть кеш:
+            # self.ticket_keyboard_anchor: Dict[int, Dict[str, Any]] = {}
+            # где ticket_id -> {"message_id": int, "moved_at": datetime}
+            # ------------------------------------------------------------
+            move_window = timedelta(minutes=60)
+            ticket_id = ticket["id"]
 
-            # затем вешаем компактную кнопку-меню только на последнее сообщение клиента
-            await self.put_ticket_keyboard(ticket["id"], sent.message_id, compact=True)
+            anchor = getattr(self, "ticket_keyboard_anchor", None)
+            if anchor is None:
+                # На случай если ещё не добавил в __init__
+                self.ticket_keyboard_anchor = {}
+                anchor = self.ticket_keyboard_anchor
+
+            anchor_rec = anchor.get(ticket_id)
+            should_move = False
+            if not anchor_rec:
+                should_move = True
+            else:
+                moved_at = anchor_rec.get("moved_at")
+                if not moved_at or (now - moved_at) >= move_window:
+                    should_move = True
+
+            if should_move:
+                # затем вешаем компактную кнопку-меню на "якорное" (текущее) сообщение
+                await self.put_ticket_keyboard(ticket_id, sent.message_id, compact=True)
+
+                # запоминаем якорь
+                anchor[ticket_id] = {"message_id": sent.message_id, "moved_at": now}
+            else:
+                # не переносим, чтобы не биться в editMessageReplyMarkup при флуде
+                pass
 
         # Обновляем тайминги тикета
         try:
@@ -1735,6 +1777,7 @@ class GraceHubWorker:
                 await self.set_ticket_status(ticket["id"], "inprogress")
         except Exception as e:
             logger.error(f"Failed to update ticket timestamps: {e}")
+
 
 
     # ====================== КОМАНДЫ ======================
@@ -2831,13 +2874,18 @@ class GraceHubWorker:
             )
             return
 
-        # 🔹 СЕССИОННЫЙ ФЛУД (>3 подряд)
+        # 🔹 СЕССИОННЫЙ ФЛУД (>=3 подряд) — честно говорим, что НЕ отправили
         user_msgs = self.user_session_messages.get(user_id, 0)
-        if user_msgs >= 3:
-            logger.warning(f"User {user_id} session flood ({user_msgs} msgs)")
+        SESSION_FLOOD_LIMIT = 3
+        if user_msgs >= SESSION_FLOOD_LIMIT:
+            logger.warning("User %s session flood (%s msgs)", user_id, user_msgs)
             await self._send_safe_message(
                 chat_id=message.chat.id,
-                text="⏳ Ваши сообщения доставлены. Ожидайте ответа оператора!",
+                text=(
+                    "⚠️ Слишком много сообщений подряд.\n"
+                    "Это сообщение не отправлено оператору, чтобы не засорять очередь.\n\n"
+                    "Пожалуйста, дождитесь ответа оператора."
+                ),
             )
             return
 
@@ -2855,39 +2903,86 @@ class GraceHubWorker:
             )
             return
 
-        # Валидация размеров вложений
-        too_big = False
+        # -------- Валидация размеров вложений (исправлено) --------
         max_bytes = self.max_file_bytes  # задаётся в __init__ из settings.WORKER_MAX_FILE_MB
+        too_big = False
+
+        async def _check_by_file_id(file_id: str) -> bool:
+            """
+            True => файл проходит лимит
+            False => файл больше лимита
+            """
+            try:
+                return await self.check_file_size(file_id)
+            except Exception as e:
+                # Если Telegram API временно не даёт размер — лучше НЕ блокировать,
+                # иначе возможны ложные отказы. При желании можно сделать наоборот.
+                logger.warning("check_file_size failed for file_id=%s: %s", file_id, e)
+                return True
 
         # Фото (берём максимально крупное)
         if message.photo:
             photo = message.photo[-1]
-            if photo.file_size and photo.file_size > max_bytes:
-                too_big = True
+            if photo.file_size is not None:
+                if photo.file_size > max_bytes:
+                    too_big = True
+            else:
+                ok = await _check_by_file_id(photo.file_id)
+                too_big = not ok
 
         # Документы
-        if message.document and message.document.file_size and message.document.file_size > max_bytes:
-            too_big = True
+        if not too_big and message.document:
+            if message.document.file_size is not None:
+                if message.document.file_size > max_bytes:
+                    too_big = True
+            else:
+                ok = await _check_by_file_id(message.document.file_id)
+                too_big = not ok
 
         # Видео
-        if message.video and message.video.file_size and message.video.file_size > max_bytes:
-            too_big = True
+        if not too_big and message.video:
+            if message.video.file_size is not None:
+                if message.video.file_size > max_bytes:
+                    too_big = True
+            else:
+                ok = await _check_by_file_id(message.video.file_id)
+                too_big = not ok
 
         # Аудио
-        if message.audio and message.audio.file_size and message.audio.file_size > max_bytes:
-            too_big = True
+        if not too_big and message.audio:
+            if message.audio.file_size is not None:
+                if message.audio.file_size > max_bytes:
+                    too_big = True
+            else:
+                ok = await _check_by_file_id(message.audio.file_id)
+                too_big = not ok
 
         # Голосовые
-        if message.voice and message.voice.file_size and message.voice.file_size > max_bytes:
-            too_big = True
+        if not too_big and message.voice:
+            if message.voice.file_size is not None:
+                if message.voice.file_size > max_bytes:
+                    too_big = True
+            else:
+                ok = await _check_by_file_id(message.voice.file_id)
+                too_big = not ok
 
         # Видео-заметки
-        if message.video_note and message.video_note.file_size and message.video_note.file_size > max_bytes:
-            too_big = True
+        if not too_big and message.video_note:
+            if message.video_note.file_size is not None:
+                if message.video_note.file_size > max_bytes:
+                    too_big = True
+            else:
+                ok = await _check_by_file_id(message.video_note.file_id)
+                too_big = not ok
 
         # Стикеры (если хочешь ограничивать и их)
-        if message.sticker and message.sticker.file_size and message.sticker.file_size > max_bytes:
-            too_big = True
+        if not too_big and message.sticker:
+            if message.sticker.file_size is not None:
+                if message.sticker.file_size > max_bytes:
+                    too_big = True
+            else:
+                ok = await _check_by_file_id(message.sticker.file_id)
+                too_big = not ok
 
         if too_big:
             logger.warning(
@@ -2898,9 +2993,13 @@ class GraceHubWorker:
             )
             await self._send_safe_message(
                 chat_id=message.chat.id,
-                text=self.texts.attachment_too_big,  # строка должна быть в языковых файлах
+                text=(
+                    "❌ Вложение слишком большое.\n"
+                    "Пожалуйста, отправьте файл меньшего размера."
+                ),
             )
             return
+        # ---------------------------------------------------------
 
         oc = await self.get_openchat_settings()
 
@@ -2908,21 +3007,15 @@ class GraceHubWorker:
         if oc["enabled"] and oc["chat_id"]:
             try:
                 await self.forward_to_openchat(message)
-                
-                # 🔹 УМНЫЙ АВТООТВЕТ: только на 1-е сообщение сессии
-                if user_msgs == 0:
-                    await self._send_safe_message(
-                        chat_id=message.chat.id,
-                        text="✅ Сообщение передано в поддержку. Скоро ответим!",
-                    )
-                
+
                 # Обновляем счётчик сессии
                 self.user_session_messages[user_id] = user_msgs + 1
                 if self.user_session_messages[user_id] > 10:
                     self.user_session_messages[user_id] = 0
-                    
+
             except Exception as e:
-                logger.error(f"Failed to forward to OpenChat: {e}")
+                logger.error("Failed to forward to OpenChat: %s", e)
+
             return
 
         # Если OpenChat не настроен — информируем пользователя
@@ -2933,7 +3026,6 @@ class GraceHubWorker:
 
 
     # ====================== OPENCHAT: СОБЩЕНИЯ И РЕПЛАИ ======================
-
     async def handle_openchat_message(self, message: Message) -> None:
         """
         Обработка сообщений в чате OpenChat (супергруппа с темами).
@@ -2959,52 +3051,130 @@ class GraceHubWorker:
                 message.from_user.username or "",
             )
 
-        # Валидация размеров вложений от админов/операторов в OpenChat
-        too_big = False
+        # -------- Валидация размеров вложений от админов/операторов в OpenChat (исправлено) --------
         max_bytes = self.max_file_bytes  # задаётся в __init__ из settings.WORKER_MAX_FILE_MB
+        too_big = False
+
+        async def _check_by_file_id(file_id: str) -> bool:
+            """
+            True => файл проходит лимит
+            False => файл больше лимита
+            """
+            try:
+                return await self.check_file_size(file_id)
+            except Exception as e:
+                # При сбоях Telegram API лучше не блокировать (иначе будут ложные отказы).
+                logger.warning("check_file_size failed for file_id=%s: %s", file_id, e)
+                return True
 
         # Фото
         if message.photo:
             photo = message.photo[-1]
-            if photo.file_size and photo.file_size > max_bytes:
-                too_big = True
+            if photo.file_size is not None:
+                if photo.file_size > max_bytes:
+                    too_big = True
+            else:
+                ok = await _check_by_file_id(photo.file_id)
+                too_big = not ok
 
         # Документы
-        if message.document and message.document.file_size and message.document.file_size > max_bytes:
-            too_big = True
+        if not too_big and message.document:
+            if message.document.file_size is not None:
+                if message.document.file_size > max_bytes:
+                    too_big = True
+            else:
+                ok = await _check_by_file_id(message.document.file_id)
+                too_big = not ok
 
         # Видео
-        if message.video and message.video.file_size and message.video.file_size > max_bytes:
-            too_big = True
+        if not too_big and message.video:
+            if message.video.file_size is not None:
+                if message.video.file_size > max_bytes:
+                    too_big = True
+            else:
+                ok = await _check_by_file_id(message.video.file_id)
+                too_big = not ok
 
         # Аудио
-        if message.audio and message.audio.file_size and message.audio.file_size > max_bytes:
-            too_big = True
+        if not too_big and message.audio:
+            if message.audio.file_size is not None:
+                if message.audio.file_size > max_bytes:
+                    too_big = True
+            else:
+                ok = await _check_by_file_id(message.audio.file_id)
+                too_big = not ok
 
         # Голосовые
-        if message.voice and message.voice.file_size and message.voice.file_size > max_bytes:
-            too_big = True
+        if not too_big and message.voice:
+            if message.voice.file_size is not None:
+                if message.voice.file_size > max_bytes:
+                    too_big = True
+            else:
+                ok = await _check_by_file_id(message.voice.file_id)
+                too_big = not ok
 
         # Видео-заметки
-        if message.video_note and message.video_note.file_size and message.video_note.file_size > max_bytes:
-            too_big = True
+        if not too_big and message.video_note:
+            if message.video_note.file_size is not None:
+                if message.video_note.file_size > max_bytes:
+                    too_big = True
+            else:
+                ok = await _check_by_file_id(message.video_note.file_id)
+                too_big = not ok
 
         # Стикеры (если тоже ограничиваем)
-        if message.sticker and message.sticker.file_size and message.sticker.file_size > max_bytes:
-            too_big = True
+        if not too_big and message.sticker:
+            if message.sticker.file_size is not None:
+                if message.sticker.file_size > max_bytes:
+                    too_big = True
+            else:
+                ok = await _check_by_file_id(message.sticker.file_id)
+                too_big = not ok
 
         if too_big:
+            operator_id = message.from_user.id if message.from_user else None
             logger.warning(
                 "Attachment too large from openchat user %s in chat %s (limit %s bytes)",
-                message.from_user.id if message.from_user else None,
+                operator_id,
                 message.chat.id,
                 max_bytes,
             )
-            await self._send_safe_message(
-                chat_id=message.chat.id,
-                text=self.texts.attachment_too_big,
-            )
+
+            # 1) Определяем целевого пользователя по reply_to_message (маппинг admin_message -> user)
+            target_user_id = None
+            try:
+                target_user_id = await self.get_target_user_by_admin_message(
+                    chat_id=message.chat.id,
+                    admin_message_id=message.reply_to_message.message_id,
+                )
+            except Exception as e:
+                logger.error("Failed to resolve target user for big attachment: %s", e)
+
+            # 2) Пишем пользователю в ЛС
+            if target_user_id:
+                try:
+                    await self._send_safe_message(
+                        chat_id=target_user_id,
+                        text=(
+                            "❌ Файл слишком большой и не может быть доставлен в поддержку.\n"
+                            "Пожалуйста, отправьте файл меньшего размера."
+                        ),
+                    )
+                except Exception as e:
+                    logger.error("Failed to notify user %s about big attachment: %s", target_user_id, e)
+
+            # 3) (Опционально) сообщаем в топик, чтобы оператор видел причину
+            try:
+                await self._send_safe_message(
+                    chat_id=message.chat.id,
+                    text="⚠️ Вложение слишком большое и не было доставлено пользователю.",
+                    message_thread_id=getattr(message, "message_thread_id", None),
+                )
+            except Exception as e:
+                logger.error("Failed to notify openchat topic about big attachment: %s", e)
+
             return
+        # ------------------------------------------------------------------------------------------
 
         await self.handle_openchat_reply(message, message.reply_to_message, oc)
 
@@ -3278,8 +3448,8 @@ class GraceHubWorker:
 async def main() -> None:
     setup_logging()
 
-    instance_id = getattr(settings, "WORKER_INSTANCE_ID", None) or os.getenv("WORKERINSTANCEID")
-    token = getattr(settings, "WORKER_TOKEN", None) or os.getenv("WORKERTOKEN")
+    instance_id = getattr(settings, "WORKER_INSTANCE_ID", None) or os.getenv("WORKER_INSTANCE_ID")
+    token = getattr(settings, "WORKER_TOKEN", None) or os.getenv("WORKER_TOKEN")
 
     if not instance_id or not token:
         logger.error("WORKER_INSTANCE_ID and WORKER_TOKEN must be set")
