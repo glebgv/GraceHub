@@ -203,7 +203,12 @@
     "language_hi": "Hindi",
     "language_zh": "Chinese (Mandarin)",
     "toggle_on": "On",
-    "toggle_off": "Off"
+    "toggle_off": "Off",
+    "restart_required_title": "Restart required",
+    "restart_required_text": "The language has been changed. Restart the app to apply the changes everywhere.",
+    "restart_now": "Restart now",
+    "restart_later": "Later",
+    "restart_hint": "If you don’t restart, parts of the interface may stay in the previous language."
   },
   "common": {
     "cancel": "Cancel",

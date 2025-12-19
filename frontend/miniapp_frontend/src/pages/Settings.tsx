@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { apiClient } from '../api/client';
 import { useTranslation } from 'react-i18next';
 
@@ -24,8 +24,18 @@ const Settings: React.FC<SettingsProps> = ({ instanceId }) => {
   const [privacyEnabled, setPrivacyEnabled] = useState(false);
 
   const [language, setLanguage] = useState<LangCode>('ru');
+  const [loadedLanguage, setLoadedLanguage] = useState<LangCode>('ru');
 
   const [dirty, setDirty] = useState(false);
+
+  // Модалка "нужен перезапуск"
+  const [restartModalOpen, setRestartModalOpen] = useState(false);
+  const [restartPending, setRestartPending] = useState(false);
+
+  const languageChanged = useMemo(
+    () => language !== loadedLanguage,
+    [language, loadedLanguage]
+  );
 
   useEffect(() => {
     let isCancelled = false;
@@ -36,7 +46,6 @@ const Settings: React.FC<SettingsProps> = ({ instanceId }) => {
         setError(null);
 
         const data = await apiClient.getSettings(instanceId);
-
         if (isCancelled) return;
 
         setAutoCloseHours(data.autoclose_hours ?? 12);
@@ -48,12 +57,14 @@ const Settings: React.FC<SettingsProps> = ({ instanceId }) => {
 
         const lang: LangCode = (data.language as LangCode) || 'ru';
         setLanguage(lang);
+        setLoadedLanguage(lang);
         // язык переключается централизованно в App, здесь не трогаем i18n
 
         setDirty(false);
       } catch (err: any) {
         if (isCancelled) return;
         setError(err.message);
+        // eslint-disable-next-line no-console
         console.error('Ошибка загрузки настроек:', err);
       } finally {
         if (isCancelled) return;
@@ -70,7 +81,6 @@ const Settings: React.FC<SettingsProps> = ({ instanceId }) => {
 
   const handleLanguageSelect = (lang: LangCode) => {
     setLanguage(lang);
-    // не меняем i18n напрямую, дождёмся сохранения и повторной загрузки настроек в App
     setDirty(true);
   };
 
@@ -79,6 +89,8 @@ const Settings: React.FC<SettingsProps> = ({ instanceId }) => {
     try {
       setError(null);
       setSuccess(null);
+
+      const needRestart = languageChanged;
 
       await apiClient.updateSettings(instanceId, {
         autoclose_hours: autoCloseHours,
@@ -95,8 +107,34 @@ const Settings: React.FC<SettingsProps> = ({ instanceId }) => {
       setSuccess(t('settings.save_success'));
       setDirty(false);
       setTimeout(() => setSuccess(null), 3000);
+
+      // Важно: не обновляем loadedLanguage здесь, чтобы не "съесть" факт смены.
+      // Покажем модалку после успешного сохранения.
+      if (needRestart) {
+        setRestartPending(true);
+        setRestartModalOpen(true);
+      } else {
+        setRestartPending(false);
+      }
     } catch (err: any) {
       setError(`${t('settings.error_prefix')} ${err.message}`);
+    }
+  };
+
+  // Закрытие модалки: оставляем loadedLanguage как было — App при рефреше/перезапуске
+  // подхватит новый язык из настроек и применит.
+  const closeRestartModal = () => {
+    setRestartModalOpen(false);
+  };
+
+  // Опционально: кнопка "Перезапустить" (если это Telegram Mini App, можно попросить закрыть/перезапустить).
+  // Не делаем жесткий reload по умолчанию, чтобы не ломать UX, но дадим возможность.
+  const handleHardReload = () => {
+    try {
+      // Telegram WebApp может игнорировать, но обычный браузер перегрузит.
+      window.location.reload();
+    } catch {
+      // ignore
     }
   };
 
@@ -117,6 +155,79 @@ const Settings: React.FC<SettingsProps> = ({ instanceId }) => {
         <div className="card">
           <h2 style={{ margin: 0 }}>⚙️ {t('settings.title')}</h2>
         </div>
+
+        {/* Модальное окно: нужен перезапуск */}
+        {restartModalOpen && (
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label={t('settings.restart_required_title') || 'Restart required'}
+            onClick={(e) => {
+              // клик по подложке закрывает
+              if (e.target === e.currentTarget) closeRestartModal();
+            }}
+            style={{
+              position: 'fixed',
+              inset: 0,
+              background: 'rgba(0,0,0,0.45)',
+              zIndex: 9999,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: 12,
+            }}
+          >
+            <div
+              className="card"
+              style={{
+                width: '100%',
+                maxWidth: 520,
+                borderRadius: 12,
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <h3 style={{ margin: '0 0 8px 0' }}>
+                {t('settings.restart_required_title') || 'Требуется перезапуск'}
+              </h3>
+              <p style={{ margin: '0 0 12px 0', color: 'var(--tg-color-text)' }}>
+                {t('settings.restart_required_text') ||
+                  'Язык был изменён. Чтобы изменения применились везде, перезапустите приложение.'}
+              </p>
+
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={handleHardReload}
+                  style={{ flex: 1 }}
+                >
+                  {t('settings.restart_now') || 'Перезапустить сейчас'}
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={closeRestartModal}
+                  style={{ flex: 1 }}
+                >
+                  {t('settings.restart_later') || 'Позже'}
+                </button>
+              </div>
+
+              {restartPending && (
+                <small
+                  style={{
+                    display: 'block',
+                    marginTop: 10,
+                    color: 'var(--tg-color-text-secondary)',
+                  }}
+                >
+                  {t('settings.restart_hint') ||
+                    'Если не перезапускать, часть интерфейса может остаться на старом языке.'}
+                </small>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* Липкое сообщение об успехе */}
         {success && (
@@ -219,16 +330,12 @@ const Settings: React.FC<SettingsProps> = ({ instanceId }) => {
                 }}
               />
               <span>
-                {autoReplyEnabled
-                  ? t('settings.toggle_on')
-                  : t('settings.toggle_off')}
+                {autoReplyEnabled ? t('settings.toggle_on') : t('settings.toggle_off')}
               </span>
             </label>
           </div>
           <div className="form-group" style={{ marginTop: '8px' }}>
-            <label className="form-label">
-              {t('settings.autoreply_default_label')}
-            </label>
+            <label className="form-label">{t('settings.autoreply_default_label')}</label>
             <textarea
               className="form-textarea"
               value={defaultAnswer}
@@ -255,9 +362,7 @@ const Settings: React.FC<SettingsProps> = ({ instanceId }) => {
             ⏰ {t('settings.autoclose_title')}
           </h3>
           <div className="form-group">
-            <label className="form-label">
-              {t('settings.autoclose_label')}
-            </label>
+            <label className="form-label">{t('settings.autoclose_label')}</label>
             <input
               className="form-input"
               type="number"
@@ -318,9 +423,7 @@ const Settings: React.FC<SettingsProps> = ({ instanceId }) => {
                 }}
               />
               <span>
-                {privacyEnabled
-                  ? t('settings.toggle_on')
-                  : t('settings.toggle_off')}
+                {privacyEnabled ? t('settings.toggle_on') : t('settings.toggle_off')}
               </span>
             </label>
           </div>
@@ -332,9 +435,7 @@ const Settings: React.FC<SettingsProps> = ({ instanceId }) => {
             🌐 {t('settings.language_title')}
           </h3>
           <div className="form-group">
-            <label className="form-label">
-              {t('settings.language_label')}
-            </label>
+            <label className="form-label">{t('settings.language_label')}</label>
             <select
               className="form-select"
               value={language}

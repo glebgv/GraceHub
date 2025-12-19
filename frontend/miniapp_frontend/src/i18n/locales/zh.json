@@ -203,7 +203,12 @@
     "language_hi": "印地语",
     "language_zh": "中文（普通话）",
     "toggle_on": "开启",
-    "toggle_off": "关闭"
+    "toggle_off": "关闭",
+    "restart_required_title": "需要重启",
+    "restart_required_text": "语言已更改。请重启应用以在所有位置生效。",
+    "restart_now": "立即重启",
+    "restart_later": "稍后",
+    "restart_hint": "如果不重启，部分界面可能仍会显示为之前的语言。"
   },
   "common": {
     "cancel": "取消",

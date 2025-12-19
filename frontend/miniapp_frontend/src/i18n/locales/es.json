@@ -203,7 +203,12 @@
     "language_hi": "Hindi",
     "language_zh": "Chino (Mandarín)",
     "toggle_on": "Activado",
-    "toggle_off": "Desactivado"
+    "toggle_off": "Desactivado",
+    "restart_required_title": "Se requiere reinicio",
+    "restart_required_text": "El idioma ha cambiado. Reinicia la aplicación para aplicar los cambios en todas partes.",
+    "restart_now": "Reiniciar ahora",
+    "restart_later": "Más tarde",
+    "restart_hint": "Si no reinicias, parte de la interfaz может quedar en el idioma anterior."
   },
   "common": {
     "cancel": "Cancelar",

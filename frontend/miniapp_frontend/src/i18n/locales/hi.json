@@ -203,7 +203,12 @@
     "language_hi": "हिंदी",
     "language_zh": "चीनी (मंदारिन)",
     "toggle_on": "चालू",
-    "toggle_off": "बंद"
+    "toggle_off": "बंद",
+    "restart_required_title": "रीस्टार्ट आवश्यक है",
+    "restart_required_text": "भाषा बदल दी गई है। बदलाव हर जगह लागू करने के लिए ऐप रीस्टार्ट करें।",
+    "restart_now": "अभी रीस्टार्ट करें",
+    "restart_later": "बाद में",
+    "restart_hint": "रीस्टार्ट न करने पर इंटरफ़ेस का कुछ हिस्सा पिछली भाषा में रह सकता है।"
   },
   "common": {
     "cancel": "रद्द करें",
