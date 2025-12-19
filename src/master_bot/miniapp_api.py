@@ -1469,6 +1469,24 @@ def create_miniapp_app(
             request_id, instance_id, user_id, getattr(req, "plan_code", None), periods, payment_method,
         )
 
+        async def get_miniapp_public() -> dict:
+            """Читает platformsettings.miniapp_public и гарантированно возвращает dict."""
+            try:
+                raw = await miniapp_db.db.get_platform_setting("miniapp_public", default=None)
+            except Exception:
+                raw = None
+
+            if not raw:
+                return {}
+
+            if isinstance(raw, str):
+                try:
+                    raw = json.loads(raw)
+                except Exception:
+                    return {}
+
+            return raw if isinstance(raw, dict) else {}
+
         # helper: server-side guard for globally disabled payment methods
         async def assert_payment_method_enabled(pm: str) -> None:
             pm = str(pm).strip().lower()
@@ -1482,23 +1500,10 @@ def create_miniapp_app(
             if not method_key:
                 raise HTTPException(status_code=400, detail="Неизвестный метод оплаты")
 
-            # Source of truth: platformsettings key "miniapp_public"
-            try:
-                raw = await miniapp_db.db.get_platform_setting("miniapp_public", default=None)
-            except Exception:
-                raw = None
+            raw = await get_miniapp_public()
 
             # Fail-closed: if settings missing/unreadable -> payments considered disabled
             if not raw:
-                raise HTTPException(status_code=400, detail="Методы оплаты отключены администратором")
-
-            if isinstance(raw, str):
-                try:
-                    raw = json.loads(raw)
-                except Exception:
-                    raw = None
-
-            if not isinstance(raw, dict):
                 raise HTTPException(status_code=400, detail="Методы оплаты отключены администратором")
 
             enabled_flags = ((raw.get("payments") or {}).get("enabled") or {})
@@ -1604,19 +1609,29 @@ def create_miniapp_app(
             # -------------------------
             if payment_method == "ton":
                 plan = req.plan_code.lower()
+
+                raw = await get_miniapp_public()
+                payments = raw.get("payments") or {}
+                ton_cfg = payments.get("ton") or {}
+
+                # prices from SuperAdmin (platformsettings.miniapp_public.payments.ton.*)
                 price_map = {
-                    "lite": settings.TON_PRICE_PER_PERIOD_LITE,
-                    "pro": settings.TON_PRICE_PER_PERIOD_PRO,
-                    "enterprise": settings.TON_PRICE_PER_PERIOD_ENTERPRISE,
+                    "lite": float(ton_cfg.get("pricePerPeriodLite", 0) or 0),
+                    "pro": float(ton_cfg.get("pricePerPeriodPro", 0) or 0),
+                    "enterprise": float(ton_cfg.get("pricePerPeriodEnterprise", 0) or 0),
                 }
-                if plan not in price_map:
-                    raise HTTPException(status_code=400, detail="Этот тариф нельзя оплатить в TON")
+
+                if plan not in price_map or price_map[plan] <= 0:
+                    raise HTTPException(status_code=400, detail="TON: цена не настроена в панели администратора")
 
                 amount_ton = float(price_map[plan]) * float(periods)
                 amount_minor_units = int(amount_ton * 1_000_000_000)
 
-                if not settings.TON_WALLET_ADDRESS:
-                    raise HTTPException(status_code=500, detail="TON_WALLET_ADDRESS не настроен")
+                # wallet from SuperAdmin (with fallback to env settings)
+                ton_address = (ton_cfg.get("walletAddress") or "").strip() or getattr(settings, "TON_WALLET_ADDRESS", "") or ""
+                ton_address = str(ton_address).strip()
+                if not ton_address:
+                    raise HTTPException(status_code=500, detail="TON: walletAddress не настроен")
 
                 invoice_id = await miniapp_db.db.insert_billing_invoice(
                     instance_id=account_instance_id,
@@ -1635,7 +1650,6 @@ def create_miniapp_app(
 
                 comment = f"saas:{invoice_id}"
                 payload = comment
-                ton_address = settings.TON_WALLET_ADDRESS
 
                 invoice_link = (
                     f"https://app.tonkeeper.com/transfer/{ton_address}"
@@ -1650,8 +1664,8 @@ def create_miniapp_app(
                 )
 
                 logger.info(
-                    "billing.create_invoice done request_id=%s method=ton invoice_id=%s amount_minor_units=%s elapsed_ms=%s",
-                    request_id, invoice_id, amount_minor_units, int((time.monotonic() - t0) * 1000),
+                    "billing.create_invoice done request_id=%s method=ton invoice_id=%s amount_minor_units=%s amount_ton=%s elapsed_ms=%s",
+                    request_id, invoice_id, amount_minor_units, amount_ton, int((time.monotonic() - t0) * 1000),
                 )
                 return CreateInvoiceResponse(
                     invoice_id=invoice_id,
@@ -1840,6 +1854,7 @@ def create_miniapp_app(
                 request_id, int((time.monotonic() - t0) * 1000),
             )
             raise HTTPException(status_code=500, detail=f"Internal error (request_id={request_id})")
+
 
 
     async def _toncenter_get_transactions(address: str, limit: int = 30) -> list[dict]:
