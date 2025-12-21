@@ -87,15 +87,15 @@ class MasterBot:
 
         self.setup_handlers()
 
-
-    def _is_master_allowed_user(self, user_id: int) -> bool:
+    async def _is_master_allowed_user(self, user_id: int) -> bool:
         """
-        В single-tenant режиме мастер-бот доступен только OWNER_TELEGRAM_ID.
-        В обычном режиме — всем.
+        In single-tenant mode, the master-bot is accessible only to allowed users from DB.
+        In normal mode, accessible to everyone.
         """
-        if not settings.SINGLE_TENANT_OWNER_ONLY:
+        single_tenant = await self.get_single_tenant_config()
+        if not single_tenant["enabled"]:
             return True
-        return settings.OWNER_TELEGRAM_ID is not None and user_id == settings.OWNER_TELEGRAM_ID
+        return user_id in single_tenant["allowed_user_ids"]
 
     async def get_user_lang(self, user_id: int) -> str:
         lang = await self.db.get_user_language(user_id)
@@ -108,8 +108,10 @@ class MasterBot:
     async def get_single_tenant_config(self) -> dict:
         data = await self.db.get_platform_setting("miniapp_public", default={})
         st = (data or {}).get("single_tenant") or {}
-        enabled = bool(st.get("enabled", False))
-        return {"enabled": enabled}
+        return {
+            "enabled": bool(st.get("enabled", False)),
+            "allowed_user_ids": list(st.get("allowed_user_ids", []))  # Ensure it's a list
+        }
 
     async def _notify_owner_invalid_token(
         self,
@@ -138,16 +140,21 @@ class MasterBot:
         ]
         text = "".join(text_lines)
 
-        try:
-            await self.bot.send_message(chat_id=owner_id, text=text)
-        except TelegramAPIError as e:
-            logger.warning(
-                "Failed to send invalid-token alert to owner %s for instance %s: %s",
-                owner_id,
-                instance.instance_id,
-                e,
-            )
+        single_tenant = await self.get_single_tenant_config()
+        targets = [owner_id]  # Default to instance owner
+        if single_tenant["enabled"]:
+            targets = single_tenant["allowed_user_ids"]  # Notify all allowed
 
+        for target_id in set(targets):  # Dedupe
+            try:
+                await self.bot.send_message(chat_id=target_id, text=text)
+            except TelegramAPIError as e:
+                logger.warning(
+                    "Failed to send invalid-token alert to owner %s for instance %s: %s",
+                    target_id,
+                    instance.instance_id,
+                    e,
+                )
 
     # ====================== БИЛЛИНГ: CRON-ЗАДАЧИ ======================
 
@@ -531,11 +538,9 @@ class MasterBot:
 
     async def handle_billing_main_menu(self, callback: CallbackQuery):
         user_id = callback.from_user.id
-        if settings.SINGLE_TENANT_OWNER_ONLY:
-            owner_id = settings.OWNER_TELEGRAM_ID
-            if not owner_id or user_id != owner_id:
-                await callback.answer("Доступ только владельцу", show_alert=True)
-                return
+        if not await self._is_master_allowed_user(user_id):
+            await callback.answer("Доступ только владельцу", show_alert=True)
+            return
 
         texts = await self.t(user_id)
 
@@ -584,8 +589,6 @@ class MasterBot:
 
         await callback.message.edit_text(text, reply_markup=keyboard)
         await callback.answer()
-
-
 
     async def _send_personal_miniapp_link(
         self,
@@ -678,11 +681,9 @@ class MasterBot:
         """Handle menu callbacks like add_bot, list_bots etc."""
         data = callback.data
         user_id = callback.from_user.id
-        if settings.SINGLE_TENANT_OWNER_ONLY:
-            owner_id = settings.OWNER_TELEGRAM_ID
-            if not owner_id or user_id != owner_id:
-                await callback.answer("Доступ только владельцу", show_alert=True)
-                return
+        if not await self._is_master_allowed_user(user_id):
+            await callback.answer("Доступ только владельцу", show_alert=True)
+            return
 
         texts = await self.t(user_id)
 
@@ -735,19 +736,16 @@ class MasterBot:
 
         await callback.answer()
 
-
     async def cmd_start(self, message: Message, user_id: int | None = None):
         """Handle /start command"""
         if user_id is None:
             user_id = message.from_user.id
 
         # single-tenant защита
-        if settings.SINGLE_TENANT_OWNER_ONLY:
-            owner_id = settings.OWNER_TELEGRAM_ID
-            if not owner_id or user_id != owner_id:
-                texts = await self.t(user_id)
-                await message.answer(texts.master_owner_only)
-                return
+        if not await self._is_master_allowed_user(user_id):
+            texts = await self.t(user_id)
+            await message.answer(texts.master_owner_only)
+            return
 
         # проверка выбранного языка
         user_lang = await self.db.get_user_language(user_id)
@@ -838,15 +836,13 @@ class MasterBot:
 
         await message.answer(text, reply_markup=self.get_main_menu_for_lang(texts))
 
-
     async def handle_billing_choose_plan(self, callback: CallbackQuery):
         user_id = callback.from_user.id
 
-        if settings.SINGLE_TENANT_OWNER_ONLY:
-            owner_id = settings.OWNER_TELEGRAM_ID
-            if not owner_id or user_id != owner_id:
-                await callback.answer("Доступ только владельцу", show_alert=True)
-                return
+        # Single-tenant mode: access only to allowed users
+        if not await self._is_master_allowed_user(user_id):
+            await callback.answer("Access denied in single-tenant mode.", show_alert=True)
+            return
 
         plan_code = callback.data.split("billing_choose_plan_", 1)[1]
         plan = await self.db.get_saas_plan_with_product_by_code(plan_code)
@@ -884,7 +880,6 @@ class MasterBot:
         await callback.message.edit_text(text, reply_markup=kb)
         await callback.answer()
 
-
     async def handle_billing_confirm_plan(self, callback: CallbackQuery):
         user_id = callback.from_user.id
         # язык пользователя/инстанса
@@ -898,11 +893,10 @@ class MasterBot:
 
         texts = get_texts(lang_code)
 
-        if settings.SINGLE_TENANT_OWNER_ONLY:
-            owner_id = settings.OWNER_TELEGRAM_ID
-            if not owner_id or user_id != owner_id:
-                await callback.answer(texts.billing_owner_only, show_alert=True)
-                return
+        # Single-tenant mode: access only to allowed users
+        if not await self._is_master_allowed_user(user_id):
+            await callback.answer(texts.billing_owner_only, show_alert=True)
+            return
 
         # billing_confirm_plan_<plan_code>_<periods>
         payload_part = callback.data.split("billing_confirm_plan_", 1)[1]
@@ -986,7 +980,6 @@ class MasterBot:
         await callback.answer()
 
 
-
     async def handle_pre_checkout_query(self, pre_checkout_query: PreCheckoutQuery):
         """
         Обязательный шаг для Telegram Payments:
@@ -1051,19 +1044,19 @@ class MasterBot:
         """
         user_id = message.from_user.id
 
-        if settings.SINGLE_TENANT_OWNER_ONLY:
-            owner_id = settings.OWNER_TELEGRAM_ID
-            if not owner_id or user_id != owner_id:
-                return
+        # Single-tenant mode: access only to allowed users
+        if not await self._is_master_allowed_user(user_id):
+            await message.answer("Access denied in single-tenant mode.")
+            return
 
         await self.cmd_add_bot(message, user_id=user_id)
 
     async def cmd_add_bot(self, message: Message, user_id: int):
         """Handle add bot command (общая логика)"""
-        if settings.SINGLE_TENANT_OWNER_ONLY:
-            owner_id = settings.OWNER_TELEGRAM_ID
-            if not owner_id or user_id != owner_id:
-                return
+        # Single-tenant mode: access only to allowed users
+        if not await self._is_master_allowed_user(user_id):
+            await message.answer("Access denied in single-tenant mode.")
+            return
 
         chat_id = message.chat.id
         logger.info(
@@ -1103,17 +1096,14 @@ class MasterBot:
 
         await message.answer(text, reply_markup=keyboard)
 
-
     async def handle_instance_entry(self, callback: CallbackQuery):
         # data: "instance_<id>"
         user_id = callback.from_user.id
 
         # Single-tenant режим: доступ только владельцу
-        if settings.SINGLE_TENANT_OWNER_ONLY:
-            owner_id = settings.OWNER_TELEGRAM_ID
-            if not owner_id or user_id != owner_id:
-                await callback.answer("Доступ только владельцу", show_alert=True)
-                return
+        if not await self._is_master_allowed_user(user_id):
+            await callback.answer("Доступ только владельцу", show_alert=True)
+            return
 
         instance_id = callback.data.split("_", 1)[1]
         await self.handle_instance_callback(callback, instance_id)
@@ -1135,11 +1125,9 @@ class MasterBot:
         texts = get_texts(lang_code)
 
         # Single-tenant режим: доступ только владельцу
-        if settings.SINGLE_TENANT_OWNER_ONLY:
-            owner_id = settings.OWNER_TELEGRAM_ID
-            if not owner_id or user_id != owner_id:
-                await callback.answer(texts.master_remove_owner_only, show_alert=True)
-                return
+        if not await self._is_master_allowed_user(user_id):
+            await callback.answer(texts.master_remove_owner_only, show_alert=True)
+            return
 
         if not instance or instance.user_id != user_id:
             await callback.answer(texts.master_remove_not_yours, show_alert=True)
@@ -1179,11 +1167,9 @@ class MasterBot:
         user_id = callback.from_user.id
 
         # Single-tenant режим: доступ только владельцу
-        if settings.SINGLE_TENANT_OWNER_ONLY:
-            owner_id = settings.OWNER_TELEGRAM_ID
-            if not owner_id or user_id != owner_id:
-                await callback.answer("Доступ только владельцу", show_alert=True)
-                return
+        if not await self._is_master_allowed_user(user_id):
+            await callback.answer("Доступ только владельцу", show_alert=True)
+            return
 
         _, action, instance_id = callback.data.split("_", 2)
         instance = await self.db.get_instance(instance_id)
@@ -1238,10 +1224,8 @@ class MasterBot:
         user_id = message.from_user.id
 
         # Single-tenant режим: доступ только владельцу
-        if settings.SINGLE_TENANT_OWNER_ONLY:
-            owner_id = settings.OWNER_TELEGRAM_ID
-            if not owner_id or user_id != owner_id:
-                return
+        if not await self._is_master_allowed_user(user_id):
+            return
 
         instances = await self.db.get_user_instances(user_id)
         texts = await self.t(user_id)
@@ -1277,7 +1261,6 @@ class MasterBot:
 
         keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
         await message.answer(text, reply_markup=keyboard)
-
 
     async def handle_instance_callback(self, callback: CallbackQuery, instance_id: str):
         """Обработка колбэка для управления инстансом"""
@@ -1726,22 +1709,23 @@ class MasterBot:
         return instance
 
     async def cmd_list_bots_entry(self, message: Message):
-        """Entry-поинт для /list_bots"""
+        """Entry-point for /list_bots"""
         user_id = message.from_user.id
 
-        # Single-tenant режим: доступ только владельцу
-        if settings.SINGLE_TENANT_OWNER_ONLY:
-            owner_id = settings.OWNER_TELEGRAM_ID
-            if not owner_id or user_id != owner_id:
-                return
+        # Single-tenant mode: access only to allowed users
+        if not await self._is_master_allowed_user(user_id):
+            await message.answer("Access denied in single-tenant mode.")
+            return
 
         await self.cmd_list_bots(message, user_id=user_id)
 
     async def cmd_list_bots(self, message: Message, user_id: int):
         """List user's bots"""
-        if settings.SINGLE_TENANT_OWNER_ONLY:
-            owner_id = settings.OWNER_TELEGRAM_ID
-            if not owner_id or user_id != owner_id:
+        # Single-tenant mode: access only to allowed users
+        single_tenant = await self.get_single_tenant_config()
+        if single_tenant["enabled"]:
+            if user_id not in single_tenant["allowed_user_ids"]:
+                await message.answer("Access denied in single-tenant mode.")
                 return
 
         instances = await self.db.get_user_instances(user_id)
