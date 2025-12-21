@@ -311,9 +311,9 @@ class GraceHubWorker:
             """
             SELECT user_id, username, last_seen
             FROM operators
-            WHERE instance_id = %s
+            WHERE instance_id = $1
             ORDER BY last_seen DESC
-            LIMIT %s OFFSET %s
+            LIMIT $2 OFFSET $3
             """,
             (self.instance_id, per_page, offset),
         )
@@ -506,7 +506,7 @@ class GraceHubWorker:
             """
             SELECT value
             FROM worker_settings
-            WHERE instance_id = %s AND key = %s
+            WHERE instance_id = $1 AND key = $2
             """,
             (self.instance_id, key),
         )
@@ -516,7 +516,7 @@ class GraceHubWorker:
         await self.db.execute(
             """
             INSERT INTO worker_settings (instance_id, key, value)
-            VALUES (%s, %s, %s)
+            VALUES ($1, $2, $3)
             ON CONFLICT (instance_id, key)
             DO UPDATE SET value = EXCLUDED.value
             """,
@@ -655,7 +655,7 @@ class GraceHubWorker:
             """
             SELECT 1
             FROM autoreply_log
-            WHERE instance_id = %s AND user_id = %s
+            WHERE instance_id = $1 AND user_id = $2
             LIMIT 1
             """,
             (self.instance_id, user_id),
@@ -670,7 +670,7 @@ class GraceHubWorker:
         await self.db.execute(
             """
             INSERT INTO autoreply_log (instance_id, user_id, date)
-            VALUES (%s, %s, %s)
+            VALUES ($1, $2, $3)
             ON CONFLICT (instance_id, user_id, date) DO NOTHING
             """,
             (self.instance_id, user_id, now.date()),
@@ -680,7 +680,7 @@ class GraceHubWorker:
         await self.db.execute(
             """
             INSERT INTO blacklist (instance_id, user_id, username, added_at)
-            VALUES (%s, %s, %s, %s)
+            VALUES ($1, $2, $3, $4)
             ON CONFLICT (instance_id, user_id)
             DO UPDATE SET
                 username = EXCLUDED.username,
@@ -695,8 +695,8 @@ class GraceHubWorker:
                 """
                 UPDATE tickets
                    SET status     = 'spam',
-                       updated_at = %s
-                 WHERE instance_id = %s AND user_id = %s
+                       updated_at = $1
+                 WHERE instance_id = $2 AND user_id = $3
                 """,
                 (now, self.instance_id, user_id),
             )
@@ -712,7 +712,7 @@ class GraceHubWorker:
         await self.db.execute(
             """
             DELETE FROM blacklist
-            WHERE instance_id = %s AND user_id = %s
+            WHERE instance_id = $1 AND user_id = $2
             """,
             (self.instance_id, user_id),
         )
@@ -726,7 +726,7 @@ class GraceHubWorker:
             """
             SELECT user_id, username, added_at
             FROM blacklist
-            WHERE instance_id = %s
+            WHERE instance_id = $1
             ORDER BY added_at DESC
             """,
             (self.instance_id,),
@@ -950,7 +950,7 @@ class GraceHubWorker:
         await self.db.execute(
             """
             INSERT INTO admin_reply_map_v2 (instance_id, chat_id, admin_message_id, target_user_id, created_at)
-            VALUES (%s, %s, %s, %s, %s)
+            VALUES ($1, $2, $3, $4, $5)
             ON CONFLICT (instance_id, chat_id, admin_message_id)
             DO UPDATE SET target_user_id = EXCLUDED.target_user_id,
                           created_at     = EXCLUDED.created_at
@@ -968,7 +968,7 @@ class GraceHubWorker:
             """
             SELECT target_user_id
             FROM admin_reply_map_v2
-            WHERE instance_id = %s AND chat_id = %s AND admin_message_id = %s
+            WHERE instance_id = $1 AND chat_id = $2 AND admin_message_id = $3
             """,
             (self.instance_id, chat_id, admin_message_id),
         )
@@ -1023,7 +1023,7 @@ class GraceHubWorker:
             """
             SELECT *
             FROM tickets
-            WHERE instance_id = %s AND id = %s
+            WHERE instance_id = $1 AND id = $2
             """,
             (self.instance_id, ticket_id),
         )
@@ -1047,25 +1047,30 @@ class GraceHubWorker:
             return
 
         now = datetime.now(timezone.utc)
-        set_parts = ["status = %s", "updated_at = %s"]
+        set_parts = ["status = $1", "updated_at = $2"]
         params: List[Any] = [status, now]
+        counter = 3
 
         if assigned_username is not None:
-            set_parts.append("assigned_username = %s")
+            set_parts.append(f"assigned_username = ${counter}")
             params.append(assigned_username)
+            counter += 1
         if assigned_user_id is not None:
-            set_parts.append("assigned_user_id = %s")
+            set_parts.append(f"assigned_user_id = ${counter}")
             params.append(assigned_user_id)
+            counter += 1
         if status == "closed":
-            set_parts.append("closed_at = %s")
+            set_parts.append(f"closed_at = ${counter}")
             params.append(now)
+            counter += 1
 
-        params.extend([self.instance_id, ticket_id])
+        params.append(self.instance_id)
+        params.append(ticket_id)
 
         sql = f"""
             UPDATE tickets
             SET {", ".join(set_parts)}
-            WHERE instance_id = %s AND id = %s
+            WHERE instance_id = ${counter} AND id = ${counter + 1}
         """
         await self.db.execute(sql, tuple(params))
 
@@ -1332,7 +1337,7 @@ class GraceHubWorker:
                 """
                 SELECT *
                 FROM tickets
-                WHERE instance_id = %s AND chat_id = %s AND username = %s
+                WHERE instance_id = $1 AND chat_id = $2 AND username = $3
                 """,
                 (self.instance_id, chat_id, username),
             )
@@ -1341,7 +1346,7 @@ class GraceHubWorker:
                 """
                 SELECT *
                 FROM tickets
-                WHERE instance_id = %s AND chat_id = %s AND user_id = %s
+                WHERE instance_id = $1 AND chat_id = $2 AND user_id = $3
                 """,
                 (self.instance_id, chat_id, user_id),
             )
@@ -1408,7 +1413,7 @@ class GraceHubWorker:
                 created_at,
                 updated_at
             )
-            VALUES (%s, %s, %s, %s, 'new', %s, %s)
+            VALUES ($1, $2, $3, $4, 'new', $5, $6)
             RETURNING id
             """,
             (self.instance_id, user_id, username, chat_id, now, now),
@@ -1426,8 +1431,8 @@ class GraceHubWorker:
             await self.db.execute(
                 """
                 UPDATE tickets
-                   SET thread_id = %s, updated_at = %s
-                 WHERE instance_id = %s AND id = %s
+                   SET thread_id = $1, updated_at = $2
+                 WHERE instance_id = $3 AND id = $4
                 """,
                 (thread_id, now, self.instance_id, ticket_id),
             )
@@ -1464,7 +1469,7 @@ class GraceHubWorker:
                 INSERT INTO messages (
                     instance_id, chat_id, message_id, user_id, direction, content
                 )
-                VALUES (%s, %s, %s, %s, %s, %s)
+                VALUES ($1, $2, $3, $4, $5, $6)
                 """,
                 (self.instance_id, chat_id, message.message_id, user_id, "user_to_openchat", text_content),
             )
@@ -1695,8 +1700,8 @@ class GraceHubWorker:
                     await self.db.execute(
                         """
                         UPDATE tickets
-                        SET thread_id = %s, updated_at = %s
-                        WHERE instance_id = %s AND id = %s
+                        SET thread_id = $1, updated_at = $2
+                        WHERE instance_id = $3 AND id = $4
                         """,
                         (new_thread_id, now, self.instance_id, ticket["id"]),
                     )
@@ -1763,10 +1768,10 @@ class GraceHubWorker:
             await self.db.execute(
                 """
                 UPDATE tickets
-                SET last_user_msg_at = %s,
-                    updated_at       = %s
-                WHERE instance_id = %s
-                AND id          = %s
+                SET last_user_msg_at = $1,
+                    updated_at       = $2
+                WHERE instance_id = $3
+                AND id          = $4
                 """,
                 (now, now, self.instance_id, ticket["id"]),
             )
@@ -1896,7 +1901,7 @@ class GraceHubWorker:
                     openchat_enabled,
                     updated_at
                 )
-                VALUES (%s, NULL, NULL, %s, NOW())
+                VALUES ($1, NULL, NULL, $2, NOW())
                 ON CONFLICT (instance_id) DO UPDATE
                 SET openchat_username     = NULL,
                     general_panel_chat_id = NULL,
@@ -1986,7 +1991,7 @@ class GraceHubWorker:
                     openchat_enabled,
                     updated_at
                 )
-                VALUES (%s, %s, %s, %s, NOW())
+                VALUES ($1, $2, $3, $4, NOW())
                 ON CONFLICT (instance_id) DO UPDATE
                   SET openchat_username     = EXCLUDED.openchat_username,
                       general_panel_chat_id = EXCLUDED.general_panel_chat_id,
@@ -2539,7 +2544,7 @@ class GraceHubWorker:
                 """
                 SELECT DISTINCT user_id, username, created_at
                 FROM tickets
-                WHERE instance_id = %s
+                WHERE instance_id = $1
                 ORDER BY created_at ASC
                 """,
                 (self.instance_id,),
@@ -2765,7 +2770,7 @@ class GraceHubWorker:
                 """
                 SELECT DISTINCT user_id
                 FROM tickets
-                WHERE instance_id = %s AND username = %s
+                WHERE instance_id = $1 AND username = $2
                 ORDER BY created_at DESC
                 LIMIT 1
                 """,
@@ -3273,10 +3278,10 @@ class GraceHubWorker:
             await self.db.execute(
                 """
                 UPDATE tickets
-                   SET last_admin_reply_at = %s,
-                       updated_at          = %s
-                 WHERE instance_id = %s
-                   AND id          = %s
+                   SET last_admin_reply_at = $1,
+                       updated_at          = $2
+                 WHERE instance_id = $3
+                   AND id          = $4
                 """,
                 (now, now, self.instance_id, ticket["id"]),
             )
@@ -3298,12 +3303,12 @@ class GraceHubWorker:
                     """
                     SELECT id
                     FROM tickets
-                    WHERE instance_id = %s
+                    WHERE instance_id = $1
                       AND status IN ('inprogress', 'answered')
                       AND last_admin_reply_at IS NOT NULL
                       AND (
                           last_user_msg_at IS NULL
-                          OR last_user_msg_at < %s
+                          OR last_user_msg_at < $2
                       )
                     """,
                     (self.instance_id, cutoff),

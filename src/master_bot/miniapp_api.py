@@ -497,7 +497,7 @@ class MiniAppDB:
         await self.db.execute(
             """
             INSERT INTO users (user_id, username, first_name, last_name, language, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s)
+            VALUES ($1, $2, $3, $4, $5, $6)
             ON CONFLICT (user_id)
             DO UPDATE SET
                 username   = EXCLUDED.username,
@@ -533,7 +533,7 @@ class MiniAppDB:
                 sp.period_days
             FROM instance_billing AS ib
             JOIN saas_plans AS sp ON sp.plan_id = ib.plan_id
-            WHERE ib.instance_id = %s
+            WHERE ib.instance_id = $1
             """,
             (instance_id,),
         )
@@ -542,7 +542,7 @@ class MiniAppDB:
 
     async def get_worker_setting(self, instanceid: str, key: str) -> Optional[str]:
         row = await self.db.fetchone(
-            "SELECT value FROM worker_settings WHERE instance_id = %s AND key = %s",
+            "SELECT value FROM worker_settings WHERE instance_id = $1 AND key = $2",
             (instanceid, key),
         )
         return row["value"] if row else None
@@ -551,7 +551,7 @@ class MiniAppDB:
         await self.db.execute(
             """
             INSERT INTO worker_settings (instance_id, key, value)
-            VALUES (%s, %s, %s)
+            VALUES ($1, $2, $3)
             ON CONFLICT (instance_id, key) DO UPDATE
               SET value = EXCLUDED.value
             """,
@@ -607,7 +607,7 @@ class MiniAppDB:
                 bp.is_active
             FROM billing_products AS bp
             JOIN saas_plans       AS sp ON sp.plan_id = bp.plan_id
-            WHERE sp.code = %s
+            WHERE sp.code = $1
             AND bp.is_active = TRUE
             LIMIT 1
             """,
@@ -628,7 +628,7 @@ class MiniAppDB:
                 bi.owner_user_id,
                 bi.admin_private_chat_id
             FROM bot_instances bi
-            WHERE bi.owner_user_id = %s
+            WHERE bi.owner_user_id = $1
             ORDER BY bi.created_at DESC
             LIMIT 1
             """,
@@ -651,7 +651,7 @@ class MiniAppDB:
                 openchat_enabled,
                 language
             FROM instance_meta
-            WHERE instance_id = %s
+            WHERE instance_id = $1
             """,
             (inst["instance_id"],),
         )
@@ -673,7 +673,7 @@ class MiniAppDB:
         await self.db.execute(
             """
             INSERT INTO instance_members (instance_id, user_id, role, created_at)
-            VALUES (%s, %s, %s, %s)
+            VALUES ($1, $2, $3, $4)
             ON CONFLICT (instance_id, user_id)
             DO UPDATE SET
                 role       = EXCLUDED.role,
@@ -691,7 +691,7 @@ class MiniAppDB:
             user_id,
         )
         await self.db.execute(
-            "DELETE FROM instance_members WHERE instance_id = %s AND user_id = %s",
+            "DELETE FROM instance_members WHERE instance_id = $1 AND user_id = $2",
             (instance_id, user_id),
         )
 
@@ -705,7 +705,7 @@ class MiniAppDB:
             SELECT im.user_id, u.username, im.role, im.created_at
             FROM instance_members im
             LEFT JOIN users u ON im.user_id = u.user_id
-            WHERE im.instance_id = %s
+            WHERE im.instance_id = $1
             ORDER BY im.role DESC, im.created_at ASC
             """,
             (instance_id,),
@@ -730,8 +730,8 @@ class MiniAppDB:
             """
             SELECT LOWER(status) AS status, COUNT(*) AS cnt
             FROM tickets
-            WHERE instance_id = %s
-            AND created_at >= %s
+            WHERE instance_id = $1
+            AND created_at >= $2
             GROUP BY LOWER(status)
             """,
             (instance_id, date_from),
@@ -766,8 +766,8 @@ class MiniAppDB:
             """
             SELECT COUNT(DISTINCT user_id) AS uniq_users
             FROM tickets
-            WHERE instance_id = %s
-            AND created_at >= %s
+            WHERE instance_id = $1
+            AND created_at >= $2
             """,
             (instance_id, date_from),
         )
@@ -778,8 +778,8 @@ class MiniAppDB:
             """
             SELECT created_at, last_admin_reply_at
             FROM tickets
-            WHERE instance_id = %s
-            AND created_at >= %s
+            WHERE instance_id = $1
+            AND created_at >= $2
             AND last_admin_reply_at IS NOT NULL
             """,
             (instance_id, date_from),
@@ -832,8 +832,9 @@ class MiniAppDB:
         с учётом фильтра по статусу и поиску, плюс total для пагинации.
         """
 
-        where_clauses: List[str] = ["instance_id = %s"]
+        where_clauses: List[str] = ["instance_id = $1"]
         params: List[Any] = [instanceid]
+        counter = 2
 
         # фильтр по статусу (нормализуем как раньше)
         if status:
@@ -848,32 +849,31 @@ class MiniAppDB:
             if not allowed_raw:
                 return [], 0
 
-            placeholders = ", ".join(["%s"] * len(allowed_raw))
+            placeholders = ", ".join(f"${counter + i}" for i in range(len(allowed_raw)))
             where_clauses.append(f"LOWER(status) IN ({placeholders})")
             params.extend([s.lower() for s in allowed_raw])
+            counter += len(allowed_raw)
 
         # поиск по username / user_id
         if search:
             where_clauses.append(
-                "(username ILIKE %s OR CAST(user_id AS TEXT) LIKE %s)"
+                f"(username ILIKE ${counter} OR CAST(user_id AS TEXT) LIKE ${counter+1})"
             )
             like = f"%{search}%"
             params.extend([like, like])
+            counter += 2
 
         where_sql = " WHERE " + " AND ".join(where_clauses) if where_clauses else ""
 
         # total
-        row = await self.db.fetchone(
-            f"SELECT COUNT(*) AS cnt FROM tickets{where_sql}",
-            tuple(params),
-        )
+        count_sql = f"SELECT COUNT(*) AS cnt FROM tickets{where_sql}"
+        row = await self.db.fetchone(count_sql, tuple(params))
         total = int(row["cnt"]) if row else 0
         if total == 0:
             return [], 0
 
         # список тикетов
-        rows = await self.db.fetchall(
-            f"""
+        list_sql = f"""
             SELECT
                 id                  AS ticketid,
                 user_id             AS userid,
@@ -886,10 +886,9 @@ class MiniAppDB:
             FROM tickets
             {where_sql}
             ORDER BY created_at DESC
-            LIMIT %s OFFSET %s
-            """,
-            tuple(params + [limit, offset]),
-        )
+            LIMIT ${len(params)+1} OFFSET ${len(params)+2}
+            """
+        rows = await self.db.fetchall(list_sql, tuple(params + [limit, offset]))
 
         status_norm_map = {
             "new": "new",
@@ -987,7 +986,7 @@ class MiniAppDB:
                 bi.user_id       AS owner_id,
                 bi.owner_user_id AS integrator_id
             FROM bot_instances bi
-            WHERE bi.instance_id = %s
+            WHERE bi.instance_id = $1
             """,
             (instance_id,),
         )
@@ -1044,7 +1043,7 @@ class MiniAppDB:
             """
             SELECT value
             FROM worker_settings
-            WHERE instance_id = %s AND key = 'privacy_mode_enabled'
+            WHERE instance_id = $1 AND key = 'privacy_mode_enabled'
             """,
             (instance_id,),
         )
@@ -1055,7 +1054,7 @@ class MiniAppDB:
         await self.db.execute(
             """
             INSERT INTO worker_settings (instance_id, key, value)
-            VALUES (%s, %s, %s)
+            VALUES ($1, $2, $3)
             ON CONFLICT (instance_id, key) DO UPDATE
               SET value = EXCLUDED.value
             """,
@@ -1066,7 +1065,7 @@ class MiniAppDB:
         self, instance_id: str, payload: UpdateInstanceSettings
     ) -> None:
         existing = await self.db.fetchone(
-            "SELECT * FROM instance_meta WHERE instance_id = %s",
+            "SELECT * FROM instance_meta WHERE instance_id = $1",
             (instance_id,),
         )
 
@@ -1132,17 +1131,17 @@ class MiniAppDB:
                     openchat_enabled,
                     language,
                     updated_at
-                ) VALUES (%s, NULL, NULL, %s, %s, %s, %s, %s, %s, %s)
+                ) VALUES ($1, NULL, NULL, $2, $3, $4, $5, $6, $7, $8)
                 """,
                 (
-                    instance_id,                         # %s (instance_id)
-                    fields["auto_close_hours"],          # %s (auto_close_hours)
-                    fields["auto_reply_greeting"],       # %s (auto_reply_greeting)
-                    fields["auto_reply_default_answer"], # %s (auto_reply_default_answer)
-                    fields["branding_bot_name"],         # %s (branding_bot_name)
-                    fields["openchat_enabled"],          # %s (openchat_enabled)
-                    fields["language"],                  # %s (language)
-                    datetime.now(timezone.utc),          # %s (updated_at)
+                    instance_id,                         # $1 (instance_id)
+                    fields["auto_close_hours"],          # $2 (auto_close_hours)
+                    fields["auto_reply_greeting"],       # $3 (auto_reply_greeting)
+                    fields["auto_reply_default_answer"], # $4 (auto_reply_default_answer)
+                    fields["branding_bot_name"],         # $5 (branding_bot_name)
+                    fields["openchat_enabled"],          # $6 (openchat_enabled)
+                    fields["language"],                  # $7 (language)
+                    datetime.now(timezone.utc),          # $8 (updated_at)
                 ),
             )
 
@@ -1152,10 +1151,10 @@ class MiniAppDB:
 
             for col, value in fields.items():
                 if value is not None:
-                    set_parts.append(f"{col} = %s")
+                    set_parts.append(f"{col} = ${len(params)+1}")
                     params.append(value)
 
-            set_parts.append("updated_at = %s")
+            set_parts.append(f"updated_at = ${len(params)+1}")
             params.append(datetime.now(timezone.utc))
             params.append(instance_id)
 
@@ -1163,7 +1162,7 @@ class MiniAppDB:
                 sql = f"""
                 UPDATE instance_meta
                 SET {", ".join(set_parts)}
-                WHERE instance_id = %s
+                WHERE instance_id = ${len(params)}
                 """
                 await self.db.execute(sql, tuple(params))
 
@@ -1711,12 +1710,12 @@ def create_miniapp_app(
                 }
 
                 logger.info(
-                    "billing.create_invoice yookassa price_map request_id=%s plan=%s price_map_rub=%s periods=%s",
-                    request_id, plan, price_map_rub, periods,
+                    "billing.create_invoice yookassa price_map_rub request_id=%s price_lite=%s price_pro=%s price_enterprise=%s",
+                    request_id, price_map_rub["lite"], price_map_rub["pro"], price_map_rub["enterprise"],
                 )
 
                 if plan not in price_map_rub or price_map_rub[plan] <= 0:
-                    raise HTTPException(status_code=400, detail="Этот тариф нельзя оплатить в ЮKassa (цена не настроена в панели администратора)")
+                    raise HTTPException(status_code=400, detail="ЮKassa: цена не настроена в панели администратора")
 
                 amount_rub = float(price_map_rub[plan]) * float(periods)
                 amount_minor_units = int(round(amount_rub * 100))
@@ -1726,7 +1725,6 @@ def create_miniapp_app(
                     "billing.create_invoice yookassa amount request_id=%s amount_rub=%s amount_value=%s amount_minor_units=%s",
                     request_id, amount_rub, amount_value, amount_minor_units,
                 )
-
                 try:
                     invoice_id = await miniapp_db.db.insert_billing_invoice(
                         instance_id=account_instance_id,
@@ -2454,7 +2452,7 @@ def create_miniapp_app(
         data = await _yookassa_get_payment(payment_id)
         st = (data.get("status") or "pending").lower()
 
-        # amount.value в ЮKassa обычно строка вида "199.00" => переводим в копейки [web:286]
+        # amount.value в ЮKassa обычно строка вида "199.00" => переводим в копейки 
         amt = data.get("amount") or {}
         currency = amt.get("currency") or "RUB"
         value_str = amt.get("value") or "0.00"
@@ -2506,7 +2504,7 @@ def create_miniapp_app(
 
         invoice_id = int(inv["invoiceid"])
 
-        # перепроверка статуса через API (рекомендованный подход) [web:294]
+        # перепроверка статуса через API (рекомендованный подход) 
         data = await _yookassa_get_payment(payment_id)
         st = (data.get("status") or "pending").lower()
 
