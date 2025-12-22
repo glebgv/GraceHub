@@ -153,15 +153,15 @@ class UserState:
 @dataclass
 class UpdateQueueItem:
     instance_id: str
-    updatedata: Dict[str, Any]
+    updated_ata: Dict[str, Any]
     priority: int = 0
     created_at: datetime = datetime.now()
 
-    # alias for updatedata to keep current callers intact if needed
+    # alias for updated_ata to keep current callers intact if needed
     @property
     def update_data(self) -> Dict[str, Any]:
-        return self.updatedata
+        return self.updated_ata
 
     @update_data.setter
     def update_data(self, v: Dict[str, Any]) -> None:
-        self.updatedata = v
+        self.updated_ata = v

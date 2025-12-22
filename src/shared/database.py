@@ -104,6 +104,25 @@ class MasterDatabase:
         return max(v, 0)
 
 
+    async def update_instance_webhook(
+        self,
+        instance_id: str,
+        webhook_url: str,
+        webhook_path: str,
+        webhook_secret: str,
+    ) -> None:
+        await self.execute(
+            """
+            UPDATE bot_instances
+            SET webhook_url = $1,
+                webhook_path = $2,
+                webhook_secret = $3,
+                updated_at = NOW()
+            WHERE instance_id = $4
+            """,
+            (webhook_url, webhook_path, webhook_secret, instance_id),
+        )
+
     def get_or_create_encryption_key(self) -> bytes:
         keyfile = Path(settings.ENCRYPTION_KEY_FILE)
         keyfile.parent.mkdir(parents=True, exist_ok=True)
@@ -316,7 +335,7 @@ class MasterDatabase:
                 webhook_secret,
                 status,
                 created_at,
-                updatedat AS updated_at,    
+                updated_at AS updated_at,    
                 error_message,
                 owner_user_id,
                 admin_private_chat_id
@@ -777,7 +796,7 @@ class MasterDatabase:
                         webhook_secret          TEXT NOT NULL,
                         status                  TEXT NOT NULL,
                         created_at              TIMESTAMPTZ NOT NULL,
-                        updatedat               TIMESTAMPTZ,
+                        updated_at               TIMESTAMPTZ,
                         error_message           TEXT,
                         owner_user_id           BIGINT,
                         admin_private_chat_id   BIGINT
@@ -858,6 +877,37 @@ class MasterDatabase:
                     """
                 )
 
+                # instance_settings (уже добавлена ранее)
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS instance_settings (
+                        instance_id TEXT PRIMARY KEY REFERENCES bot_instances(instance_id) ON DELETE CASCADE,
+                        openchat_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+                        autoclose_hours INTEGER NOT NULL DEFAULT 12,
+                        general_panel_chat_id BIGINT,
+                        auto_reply JSONB,
+                        branding JSONB,
+                        privacy_mode_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+                        language TEXT,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        updated_at TIMESTAMPTZ
+                    )
+                    """
+                )
+
+                # blacklisted_users
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS blacklisted_users (
+                        instance_id TEXT NOT NULL REFERENCES bot_instances(instance_id) ON DELETE CASCADE,
+                        user_id BIGINT NOT NULL,
+                        reason TEXT,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        PRIMARY KEY (instance_id, user_id)
+                    )
+                    """
+                )
+
                 # Индексы
                 await conn.execute("CREATE INDEX IF NOT EXISTS idx_instances_user   ON bot_instances(user_id)")
                 await conn.execute("CREATE INDEX IF NOT EXISTS idx_instances_status ON bot_instances(status)")
@@ -876,6 +926,7 @@ class MasterDatabase:
         logger.info(
             "Master database tables initialized (Postgres, including miniapp, worker and billing tables)"
         )
+
 
     async def _create_miniapp_tables(self, conn) -> None:
         await conn.execute(
@@ -1004,6 +1055,12 @@ class MasterDatabase:
             """
             CREATE INDEX IF NOT EXISTS idx_tickets_status
             ON tickets(instance_id, status)
+            """
+        )
+        await conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_tickets_instance_status_msg
+            ON tickets (instance_id, status, last_user_msg_at)
             """
         )
 
@@ -1247,7 +1304,7 @@ class MasterDatabase:
                     )
                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
                     """,
-                    (
+                    *(
                         instance.instance_id,
                         instance.user_id,
                         instance.token_hash,
@@ -1269,8 +1326,17 @@ class MasterDatabase:
         await self.ensure_default_billing(instance.instance_id)
 
     async def delete_instance(self, instance_id: str) -> None:
-        await self.execute("DELETE FROM bot_instances WHERE instance_id = $1", (instance_id,))
-
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                # Удаляем связанные записи
+                await conn.execute("DELETE FROM instance_settings WHERE instance_id = $1", *(instance_id,))
+                await conn.execute("DELETE FROM instance_billing WHERE instance_id = $1", *(instance_id,))
+                await conn.execute("DELETE FROM operators WHERE instance_id = $1", *(instance_id,))
+                await conn.execute("DELETE FROM tickets WHERE instance_id = $1", *(instance_id,))
+                await conn.execute("DELETE FROM blacklisted_users WHERE instance_id = $1", *(instance_id,))
+                await conn.execute("DELETE FROM rate_limits WHERE instance_id = $1", *(instance_id,))
+                # Удаляем инстанс
+                await conn.execute("DELETE FROM bot_instances WHERE instance_id = $1", *(instance_id,))
 
     async def update_billing_invoice_link_and_payload(
         self,
@@ -1524,7 +1590,7 @@ class MasterDatabase:
         await self.execute(
             """
             UPDATE bot_instances
-               SET status = $1, updatedat = $2, error_message = $3
+               SET status = $1, updated_at = $2, error_message = $3
              WHERE instance_id = $4
             """,
             (
@@ -1856,7 +1922,7 @@ class MasterDatabase:
                 # уже есть биллинг — ничего не делаем
                 row = await conn.fetchrow(
                     "SELECT 1 FROM instance_billing WHERE instance_id = $1",
-                    (instance_id,)
+                    *(instance_id,)
                 )
                 if row:
                     return
@@ -1864,7 +1930,7 @@ class MasterDatabase:
                 # ищем demo-план
                 row = await conn.fetchrow(
                     "SELECT plan_id, period_days, tickets_limit FROM saas_plans WHERE code = $1",
-                    ("demo",)
+                    *("demo",)
                 )
                 if not row:
                     logger.error("ensure_default_billing: demo plan not found, instance_id=%s", instance_id)
@@ -1894,7 +1960,7 @@ class MasterDatabase:
                     )
                     VALUES ($1, $2, $3, $4, 0, $5, FALSE, NULL, NULL, $6, $7)
                     """,
-                    (
+                    *(
                         instance_id,
                         plan_id,
                         period_start,
@@ -1919,7 +1985,7 @@ class MasterDatabase:
             webhook_secret=row["webhook_secret"],
             status=InstanceStatus(row["status"]),
             created_at=row["created_at"],
-            updated_at=row["updatedat"],
+            updated_at=row["updated_at"],
             error_message=row["error_message"],
             owner_user_id=row.get("owner_user_id"),
             admin_private_chat_id=row.get("admin_private_chat_id"),

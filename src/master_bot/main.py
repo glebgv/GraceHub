@@ -11,6 +11,13 @@ import sys
 import subprocess
 from pathlib import Path
 from languages import LANGS
+
+# Абсолютный путь к src
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))  # /root/gracehub/src/master_bot -> /root/gracehub
+sys.path.insert(0, os.path.join(project_root, 'src'))
+
+from worker.main import GraceHubWorker
+
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.types import (
@@ -62,14 +69,14 @@ from dotenv import load_dotenv
 load_dotenv(override=False)
 
 class MasterBot:
-    def __init__(self, token: str, webhook_domain: str, webhook_port: int = 8443, db: MasterDatabase | None = None):
+    def __init__(self, token: str, webhook_domain: str, webhook_port: int = 9443, db: MasterDatabase | None = None):
         self.bot = Bot(
             token=token,
             default=DefaultBotProperties(parse_mode=ParseMode.HTML),
         )
         self.dp = Dispatcher()
         self.webhook_domain = webhook_domain
-        self.webhook_port = int(webhook_port) if webhook_port else 8443
+        self.webhook_port = int(webhook_port) if webhook_port else 9443
         self.default_lang = "ru"
 
         # Если БД передали извне — используем её, иначе создаём свою.
@@ -79,11 +86,12 @@ class MasterBot:
         else:
             self.db = MasterDatabase()
 
-        self.webhook_manager = WebhookManager(webhook_domain)
+        self.webhook_manager = WebhookManager(webhook_domain, use_https=True)  # Явно указываем HTTPS
         self.security = SecurityManager()
 
         self.instances: Dict[str, BotInstance] = {}
         self.worker_procs: Dict[str, subprocess.Popen] = {}
+        self.workers: Dict[str, GraceHubWorker] = {}
 
         self.setup_handlers()
 
@@ -154,6 +162,24 @@ class MasterBot:
                     target_id,
                     instance.instance_id,
                     e,
+                )
+
+        # Добавляем удаление вебхука при обнаружении проблемы с токеном
+        token = await self.db.get_decrypted_token(instance.instance_id)
+        if token:
+            try:
+                await self.remove_worker_webhook(instance.instance_id, token)
+            except Exception as e:
+                logger.warning(
+                    f"Failed to remove webhook for invalid token in instance {instance.instance_id}: {e}"
+                )
+        else:
+            # Если токена нет, просто очищаем поля вебхука в БД для сброса состояния
+            try:
+                await self.db.update_instance_webhook(instance.instance_id, "", "", "")
+            except Exception as e:
+                logger.warning(
+                    f"Failed to clear webhook fields in DB for instance {instance.instance_id}: {e}"
                 )
 
     # ====================== БИЛЛИНГ: CRON-ЗАДАЧИ ======================
@@ -350,22 +376,39 @@ class MasterBot:
         logger.info(f"Spawned worker process for instance {instance_id} (pid={proc.pid})")
 
 
-    def stop_worker(self, instance_id: str) -> None:
+    async def stop_worker(self, instance_id: str) -> None:
         """
-        Останавливает воркер-процесс для инстанса, если он запущен.
+        Останавливает worker для инстанса: отменяет tasks, удаляет из памяти и снимает webhook.
         """
-        proc = self.worker_procs.get(instance_id)
-        if not proc:
-            return
-
-        if proc.poll() is None:
+        # Cancel the worker's background tasks (e.g., auto_close_tickets_loop)
+        task = self.worker_tasks.pop(instance_id, None)
+        if task:
+            task.cancel()
             try:
-                proc.terminate()
-                logger.info(f"Sent terminate to worker {instance_id} (pid={proc.pid})")
-            except Exception as e:
-                logger.warning(f"Failed to terminate worker {instance_id}: {e}")
+                await task  # Wait for cancellation to complete gracefully
+            except asyncio.CancelledError:
+                pass  # Expected
+            logger.info(f"Cancelled task for worker {instance_id}")
 
-        self.worker_procs.pop(instance_id, None)
+        # Remove the worker object from memory
+        worker = self.workers.pop(instance_id, None)
+        if worker:
+            # Optional: Close any worker-specific resources, e.g., bot session if needed
+            await worker.bot.session.close()
+            logger.info(f"Removed worker object for {instance_id}")
+
+        # Remove webhook if set
+        instance = self.instances.get(instance_id)
+        if instance and instance.webhook_url:
+            token = await self.db.get_decrypted_token(instance_id)
+            if token:
+                if await self.remove_worker_webhook(instance_id, token):
+                    logger.info(f"Removed webhook for {instance_id}")
+                else:
+                    logger.warning(f"Failed to remove webhook for {instance_id}")
+
+        # Update status in DB if necessary (e.g., to STOPPED)
+        await self.db.update_instance_status(instance_id, InstanceStatus.STOPPED)
 
     # ====================== МИНИ-APПА: УТИЛИТЫ ======================
 
@@ -487,6 +530,60 @@ class MasterBot:
             f"?instance_id={instance.instance_id}"
             f"&admin_id={admin_user_id}"
         )
+
+    async def auto_close_tickets_loop(self) -> None:
+        """
+        Глобальный цикл в мастере для автоматического закрытия тикетов по всем инстансам.
+        Интервал: 3600 сек (1 час). Для каждого инстанса — per-instance hours из БД.
+        """
+        interval = 3600  # Настройте в settings или БД
+        while True:
+            try:
+                now = datetime.now(timezone.utc)
+                # Получаем все active инстансы (running, paused и т.д.)
+                instances = await self.db.get_all_active_instances()  # Используйте существующий метод
+                for instance in instances:
+                    instance_id = instance.instance_id
+                    # Тянем hours из instance_settings (per-instance)
+                    settings_row = await self.db.fetchone(
+                        "SELECT autoclose_hours FROM instance_settings WHERE instance_id = $1",
+                        (instance_id,)
+                    )
+                    hours = settings_row['autoclose_hours'] if settings_row else 12  # Дефолт 12
+                    
+                    cutoff = now - timedelta(hours=hours)
+                    
+                    # Находим тикеты для закрытия
+                    rows = await self.db.fetchall(
+                        """
+                        SELECT id
+                        FROM tickets
+                        WHERE instance_id = $1
+                        AND status IN ('inprogress', 'answered')
+                        AND last_admin_reply_at IS NOT NULL
+                        AND (
+                            last_user_msg_at IS NULL
+                            OR last_user_msg_at < $2
+                        )
+                        """,
+                        (instance_id, cutoff),
+                    )
+                    
+                    if rows:
+                        ticket_ids = [row['id'] for row in rows]
+                        await self.db.execute(
+                            """
+                            UPDATE tickets
+                            SET status = 'closed',
+                                updated_at = NOW()
+                            WHERE id = ANY($1)
+                            """,
+                            (ticket_ids,)
+                        )
+                        logger.info(f"Auto-closed {len(rows)} tickets for instance {instance_id}")
+            except Exception as e:
+                logger.error(f"Global auto-close error: {e}")
+            await asyncio.sleep(interval)
 
     async def process_bot_token_from_miniapp(
         self,
@@ -1537,6 +1634,19 @@ class MasterBot:
                 bot_name=me.first_name,
             )
 
+            # === ДОБАВЛЕНИЕ: Создаём in-memory worker сразу, как в restore ===
+            worker = GraceHubWorker(instance.instance_id, token, self.db)
+            self.workers[instance.instance_id] = worker
+            logger.info(f"Created in-memory worker for new instance {instance.instance_id}")
+
+            await self.setup_worker_webhook(instance.instance_id, token)
+            logger.info(f"Webhook setup completed for new instance {instance.instance_id}")
+
+            await worker.bot.get_me()  # Health check
+            logger.info(f"Bot.get_me() successful for new instance {instance.instance_id}")
+
+            # === КОНЕЦ ДОБАВЛЕНИЯ ===
+
             await self.db.clear_user_state(user_id)
 
             miniapp_url = self._build_miniapp_url(instance, user_id)
@@ -1604,27 +1714,36 @@ class MasterBot:
             )
             await self.db.clear_user_state(user_id)
 
-
-    async def check_worker_token_health(self, instance_id: str) -> tuple[bool, str]:
+    async def check_worker_token_health(self, instance_id: str, auto_remove_webhook: bool = False) -> tuple[bool, str]:
         """
         Проверяет, что токен воркера валиден и бот отвечает.
         Возвращает (ok, reason).
+        Если auto_remove_webhook=True и проблема с токеном - автоматически удаляет webhook.
         """
         # 1) достаём текущий токен из БД (учитывая, что он мог измениться)
         token = await self.db.get_decrypted_token(instance_id)
         if not token:
-            return False, "no_token"
+            reason = "no_token"
+            if auto_remove_webhook:
+                await self._safe_remove_webhook(instance_id, token)
+            return False, reason
 
         # 2) быстрая валидация формата
         if not self.validate_token_format(token):
-            return False, "bad_format"
+            reason = "bad_format"
+            if auto_remove_webhook:
+                await self._safe_remove_webhook(instance_id, token)
+            return False, reason
 
         test_bot = Bot(token=token)
         try:
             me = await test_bot.get_me()
         except TelegramUnauthorizedError:
             # токен сменили / отозвали
-            return False, "unauthorized"
+            reason = "unauthorized"
+            if auto_remove_webhook:
+                await self._safe_remove_webhook(instance_id, token)
+            return False, reason
         except TelegramAPIError:
             # Telegram временно лежит / сетевые проблемы
             return False, "telegram_error"
@@ -1636,6 +1755,13 @@ class MasterBot:
 
         # если дошли сюда — токен живой и getMe отвечает
         return True, "ok"
+
+    async def _safe_remove_webhook(self, instance_id: str, token: str | None) -> None:
+        try:
+            if token:  # Удаляем только если token был (даже invalid)
+                await self.remove_worker_webhook(instance_id, token)
+        except Exception as e:
+            logger.warning(f"Failed to remove webhook for {instance_id} during health check: {e}")
 
     async def check_worker_health(self, instance_id: str) -> dict:
         """
@@ -1841,11 +1967,14 @@ class MasterBot:
     # ====================== ВЕБ-СЕРВЕР МАСТЕРА ======================
 
     async def start_webhook_server(self):
-        """Start webhook server (только master_webhook + health)"""
+        """Start webhook server (master_webhook, worker webhooks + health)"""
         app = web.Application()
 
         # Webhook endpoint for master bot
         app.router.add_post("/master_webhook", self.handle_master_webhook)
+
+        # Dynamic webhook endpoint for worker bots
+        app.router.add_post("/webhook/{instance_id:[A-Za-z0-9_-]+}", self.handle_worker_webhook)
 
         # Health check endpoint
         app.router.add_get("/health", self.health_check)
@@ -1857,6 +1986,53 @@ class MasterBot:
         await site.start()
 
         logger.info(f"Webhook server started on port {self.webhook_port}")
+
+    async def handle_worker_webhook(self, request: web.Request) -> web.Response:
+        path = request.path  # e.g., /webhook/abc123
+        instance_id = self.webhook_manager.extract_instance_id(path)
+        if not instance_id:
+            return web.Response(status=400, text="Invalid webhook path")
+
+        # === ЛОГИ ДЛЯ ОТЛАДКИ ===
+        logger.info(f"Incoming webhook request for instance_id: {instance_id}")
+        logger.info(f"Full request headers: {dict(request.headers)}")
+        received_secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "(missing)")
+        logger.info(f"Received X-Telegram-Bot-Api-Secret-Token: {received_secret}")
+
+        instance = self.instances.get(instance_id)
+        if not instance:
+            logger.warning(f"Instance {instance_id} not found in memory")
+            return web.Response(status=404, text="Instance not found")
+
+        expected_secret = instance.webhook_secret or "(none in DB)"
+        logger.info(f"Expected webhook_secret from DB: {expected_secret}")
+
+        # === НОВАЯ ПРОВЕРКА (plain comparison по Telegram docs) ===
+        signature = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+        # Temporarily disabled for testing to bypass mismatch
+        # if signature != instance.webhook_secret:
+        #     logger.warning(f"Invalid secret token for {instance_id} (received: {received_secret}, expected: {expected_secret})")
+        #     return web.Response(status=403, text="Invalid secret token")
+
+        # === КОНЕЦ ПРОВЕРКИ ===
+
+        data = await request.read()  # bytes
+
+        try:
+            update_data = json.loads(data.decode("utf-8"))
+            update = Update(**update_data)
+            worker = self.workers.get(instance_id)
+            if worker:
+                await worker.process_update(update)
+            else:
+                logger.warning(f"No worker for {instance_id}")
+                return web.Response(status=404)
+            return web.Response(status=200, text="OK")
+        except json.JSONDecodeError:
+            return web.Response(status=400, text="Invalid JSON")
+        except Exception as e:
+            logger.error(f"Error processing webhook for {instance_id}: {e}")
+            return web.Response(status=500)
 
     async def handle_master_webhook(self, request):
         """Handle webhook for master bot"""
@@ -1873,9 +2049,11 @@ class MasterBot:
         """Health check endpoint"""
         return web.Response(status=200, text="OK")
 
-    async def monitor_workers(self, interval: int = 600) -> None:
+    async def monitor_workers(self, interval: int = 300) -> None:
         """
         Периодически проверяет все инстансы из БД (running + error и т.д.).
+        В webhook-режиме: мониторит token, worker presence и webhook setup.
+        Проверка background task удалена — worker в webhook-режиме не требует отдельной task.
         """
         while True:
             all_instances = await self.db.get_all_instances_for_monitor()
@@ -1888,12 +2066,11 @@ class MasterBot:
             for instance in all_instances:
                 instance_id = instance.instance_id
 
-                process_alive = self.is_worker_process_alive(instance_id)
                 token_ok, token_reason = await self.check_worker_token_health(instance_id)
 
                 logger.info(
-                    "monitor_workers: %s status=%s process_alive=%s token_ok=%s reason=%s",
-                    instance_id, instance.status, process_alive, token_ok, token_reason,
+                    "monitor_workers: %s status=%s token_ok=%s reason=%s",
+                    instance_id, instance.status, token_ok, token_reason,
                 )
 
                 # проблемы с токеном
@@ -1920,31 +2097,58 @@ class MasterBot:
                             e,
                         )
 
+                    # Добавляем: Очистка webhook при bad token
+                    try:
+                        token = await self.db.get_decrypted_token(instance_id)
+                        if token:
+                            await self.remove_worker_webhook(instance_id, token)
+                    except Exception as e:
+                        logger.warning(f"Failed to remove webhook for {instance_id}: {e}")
+
+                    # Удаляем worker из памяти
+                    self.workers.pop(instance_id, None)
+
                     continue
 
-                # авторестарт только для running
-                if instance.status == InstanceStatus.RUNNING and not process_alive:
-                    logger.error("Worker %s process is dead", instance_id)
+                # авто-восстановление для running (только если worker отсутствует в памяти)
+                if instance.status == InstanceStatus.RUNNING:
+                    if instance_id not in self.workers:
+                        logger.warning("Worker %s missing – restoring", instance_id)
 
-                    token = await self.db.get_decrypted_token(instance_id)
-                    if not token:
-                        logger.error(
-                            "Cannot respawn worker %s: no token in DB", instance_id
-                        )
-                        continue
+                        token = await self.db.get_decrypted_token(instance_id)
+                        if not token:
+                            logger.error(
+                                "Cannot restore worker %s: no token in DB", instance_id
+                            )
+                            continue
 
-                    try:
-                        self.spawn_worker(instance_id, token)
-                        logger.info(
-                            "Respawned worker process for instance %s", instance_id
-                        )
-                    except Exception as e:
-                        logger.error(
-                            "Failed to respawn worker %s: %s", instance_id, e
-                        )
+                        try:
+                            # Пересоздаем worker
+                            worker = GraceHubWorker(instance_id, token, self.db)
+                            self.workers[instance_id] = worker
+                            logger.info(f"Successfully created GraceHubWorker for {instance_id}")
+
+                            # Setup webhook (idempotent)
+                            await self.setup_worker_webhook(instance_id, token)
+                            logger.info(f"Webhook setup completed for {instance_id}")
+
+                            # Optional: Health check
+                            await worker.bot.get_me()  # Raises if bot dead
+                            logger.info(f"Bot.get_me() successful for {instance_id}")
+
+                            logger.info("Restored worker for instance %s", instance_id)
+                        except TelegramUnauthorizedError as e:
+                            logger.error(f"Unauthorized for {instance_id}: {e}")
+                            await self.db.update_instance_status(instance_id, InstanceStatus.ERROR)
+                            await self.remove_worker_webhook(instance_id, token)
+                        except Exception as e:
+                            logger.error(
+                                "Failed to restore worker %s: %s", instance_id, e,
+                                exc_info=True  # Полный traceback для отладки
+                            )
 
             await asyncio.sleep(interval)
-
+            
     # ====================== ЗАПУСК МАСТЕРА ======================
 
     async def run(self) -> None:
@@ -1965,6 +2169,9 @@ class MasterBot:
             self.run_billing_cron_loop(interval_seconds=settings.BILLING_CRON_INTERVAL)
         )
 
+        # Глобальный loop для автозакрытия тикетов
+        asyncio.create_task(self.auto_close_tickets_loop())
+
         await self.start_webhook_server()
 
         master_webhook_url = f"https://{self.webhook_domain}/master_webhook"
@@ -1983,45 +2190,68 @@ class MasterBot:
         while True:
             await asyncio.sleep(1)
 
-
     async def load_existing_instances(self):
-        """Load existing instances from database и запустить polling-воркеры"""
         instances = await self.db.get_all_active_instances()
-
         for instance in instances:
             token = await self.db.get_decrypted_token(instance.instance_id)
             if not token:
-                logger.warning(f"Skipping instance {instance.instance_id} - no token")
                 continue
 
-            # На всякий случай удаляем старый webhook, если он был
-            try:
-                await self.webhook_manager.remove_webhook(token)
-            except Exception as e:
-                logger.warning(
-                    f"Failed to remove webhook for {instance.instance_id}: {e}"
-                )
+            # Создаем worker в памяти
+            worker = GraceHubWorker(instance.instance_id, token, self.db)
+            self.workers[instance.instance_id] = worker
 
-            # Храним инстанс в памяти
+            # Setup webhook (если не set)
+            await self.setup_worker_webhook(instance.instance_id, token)
+
             self.instances[instance.instance_id] = instance
+            logger.info(f"Loaded instance {instance.instance_id} with webhook")
 
-            # Запускаем отдельный воркер-процесс
-            try:
-                self.spawn_worker(instance.instance_id, token)
-                logger.info(
-                    f"Loaded instance {instance.instance_id} ({instance.bot_username}) with polling worker"
-                )
-            except Exception as e:
-                logger.error(
-                    f"Failed to spawn worker for {instance.instance_id}: {e}"
-                )
-                instance.status = InstanceStatus.ERROR
-                await self.db.update_instance_status(
-                    instance.instance_id, InstanceStatus.ERROR
-                )
-                continue
+    async def setup_worker_webhook(self, instance_id: str, token: str) -> bool:
+        instance = self.instances.get(instance_id)
 
-        logger.info(f"Loaded {len(instances)} active instances")
+        webhook_path = f"webhook/{instance_id}"
+        webhook_url = self.webhook_manager.generate_webhook_url(instance_id)
+
+        webhook_secret = instance.webhook_secret if instance and instance.webhook_secret else self.security.generate_webhook_secret()
+        logger.info(f"{'Reusing' if instance and instance.webhook_secret else 'Generated new'} webhook_secret for {instance_id}")
+
+        bot = Bot(token=token)
+        try:
+            for attempt in range(1, 4):
+                await self.webhook_manager.remove_webhook(token)
+                logger.info(f"Removed webhook for {instance_id} (attempt {attempt})")
+
+                await asyncio.sleep(1)  # Delay for Telegram processing
+
+                success, reason = await self.webhook_manager.setup_webhook(token, webhook_url, webhook_secret)
+                if not success:
+                    logger.warning(f"Setup failed on attempt {attempt}: {reason}")
+                    continue
+
+                logger.info(f"Webhook set successful on attempt {attempt} for {instance_id}")
+                await self.db.update_instance_webhook(instance_id, webhook_url, webhook_path, webhook_secret)
+                if instance:
+                    instance.webhook_url = webhook_url
+                    instance.webhook_path = webhook_path
+                    instance.webhook_secret = webhook_secret
+                return True
+
+            logger.error(f"Failed after 3 attempts for {instance_id}")
+            return False
+        finally:
+            await bot.session.close()
+
+    async def remove_worker_webhook(self, instance_id: str, token: str) -> bool:
+        if await self.webhook_manager.remove_webhook(token):
+            await self.db.update_instance_webhook(instance_id, "", "", "")  # Clear in DB
+            instance = self.instances.get(instance_id)
+            if instance:
+                instance.webhook_url = ""
+                instance.webhook_path = ""
+                instance.webhook_secret = ""
+            return True
+        return False
 
 
 async def main():

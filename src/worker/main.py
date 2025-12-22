@@ -174,6 +174,14 @@ class GraceHubWorker:
 
         self.register_handlers()
         
+    async def initialize(self) -> None:
+            """
+            Асинхронная инициализация worker'а: вызов init_database и другие async-операции.
+            """
+            await self.init_database()  # Ваш существующий метод
+            logger.info(f"Worker initialized for instance {self.instance_id}")
+
+
     async def _is_attachment_too_big(self, message: Message) -> bool:
         await self.refresh_limits_from_db()  # если у тебя так называется; у тебя есть refreshlimitsfromdb [file:4]
         maxbytes = self.maxfilebytes
@@ -3292,38 +3300,10 @@ class GraceHubWorker:
             logger.error(f"Failed to update ticket after admin reply: {e}")
 
 
-    # ====================== АВТО-ЗАКРЫТИЕ ТИКЕТОВ ======================
-
-    async def auto_close_tickets_loop(self) -> None:
-        hours = int(getattr(settings, "AUTOCLOSE_HOURS", 24))
-        while not self.shutdown_event.is_set():
-            try:
-                cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
-                rows = await self.db.fetchall(
-                    """
-                    SELECT id
-                    FROM tickets
-                    WHERE instance_id = $1
-                      AND status IN ('inprogress', 'answered')
-                      AND last_admin_reply_at IS NOT NULL
-                      AND (
-                          last_user_msg_at IS NULL
-                          OR last_user_msg_at < $2
-                      )
-                    """,
-                    (self.instance_id, cutoff),
-                )
-                if rows:
-                    for ticket_id, in rows:
-                        await self.set_ticket_status(ticket_id, "closed")
-                    logger.info(f"Auto-closed {len(rows)} tickets")
-            except Exception as e:
-                logger.error(f"Auto-close error: {e}")
-            await asyncio.sleep(3600)
-
-
     # ====================== РЕГИСТРАЦИЯ ХЭНДЛЕРОВ ======================
     def register_handlers(self) -> None:
+        logger.info(f"Registering handlers for worker instance {self.instance_id}")
+
         # Сервиска про изменение темы
         self.dp.message.register(
             self.handle_forum_service_message,
@@ -3348,11 +3328,14 @@ class GraceHubWorker:
             CommandStart(),
             F.chat.type == ChatType.PRIVATE,
         )
+        logger.debug("Registered /start handler for private chats")
+
         self.dp.message.register(
             self.cmd_admin,
             Command("admin"),
             F.chat.type == ChatType.PRIVATE,
         )
+
         self.dp.message.register(
             self.cmd_openchat_off,
             Command("openchat_off"),
@@ -3413,8 +3396,11 @@ class GraceHubWorker:
             self.handle_private_message,
             F.chat.type == ChatType.PRIVATE,
         )
+        logger.debug("Registered general private message handler")
+
         # Общий для ошибок
         self.dp.errors.register(self.global_error_handler)
+        logger.info(f"All handlers registered successfully for worker {self.instance_id}")
 
     # ====================== ЗАПУСК / ИНТЕГРАЦИЯ ======================
 
@@ -3423,56 +3409,16 @@ class GraceHubWorker:
         Доп. метод, если вдруг захочется кормить воркер апдейтами вручную.
         В polling-режиме, по сути, не нужен, но оставлен для совместимости.
         """
-        await self.dp.feed_update(self.bot, update)
-
-    async def run(self) -> None:
-        """
-        Старт воркера: инициализация БД, запуск автозакрытия и polling.
-        """
-        await self.init_database()
-
-        logger.info(f"Worker started for instance {self.instance_id}")
-
-        asyncio.create_task(self.auto_close_tickets_loop())
+        logger.info(f"Worker {self.instance_id} received update id={update.update_id}")
+        if update.message:
+            logger.info(f"Message from user {update.message.from_user.id} ({update.message.from_user.username or 'no username'}): {update.message.text or '[non-text message]'}")
+        elif update.callback_query:
+            logger.info(f"Callback query from user {update.callback_query.from_user.id}: data={update.callback_query.data}")
+        else:
+            logger.info(f"Other update type: {update}")
 
         try:
-            await self.bot.delete_webhook(drop_pending_updates=True)
+            await self.dp.feed_update(self.bot, update)
+            logger.info(f"Update {update.update_id} successfully fed to dispatcher for instance {self.instance_id}")
         except Exception as e:
-            logger.warning(f"Failed to delete webhook: {e}")
-
-        try:
-            await self.dp.start_polling(self.bot)
-        finally:
-            self.shutdown_event.set()
-            await self.bot.session.close()
-            if self.db:
-                self.db.close()
-
-
-async def main() -> None:
-    setup_logging()
-
-    instance_id = getattr(settings, "WORKER_INSTANCE_ID", None) or os.getenv("WORKER_INSTANCE_ID")
-    token = getattr(settings, "WORKER_TOKEN", None) or os.getenv("WORKER_TOKEN")
-
-    if not instance_id or not token:
-        logger.error("WORKER_INSTANCE_ID and WORKER_TOKEN must be set")
-        return
-
-    db = MasterDatabase()
-    # ВАЖНО: инициализируем соединение и схемы
-    await db.init()
-
-    worker = GraceHubWorker(instance_id=instance_id, token=token, db=db)
-
-    try:
-        await worker.run()
-    except asyncio.CancelledError:
-        logger.info("Worker cancelled, shutting down...")
-    except Exception as e:
-        logger.exception(f"Worker crashed: {e}")
-
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
+            logger.error(f"Error feeding update {update.update_id} to dispatcher for instance {self.instance_id}: {e}", exc_info=True)

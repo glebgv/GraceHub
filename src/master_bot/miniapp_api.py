@@ -2915,6 +2915,22 @@ def create_miniapp_app(
                 detail="Ошибка при добавлении бота через MasterBot",
             )
 
+        # Новая логика: Создать worker в памяти, настроить webhook и запустить task
+        try:
+            worker = GraceHubWorker(instance.instance_id, token, master_bot.db)
+            master_bot.workers[instance.instance_id] = worker
+            master_bot.instances[instance.instance_id] = instance  # Если не добавлено в process_bot_token_from_miniapp
+
+            if not await master_bot.setup_worker_webhook(instance.instance_id, token):
+                raise ValueError("Failed to setup webhook")
+
+            master_bot.worker_tasks[instance.instance_id] = asyncio.create_task(worker.auto_close_tickets_loop())
+        except Exception as e:
+            logger.error(f"Failed to setup worker/webhook for new instance {instance.instance_id}: {e}")
+            # Опционально: rollback создания инстанса, если нужно
+            await master_bot.db.delete_instance(instance.instance_id)
+            raise HTTPException(status_code=500, detail="Ошибка при настройке webhook для нового инстанса")
+
         logger.info(
             "create_instance (miniapp): created instance_id=%s user_id=%s bot_username=%s",
             instance.instance_id,
@@ -2957,7 +2973,7 @@ def create_miniapp_app(
         # проверяем доступ
         await require_instance_access(instance_id, current_user, required_role="owner")
 
-        # 1. Берём инстанс и токен из master_db, как делает мастер-бот
+        # 1. Берём инстанс из master_db, как делает мастер-бот
         instance = await master_bot.db.get_instance(instance_id)
         if not instance:
             logger.info(
@@ -2976,22 +2992,9 @@ def create_miniapp_app(
             )
             raise HTTPException(status_code=403, detail="Нет доступа к этому инстансу")
 
-        token = await master_bot.db.get_decrypted_token(instance_id)
-
-        # 2. Снять вебхук
-        if token:
-            try:
-                await master_bot.webhook_manager.remove_webhook(token)
-            except Exception as e:
-                logger.warning(
-                    "delete_instance: failed to remove webhook for %s: %s",
-                    instance_id,
-                    e,
-                )
-
-        # 3. Остановить воркер
+        # 2. Остановить воркер (включает отмену tasks, удаление из памяти и снятие webhook)
         try:
-            master_bot.stop_worker(instance_id)
+            await master_bot.stop_worker(instance_id)
         except Exception as e:
             logger.warning(
                 "delete_instance: failed to stop worker for %s: %s",
@@ -2999,7 +3002,7 @@ def create_miniapp_app(
                 e,
             )
 
-        # 4. Удалить из БД и кэша master_bot
+        # 3. Удалить из БД и кэша master_bot
         await master_bot.db.delete_instance(instance_id)
         master_bot.instances.pop(instance_id, None)
 
@@ -3010,7 +3013,6 @@ def create_miniapp_app(
         )
 
         return {"status": "ok"}
-
 
 
     # ---------- НАСТРОЙКИ ИНСТАНСА (Settings.tsx) ----------
@@ -3027,12 +3029,17 @@ def create_miniapp_app(
         # openchat_enabled, general_panel_chat_id, auto_close_hours,
         # auto_reply, branding, privacy_mode_enabled, language, openchat_username
 
+        # New: Fetch instance status from DB (e.g., running/error)
+        instance = await master_bot.db.get_instance(instance_id)  # Assuming access to master_bot
+        status = instance.status.value if instance else "unknown"  # Use InstanceStatus enum value
+
         logger.info(
-            "Instance settings for %s: openchat_enabled=%s general_panel_chat_id=%s language=%s",
+            "Instance settings for %s: openchat_enabled=%s general_panel_chat_id=%s language=%s status=%s",
             instance_id,
             settings.openchat_enabled,
             settings.general_panel_chat_id,
             settings.language,
+            status,
         )
 
         return InstanceSettings(
@@ -3048,6 +3055,7 @@ def create_miniapp_app(
                 openchat_username=getattr(settings, "openchat_username", None),
                 general_panel_chat_id=settings.general_panel_chat_id,
             ),
+            status=status,  # New field
         )
 
     @app.post(
