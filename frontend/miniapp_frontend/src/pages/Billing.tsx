@@ -366,18 +366,17 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
 
   const openYooKassaLinkExternally = (link: string) => {
     const tg = (window as any).Telegram?.WebApp;
-
     try {
-      tg?.openLink?.(link, { try_instant_view: false });
+      tg?.openLink?.(link, { tryinstantview: true }); 
       return;
-    } catch {}
-
-    try {
-      window.open(link, '_blank', 'noopener,noreferrer');
-      return;
-    } catch {}
-
-    window.location.href = link;
+    } catch {
+      try {
+        window.open(link, '_blank', 'noopener,noreferrer');
+        return;
+      } catch {
+        window.location.href = link;
+      }
+    }
   };
 
   const pollTonStatus = async (invoiceId: number, abortRef: { aborted: boolean }, timeoutMs: number = 120000) => {

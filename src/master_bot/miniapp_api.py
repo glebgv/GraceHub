@@ -1444,6 +1444,7 @@ def create_miniapp_app(
         import httpx
         import json
         from urllib.parse import quote
+        import base64  # Добавлен для генерации memo в TON
 
         request_id = str(uuid.uuid4())
         t0 = time.monotonic()
@@ -1647,19 +1648,40 @@ def create_miniapp_app(
                     amount_minor_units=amount_minor_units,
                 )
 
-                comment = f"saas:{invoice_id}"
-                payload = comment
+                # Генерация уникального memo (комментария) для точной идентификации платежа
+                memo = f"saas:{invoice_id}"  # Plain text for comment and memo
 
+                logger.info(
+                    "billing.create_invoice ton memo generated request_id=%s invoice_id=%s memo=%s",
+                    request_id, invoice_id, memo,
+                )
+
+                comment = memo  # Use plain memo as comment
+                payload = memo  # Set payload to memo
+
+                # Формируем deeplink с &text={memo}
                 invoice_link = (
                     f"https://app.tonkeeper.com/transfer/{ton_address}"
                     f"?amount={amount_minor_units}"
                     f"&text={quote(comment)}"
                 )
 
+                # Сохраняем payload и invoice_link (существующий метод)
                 await miniapp_db.db.update_billing_invoice_link_and_payload(
                     invoice_id=invoice_id,
                     payload=payload,
                     invoice_link=invoice_link,
+                )
+
+                # Дополнительно сохраняем memo в БД (новый запрос, так как метод не поддерживает memo)
+                await miniapp_db.db.execute(
+                    """
+                    UPDATE billing_invoices 
+                    SET memo = $1,
+                        updated_at = NOW()
+                    WHERE invoice_id = $2
+                    """,
+                    (memo, invoice_id)
                 )
 
                 logger.info(
@@ -1870,7 +1892,6 @@ def create_miniapp_app(
             )
             raise HTTPException(status_code=500, detail=f"Internal error (request_id={request_id})")
 
-
     async def _toncenter_get_transactions(address: str, limit: int = 30) -> list[dict]:
         """
         Получаем последние транзакции по адресу через TonCenter API v2.
@@ -1941,36 +1962,62 @@ def create_miniapp_app(
 
     def _extract_in_msg_comment(tx: dict) -> str | None:
         """
-        MVP извлечения комментария из транзакции TonCenter.
-        TonCenter может возвращать текст в base64, поэтому декодируем.
+        Извлекает комментарий из TON-транзакции, декодируя base64 если нужно.
+        Поддержка plain text и encoded.
         """
         in_msg = tx.get("in_msg") or {}
+        logger.debug("Extract comment: raw_in_msg=%s", in_msg)
+        
+        # Проверяем 'message' (альтернативное поле в некоторых API responses)
+        message = in_msg.get("message")
+        if message:
+            logger.debug("Extract comment: found message=%s", message)
+            return str(message).strip()
+        
+        # Если API уже парсит comment
+        comment = in_msg.get("comment")
+        if comment:
+            logger.debug("Extract comment: found comment=%s", comment)
+            return str(comment).strip()
+        
+        # Декодируем из msg_data (base64)
         msg_data = in_msg.get("msg_data") or {}
-
-        # Часто лежит в msg_data.text/body/comment
-        for key in ("text", "body", "comment"):
-            val = msg_data.get(key)
-            if isinstance(val, str) and val:
-                return _maybe_b64decode(val)
-
-        # Иногда comment лежит прямо в in_msg
-        for key in ("message", "comment", "text"):
-            val = in_msg.get(key)
-            if isinstance(val, str) and val:
-                return _maybe_b64decode(val)
-
+        if msg_data.get("@type") == "msg.dataText":
+            text_b64 = msg_data.get("text")
+            logger.debug("Extract comment: found msg_data.text_b64=%s", text_b64)
+            if text_b64:
+                try:
+                    decoded_bytes = base64.b64decode(text_b64)
+                    decoded_text = decoded_bytes.decode("utf-8").strip()
+                    logger.debug("Extract comment: decoded_text=%s", decoded_text)
+                    return decoded_text
+                except Exception as e:
+                    logger.error("TON comment decode error: %s text_b64=%s", e, text_b64)
+        
+        # Альтернатива: decoded_body для некоторых форматов
+        decoded_body = tx.get("decoded_body") or {}
+        if decoded_body.get("type") == "text_comment":
+            text = decoded_body.get("text", "").strip()
+            logger.debug("Extract comment: found decoded_body.text=%s", text)
+            return text
+        
+        # Лог если ничего не найдено
+        logger.debug("Extract comment: no comment found in tx")
+        
         return None
 
     async def check_ton_payment(invoice_id: int) -> dict:
         """
-        Мягкий cancel:
-        - status='cancelled' не блокирует автозачёт.
-        - Если перевод пришёл с правильным комментарием/суммой, инвойс станет paid.
-
-        Важно: apply_saas_plan_for_invoice вызываем только если mark_billing_invoice_paid_ton
-        реально обновил строку (pending/cancelled -> paid). Это защищает от гонок/двойного поллинга.
+        Проверяет статус оплаты TON-инвойса через TonCenter.
+        
+        Особенности:
+        - Использует memo из БД (если есть) или payload как expected_comment.
+        - Применяет тариф ТОЛЬКО если mark_billing_invoice_paid_ton вернул True
+        (т.е. статус реально изменился с pending/cancelled на paid).
+        - Полностью безопасно от race conditions благодаря блокировке строки в БД.
         """
         import json
+        import base64  # Добавлено для декодирования base64
 
         inv = await miniapp_db.db.get_billing_invoice(invoice_id)
         if not inv:
@@ -1979,11 +2026,16 @@ def create_miniapp_app(
         if inv.get("payment_method") != "ton":
             raise HTTPException(status_code=400, detail="Invoice is not TON")
 
-        # Уже оплачен
-        if inv.get("status") == "paid":
-            return {"status": "paid", "tx_hash": inv.get("provider_tx_hash")}
+        current_status = inv.get("status", "pending")
 
-        # --- TON config from DB (platformsettings.miniapp_public.payments.ton.*) ---
+        # Если уже оплачен — сразу возвращаем
+        if current_status == "paid":
+            return {
+                "status": "paid",
+                "tx_hash": inv.get("provider_tx_hash")
+            }
+
+        # --- Конфигурация TON из platform_settings ---
         try:
             raw = await miniapp_db.db.get_platform_setting("miniapp_public", default=None)
         except Exception:
@@ -1996,35 +2048,60 @@ def create_miniapp_app(
                 raw = None
 
         raw = raw if isinstance(raw, dict) else {}
-        ton_cfg = (((raw.get("payments") or {}).get("ton")) or {})
+        ton_cfg = (raw.get("payments") or {}).get("ton") or {}
 
         wallet = str(ton_cfg.get("walletAddress") or "").strip()
         if not wallet:
-            # (опциональный fallback на env, если вдруг нужно)
-            # wallet = str(getattr(settings, "TON_WALLET_ADDRESS", "") or "").strip()
-            raise HTTPException(status_code=500, detail="TON: walletAddress not configured (miniapp_public.payments.ton.walletAddress)")
+            raise HTTPException(
+                status_code=500,
+                detail="TON walletAddress not configured in miniapp_public.payments.ton.walletAddress"
+            )
 
         need_amount = inv.get("amount_minor_units") or 0
         if need_amount <= 0:
-            raise HTTPException(status_code=500, detail="Invoice amount_minor_units not set")
+            raise HTTPException(status_code=500, detail="Invalid invoice amount_minor_units")
 
-        expected_comment = inv.get("payload")  # 'saas:<invoice_id>'
+        # --- Получаем expected_comment: memo из БД (приоритет) или fallback на payload ---
+        expected_comment = inv.get("memo") or inv.get("payload")
 
+        # Добавлено: fallback если memo выглядит как base64 — декодируем перед сравнением
+        if expected_comment and isinstance(expected_comment, str) and len(expected_comment) % 4 == 0:
+            try:
+                # Добавляем padding если нужно и декодируем
+                decoded_bytes = base64.urlsafe_b64decode(expected_comment + "==")
+                expected_comment = decoded_bytes.decode("utf-8").strip()
+                logger.info(
+                    "TON expected_comment decoded from base64: original=%s decoded=%s",
+                    inv.get("memo") or inv.get("payload"), expected_comment
+                )
+            except Exception as e:
+                logger.warning("TON expected_comment base64 decode failed: %s - keeping original", e)
+                # Если ошибка, оставляем как есть
+
+        # --- Получаем последние транзакции ---
         try:
             txs = await _toncenter_get_transactions(wallet, limit=30)
+            # Добавлено: Лог полного raw txs (sample первых 5 для экономии места)
+            sample_txs = txs[:5]
+            logger.debug("TON raw txs sample (first 5): %s", json.dumps(sample_txs, default=str))
         except Exception as e:
-            logger.exception("check_ton_payment: TonCenter error: %s", e)
+            logger.exception("check_ton_payment: TonCenter API error: %s", e)
             return {"status": "pending"}
 
+        # Логируем raw in_msg для отладки (только первые 3 tx)
+        raw_in_msgs = [tx.get("in_msg") for tx in txs[:3]]
+        logger.debug("TON raw in_msgs (sample): %s", raw_in_msgs)
+
+        found_comments = [_extract_in_msg_comment(tx) for tx in txs if _extract_in_msg_comment(tx) is not None]
+
         logger.info(
-            "TON check: wallet=%s need_amount=%s expected_comment=%s invoice_id=%s status=%s",
-            wallet, need_amount, expected_comment, invoice_id, inv.get("status")
+            "TON check: invoice_id=%s wallet=%s need_amount=%s expected_comment=%s current_status=%s found_comments=%s",
+            invoice_id, wallet, need_amount, expected_comment, current_status, found_comments
         )
 
+        # --- Ищем подходящую входящую транзакцию ---
         for tx in txs:
             in_msg = tx.get("in_msg") or {}
-            dst = in_msg.get("destination") or in_msg.get("dest")
-
             value_str = in_msg.get("value")
             try:
                 value = int(value_str) if value_str is not None else 0
@@ -2033,33 +2110,28 @@ def create_miniapp_app(
 
             comment = _extract_in_msg_comment(tx)
 
+            # Добавлено: Расширенный лог для каждого tx
             logger.info(
-                "TON tx: dst=%s value=%s comment=%s (need_amount=%s expected_comment=%s)",
-                dst, value, comment, need_amount, expected_comment
+                "TON tx scan: tx_hash=%s value=%s comment=%s raw_in_msg=%s (need_amount=%s expected_comment=%s)",
+                tx.get("transaction_id", {}).get("hash"), value, comment, in_msg, need_amount, expected_comment
             )
 
-            # destination не режем
-
+            # Проверяем сумму
             if value < need_amount:
                 continue
 
+            # Проверяем комментарий (если ожидается)
             if expected_comment:
-                if comment is not None and isinstance(comment, str) and comment.strip() != expected_comment:
+                if comment is None or str(comment).strip() != expected_comment:
                     continue
 
+            # Извлекаем хэш транзакции
             tx_id = tx.get("transaction_id") or {}
             tx_hash = (tx_id.get("hash") if isinstance(tx_id, dict) else None) or tx.get("hash")
             if not tx_hash:
                 continue
 
-            # Если кто-то уже успел пометить paid — просто возвращаем paid
-            inv2 = await miniapp_db.db.get_billing_invoice(invoice_id)
-            if not inv2:
-                raise HTTPException(status_code=404, detail="Invoice not found")
-
-            if inv2.get("status") == "paid":
-                return {"status": "paid", "tx_hash": inv2.get("provider_tx_hash")}
-
+            # --- Пытаемся пометить как оплаченный (с блокировкой строки в БД) ---
             updated = await miniapp_db.db.mark_billing_invoice_paid_ton(
                 invoice_id=invoice_id,
                 tx_hash=tx_hash,
@@ -2067,22 +2139,31 @@ def create_miniapp_app(
                 currency="TON",
             )
 
-            # apply — только если реально обновили (защита от гонок)
+            # Применяем тариф только если статус реально изменился
             if updated:
                 await miniapp_db.db.apply_saas_plan_for_invoice(invoice_id)
+                logger.info(
+                    "TON payment confirmed and plan applied: invoice_id=%s tx_hash=%s amount=%s",
+                    invoice_id, tx_hash, value
+                )
+                return {"status": "paid", "tx_hash": tx_hash}
+            else:
+                # Кто-то другой уже успел обработать эту транзакцию
+                logger.info(
+                    "TON payment already processed by concurrent request: invoice_id=%s tx_hash=%s",
+                    invoice_id, tx_hash
+                )
+                return {
+                    "status": "paid",
+                    "tx_hash": tx_hash  # Можно взять из БД, но для простоты возвращаем найденный
+                }
 
-            logger.info(
-                "TON paid: invoice_id=%s tx_hash=%s amount=%s updated=%s",
-                invoice_id, tx_hash, value, updated
-            )
-            return {"status": "paid", "tx_hash": tx_hash}
+        # Добавлено: Если ничего не нашли — лог summary всех value/comment
+        summary_tx = [(tx.get("in_msg", {}).get("value"), _extract_in_msg_comment(tx)) for tx in txs]
+        logger.info("TON no match summary: tx_values_comments=%s", summary_tx)
 
-        # Возвращаем текущий статус (pending/cancelled/paid) — фронту полезно
-        inv3 = await miniapp_db.db.get_billing_invoice(invoice_id)
-        cur_status = (inv3 or {}).get("status") or "pending"
-        if cur_status not in ("pending", "cancelled", "paid"):
-            cur_status = "pending"
-        return {"status": cur_status}
+        # Если ничего не нашли — возвращаем текущий статус (pending или cancelled)
+        return {"status": current_status}
 
     @app.get("/api/platform/single-tenant", response_model=SingleTenantConfig)
     async def get_single_tenant_config_endpoint(

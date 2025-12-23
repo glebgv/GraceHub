@@ -468,32 +468,55 @@ class MasterDatabase:
         return dict(row) if row else None
 
     async def mark_billing_invoice_paid_yookassa(
-        self,
-        invoice_id: int,
-        payment_id: str,
-        amount_minor_units: int,
-        currency: str = "RUB",
-    ) -> bool:
-        res = await self.execute(
+            self,
+            invoice_id: int,
+            payment_id: str,
+            amount_minor_units: int,
+            currency: str = "RUB",
+        ) -> bool:
             """
-            UPDATE billing_invoices
-            SET status='paid',
-                provider_tx_hash=$1,
-                amount_minor_units=$2,
-                currency=$3,
-                paid_at=NOW(),
-                updated_at=NOW()
-            WHERE invoice_id=$4 AND status != 'paid'
-            """,
-            (payment_id, amount_minor_units, currency, invoice_id),
-        )
-        rowcount = getattr(res, "rowcount", None)
-        if rowcount is None:
-            return True
-        return rowcount > 0
+            Идемпотентно помечает YooKassa-инвойс оплаченным с блокировкой строки.
+            Возвращает True, если статус изменился на 'paid' (был не paid).
+            Возвращает False, если инвойс уже был paid или не найден.
+            """
+            async with self.pool.acquire() as conn:
+                async with conn.transaction():
+                    # Блокируем строку инвойса для исключения race conditions
+                    row = await conn.fetchrow(
+                        """
+                        SELECT status
+                        FROM billing_invoices
+                        WHERE invoice_id = $1
+                        FOR UPDATE
+                        """,
+                        invoice_id
+                    )
+
+                    if not row:
+                        return False  # Инвойс не найден
+
+                    if row["status"] == "paid":
+                        return False  # Уже оплачен — идемпотентно выходим
+
+                    # Обновляем только если статус ещё не paid
+                    await conn.execute(
+                        """
+                        UPDATE billing_invoices
+                        SET status = 'paid',
+                            provider_tx_hash = $1,
+                            amount_minor_units = $2,
+                            currency = $3,
+                            paid_at = NOW(),
+                            updated_at = NOW()
+                        WHERE invoice_id = $4
+                        """,
+                        payment_id, amount_minor_units, currency, invoice_id
+                    )
+                    return True
 
 
     async def get_billing_invoice(self, invoice_id: int) -> dict | None:
+        # Добавлено для TON (комментарий перемещён вне строки SQL)
         row = await self.fetchone(
             """
             SELECT
@@ -511,7 +534,8 @@ class MasterDatabase:
                 status,
                 created_at,
                 updated_at,
-                paid_at
+                paid_at,
+                memo
             FROM billing_invoices
             WHERE invoice_id = $1
             LIMIT 1
@@ -573,41 +597,51 @@ class MasterDatabase:
 
 
     async def mark_billing_invoice_paid_ton(
-        self,
-        invoice_id: int,
-        tx_hash: str,
-        amount_minor_units: int,
-        currency: str = "TON",
-    ) -> bool:
-        """
-        Помечает TON-инвойс оплаченным (идемпотентно).
-
-        Возвращает True, если статус реально обновили (pending/cancelled -> paid).
-        Возвращает False, если инвойс уже был paid (или не найден/ничего не обновили).
-        """
-        res = await self.execute(
+            self,
+            invoice_id: int,
+            tx_hash: str,
+            amount_minor_units: int,
+            currency: str = "TON",
+        ) -> bool:
             """
-            UPDATE billing_invoices
-            SET status = 'paid',
-                provider_tx_hash = $1,
-                amount_minor_units = $2,
-                currency = $3,
-                paid_at = NOW(),
-                updated_at = NOW()
-            WHERE invoice_id = $4
-            AND status != 'paid'
-            """,
-            (tx_hash, amount_minor_units, currency, invoice_id),
-        )
+            Идемпотентно помечает TON-инвойс оплаченным с блокировкой строки.
+            Возвращает True, если статус реально обновили (pending/cancelled → paid).
+            Возвращает False, если инвойс уже был paid или не найден.
+            """
+            async with self.pool.acquire() as conn:
+                async with conn.transaction():
+                    # Блокируем строку инвойса
+                    row = await conn.fetchrow(
+                        """
+                        SELECT status
+                        FROM billing_invoices
+                        WHERE invoice_id = $1
+                        FOR UPDATE
+                        """,
+                        invoice_id
+                    )
 
-        # ВАЖНО: это зависит от твоего DB-wrapper.
-        # Если execute возвращает cursor/Result с rowcount — используй его.
-        rowcount = getattr(res, "rowcount", None)
-        if rowcount is None:
-            # fallback: можно сделать SELECT status после UPDATE, но лучше поправить wrapper
-            return True
+                    if not row:
+                        return False  # Инвойс не найден
 
-        return rowcount > 0
+                    if row["status"] == "paid":
+                        return False  # Уже оплачен — идемпотентно
+
+                    # Обновляем данные
+                    await conn.execute(
+                        """
+                        UPDATE billing_invoices
+                        SET status = 'paid',
+                            provider_tx_hash = $1,
+                            amount_minor_units = $2,
+                            currency = $3,
+                            paid_at = NOW(),
+                            updated_at = NOW()
+                        WHERE invoice_id = $4
+                        """,
+                        tx_hash, amount_minor_units, currency, invoice_id
+                    )
+                    return True
 
 
     async def set_billing_invoice_ton_failed(
@@ -1155,7 +1189,7 @@ class MasterDatabase:
             """
         )
 
-        # billing_invoices: сессии оплаты (Telegram Stars + TON)
+        # billing_invoices: сессии оплаты (Telegram Stars + TON + YooKassa)
         await conn.execute(
             """
             CREATE TABLE IF NOT EXISTS billing_invoices (
@@ -1181,8 +1215,10 @@ class MasterDatabase:
                 currency            TEXT NOT NULL DEFAULT 'XTR',
                 payment_method      TEXT NOT NULL DEFAULT 'telegram_stars',
 
-                -- Для TON (или внешних платёжных провайдеров):
+                -- Для TON и внешних провайдеров:
                 provider_tx_hash    TEXT,               
+                memo                TEXT,                       -- Для TON comment/memo (уникальный)
+
                 status              TEXT NOT NULL DEFAULT 'pending',
                 error_code          TEXT,
                 error_message       TEXT,
@@ -1194,34 +1230,48 @@ class MasterDatabase:
                 CONSTRAINT fk_billing_invoices_instance
                     FOREIGN KEY (instance_id)
                     REFERENCES bot_instances(instance_id)
-                    ON DELETE CASCADE
+                    ON DELETE CASCADE,
+
+                -- Уникальность хэша транзакции (разрешает множественные NULL)
+                CONSTRAINT unique_provider_tx_hash UNIQUE (provider_tx_hash)
             )
             """
         )
 
-        # Индексы (можно расширить под TON)
+        # Индексы для производительности и частичной уникальности
+        await conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_billing_invoices_memo_ton
+            ON billing_invoices (memo)
+            WHERE payment_method = 'ton' AND memo IS NOT NULL;
+            """
+        )
+
         await conn.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_billing_invoices_instance
-            ON billing_invoices(instance_id)
+            ON billing_invoices(instance_id);
             """
         )
+
         await conn.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_billing_invoices_status
-            ON billing_invoices(status)
+            ON billing_invoices(status);
             """
         )
+
         await conn.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_billing_invoices_method_status
-            ON billing_invoices(payment_method, status)
+            ON billing_invoices(payment_method, status);
             """
         )
+
         await conn.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_billing_invoices_provider_tx_hash
-            ON billing_invoices(provider_tx_hash)
+            ON billing_invoices(provider_tx_hash) WHERE provider_tx_hash IS NOT NULL;
             """
         )
 

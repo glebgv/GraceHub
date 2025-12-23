@@ -633,60 +633,6 @@ class MasterBot:
         return instance
 
 
-    async def handle_billing_main_menu(self, callback: CallbackQuery):
-        user_id = callback.from_user.id
-        if not await self._is_master_allowed_user(user_id):
-            await callback.answer("Доступ только владельцу", show_alert=True)
-            return
-
-        texts = await self.t(user_id)
-
-        plans = await self.db.get_saas_plans_for_billing()
-
-        if not plans:
-            await callback.message.edit_text(
-                texts.master_billing_no_plans if hasattr(texts, "master_billing_no_plans") else "Тарифы пока не настроены.",
-                reply_markup=self.get_main_menu_for_lang(texts),
-            )
-            await callback.answer()
-            return
-
-        text = texts.billing_plans_title + "\n\n"
-
-        keyboard_rows: list[list[InlineKeyboardButton]] = []
-
-        for p in plans:
-            text += texts.billing_plan_line.format(
-                plan_name=p["plan_name"],
-                price_stars=p["price_stars"],
-                period_days=p["period_days"],
-                tickets_limit=p["tickets_limit"],
-            ) + "\n"
-
-            if p["product_code"]:
-                keyboard_rows.append(
-                    [
-                        InlineKeyboardButton(
-                            text=f"{p['plan_name']} — {p['price_stars']} ⭐",
-                            callback_data=f"billing_choose_plan_{p['plan_code']}",
-                        )
-                    ]
-                )
-
-        keyboard_rows.append(
-            [
-                InlineKeyboardButton(
-                    text=texts.master_list_bots_main_menu_button,
-                    callback_data="main_menu",
-                )
-            ]
-        )
-
-        keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
-
-        await callback.message.edit_text(text, reply_markup=keyboard)
-        await callback.answer()
-
     async def _send_personal_miniapp_link(
         self,
         instance: BotInstance,
@@ -752,14 +698,6 @@ class MasterBot:
         self.dp.callback_query(F.data.startswith("remove_yes_"))(self.handle_remove_instance)
         self.dp.callback_query(F.data.startswith("remove_no_"))(self.handle_remove_cancel)
 
-        # === Биллинг из мастер-бота ===
-        self.dp.callback_query(F.data.startswith("billing_choose_plan_"))(
-            self.handle_billing_choose_plan
-        )
-        self.dp.callback_query(F.data.startswith("billing_confirm_plan_"))(
-            self.handle_billing_confirm_plan
-        )
-
         # Общий handler для меню callbacks
         self.dp.callback_query()(self.handle_menu_callback)
 
@@ -767,7 +705,6 @@ class MasterBot:
         self.dp.message(F.text)(self.handle_text)
 
         # === Stars / оплата тарифов ===
-        self.dp.pre_checkout_query()(self.handle_pre_checkout_query)
         self.dp.message(F.successful_payment)(self.handle_successful_payment)
 
 
@@ -795,8 +732,6 @@ class MasterBot:
                 texts.master_help_text,
                 reply_markup=self.get_main_menu_for_lang(texts),
             )
-        elif data == "billing_menu":
-            await self.handle_billing_main_menu(callback)
 
         elif data == "change_language":
             base_texts = LANGS.get(self.default_lang)
@@ -917,7 +852,6 @@ class MasterBot:
 
         text = (
             f"{texts.master_title}\n\n"
-            f"{texts.admin_panel_title}\n\n"
         )
 
         if plan_line:
@@ -933,182 +867,6 @@ class MasterBot:
 
         await message.answer(text, reply_markup=self.get_main_menu_for_lang(texts))
 
-    async def handle_billing_choose_plan(self, callback: CallbackQuery):
-        user_id = callback.from_user.id
-
-        # Single-tenant mode: access only to allowed users
-        if not await self._is_master_allowed_user(user_id):
-            await callback.answer("Access denied in single-tenant mode.", show_alert=True)
-            return
-
-        plan_code = callback.data.split("billing_choose_plan_", 1)[1]
-        plan = await self.db.get_saas_plan_with_product_by_code(plan_code)
-        if not plan or not plan["product_code"]:
-            await callback.answer("Тариф недоступен", show_alert=True)
-            return
-
-        # пока один период = 1x
-        periods = 1
-
-        text = (
-            f"Тариф аккаунта: <b>{plan['plan_name']}</b>\n"
-            f"Период: {plan['period_days']} дней, лимит {plan['tickets_limit']} тикетов.\n"
-            f"Стоимость: <b>{plan['price_stars'] * periods} ⭐</b>\n\n"
-            "Оплатить за 1 период?"
-        )
-
-        kb = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text="✅ Оплатить",
-                        callback_data=f"billing_confirm_plan_{plan_code}_{periods}",
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        text="⬅️ Назад",
-                        callback_data="billing_menu",
-                    )
-                ],
-            ]
-        )
-
-        await callback.message.edit_text(text, reply_markup=kb)
-        await callback.answer()
-
-    async def handle_billing_confirm_plan(self, callback: CallbackQuery):
-        user_id = callback.from_user.id
-        # язык пользователя/инстанса
-        instances = await self.db.get_user_instances(user_id)
-        if instances:
-            instance_id = instances[0].instance_id
-            instance_settings = await self.db.get_instance_settings(instance_id)  # свой метод
-            lang_code = instance_settings.language or "ru"
-        else:
-            lang_code = (callback.from_user.language_code or "ru").split("-")[0]
-
-        texts = get_texts(lang_code)
-
-        # Single-tenant mode: access only to allowed users
-        if not await self._is_master_allowed_user(user_id):
-            await callback.answer(texts.billing_owner_only, show_alert=True)
-            return
-
-        # billing_confirm_plan_<plan_code>_<periods>
-        payload_part = callback.data.split("billing_confirm_plan_", 1)[1]
-        plan_code, periods_str = payload_part.rsplit("_", 1)
-        periods = int(periods_str)
-
-        plan = await self.db.get_saas_plan_with_product_by_code(plan_code)
-        if not plan or not plan["product_code"]:
-            await callback.answer(texts.billing_plan_unavailable, show_alert=True)
-            return
-
-        base_amount = plan["price_stars"]
-        total_amount = base_amount * periods
-
-        if not instances:
-            await callback.answer(texts.billing_need_instance_first, show_alert=True)
-            return
-
-        instance_id = instances[0].instance_id
-
-        invoice_id = await self.db.insert_billing_invoice(
-            instance_id=instance_id,
-            user_id=user_id,
-            plan_code=plan_code,
-            periods=periods,
-            amount_stars=total_amount,
-            product_code=plan["product_code"],
-            payload="",
-            invoice_link="",
-            status="pending",
-        )
-
-        payload = f"saas:{invoice_id}"
-
-        try:
-            invoice_link = await self.create_stars_invoice_link_for_miniapp(
-                user_id=user_id,
-                title=plan["plan_name"],
-                description=f"SaaS тариф аккаунта {plan_code} на {periods} период(ов)",  # при желании тоже вынести в Texts
-                payload=payload,
-                currency="XTR",
-                amount_stars=total_amount,
-            )
-        except Exception:
-            logger.exception("handle_billing_confirm_plan: create_invoice_link error")
-            await callback.answer(texts.billing_invoice_create_error, show_alert=True)
-            return
-
-        await self.db.update_billing_invoice_link_and_payload(
-            invoice_id=invoice_id,
-            payload=payload,
-            invoice_link=invoice_link,
-        )
-
-        text = (
-            texts.billing_confirm_title.format(plan_name=plan["plan_name"]) + "\n"
-            + texts.billing_confirm_periods.format(periods=periods) + "\n"
-            + texts.billing_confirm_total.format(total_amount=total_amount) + "\n\n"
-            + texts.billing_confirm_pay_hint + "\n"
-            + texts.billing_confirm_after_pay
-        )
-
-        kb = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text=texts.billing_button_pay_stars,
-                        url=invoice_link,
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        text=texts.billing_button_back_plans,
-                        callback_data="billing_menu",
-                    )
-                ],
-            ]
-        )
-
-        await callback.message.edit_text(text, reply_markup=kb)
-        await callback.answer()
-
-
-    async def handle_pre_checkout_query(self, pre_checkout_query: PreCheckoutQuery):
-        """
-        Обязательный шаг для Telegram Payments:
-        бот должен подтвердить pre_checkout_query за несколько секунд,
-        иначе платёж будет отменён с ошибкой "Время ожидания ответа от бота истекло".
-        """
-        logger.info(
-            "PRE_CHECKOUT: id=%s from=%s total_amount=%s currency=%s payload=%r",
-            pre_checkout_query.id,
-            pre_checkout_query.from_user.id if pre_checkout_query.from_user else None,
-            pre_checkout_query.total_amount,
-            pre_checkout_query.currency,
-            pre_checkout_query.invoice_payload,
-        )
-        try:
-            # здесь можно делать дополнительные проверки (валидность payload, сумма и т.п.)
-            await self.bot.answer_pre_checkout_query(
-                pre_checkout_query.id,
-                ok=True,
-            )
-            logger.info("PRE_CHECKOUT answered OK: id=%s", pre_checkout_query.id)
-        except Exception as e:
-            logger.exception("Failed to answer pre_checkout_query: %s", e)
-            # в случае ошибки можно явно отклонить
-            try:
-                await self.bot.answer_pre_checkout_query(
-                    pre_checkout_query.id,
-                    ok=False,
-                    error_message="Оплата сейчас недоступна, попробуйте позже.",
-                )
-            except Exception:
-                pass
 
     async def handle_language_choice(self, callback: CallbackQuery):
         user_id = callback.from_user.id
@@ -1929,12 +1687,6 @@ class MasterBot:
                     InlineKeyboardButton(
                         text=texts.master_menu_list_bots,
                         callback_data="list_bots",
-                    ),
-                ],
-                [
-                    InlineKeyboardButton(
-                        text=texts.master_menu_billing,
-                        callback_data="billing_menu",
                     ),
                 ],
                 [
