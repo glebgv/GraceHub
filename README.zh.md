@@ -96,7 +96,7 @@ GraceHub 是一个 SaaS 平台，使您能够直接在 Telegram 中部署支持�
 | 机器人管理 | Telegram Bot API |
 | 数据库 | PostgreSQL 15+ |
 | 代理 | Nginx |
-| Python 版本 | 3.11+ |
+| Python 版本 | 3.10+ |
 
 ## 📁 项目结构
 
@@ -124,14 +124,6 @@ gracehub/
 | **Telegram Stars** | Telegram 原生货币 | 与 [Telegram Mini Apps Billing](https://core.telegram.org/bots/payments) 直接集成。付款在 Telegram 平台内处理。 |
 | **TON Coin** | 加密货币 (Toncoin) | 直接转账到 TON 钱包。交易在 TON 区块链上处理，无需在平台端使用智能合约。 |
 | **YooKassa** | 支付聚合器 (RU) | 按第 54-FZ 法律接受付款（银行卡、SBP、电子钱包）。带有支付确认网络钩子的 REST API。 |
-
-## 📋 要求
-
-- Python 3.10+
-- Node.js 20+
-- PostgreSQL 15+
-- Nginx（可选）
-- 域名
 
 ## ⚙️ 环境设置
 
