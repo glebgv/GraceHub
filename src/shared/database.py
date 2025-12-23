@@ -1738,7 +1738,7 @@ class MasterDatabase:
                     WHERE instance_id = $1
                     FOR UPDATE
                     """,
-                    (instance_id,)
+                    instance_id
                 )
 
                 if not row:
@@ -1757,7 +1757,8 @@ class MasterDatabase:
                                updated_at = $1
                          WHERE instance_id = $2
                         """,
-                        (now, instance_id),
+                        now,
+                        instance_id
                     )
                     return False, "expired"
 
@@ -1769,7 +1770,8 @@ class MasterDatabase:
                                updated_at = $1
                          WHERE instance_id = $2
                         """,
-                        (now, instance_id),
+                        now,
+                        instance_id
                     )
                     return False, "limit_reached"
 
@@ -1780,7 +1782,8 @@ class MasterDatabase:
                            updated_at   = $1
                      WHERE instance_id = $2
                     """,
-                    (now, instance_id),
+                    now,
+                    instance_id
                 )
         return True, None
 
