@@ -1,7 +1,10 @@
 // src/pages/SuperAdmin.tsx
+
 import React, { useEffect, useMemo, useState } from 'react';
+
 import { apiClient } from '../api/client';
 import type { MiniappPublicSettings } from '../api/client';
+
 import logoRed from '../assets/logo-red.png';
 
 interface SuperAdminProps {
@@ -19,6 +22,7 @@ const defaultSettings: MiniappPublicSettings = {
       telegramStars: true,
       ton: true,
       yookassa: false,
+      stripe: false,
     },
     telegramStars: {
       priceStarsLite: 100,
@@ -44,6 +48,18 @@ const defaultSettings: MiniappPublicSettings = {
       priceRubLite: 199,
       priceRubPro: 499,
       priceRubEnterprise: 1999,
+    },
+    stripe: {
+      secretKey: '',
+      publishableKey: '',
+      webhookSecret: '',
+      currency: 'usd',
+      // NEW:
+      successUrl: '',
+      cancelUrl: '',
+      priceUsdLite: 4.99,
+      priceUsdPro: 9.99,
+      priceUsdEnterprise: 29.99,
     },
   },
   instanceDefaults: {
@@ -92,6 +108,7 @@ function mergeDefaults(value: any): MiniappPublicSettings {
         telegramStars: !!v?.payments?.enabled?.telegramStars,
         ton: !!v?.payments?.enabled?.ton,
         yookassa: !!v?.payments?.enabled?.yookassa,
+        stripe: !!v?.payments?.enabled?.stripe,
       },
       telegramStars: {
         priceStarsLite: safeNumber(
@@ -148,6 +165,21 @@ function mergeDefaults(value: any): MiniappPublicSettings {
           defaultSettings.payments.yookassa.priceRubEnterprise,
         ),
       },
+      stripe: {
+        secretKey: String(v?.payments?.stripe?.secretKey ?? ''),
+        publishableKey: String(v?.payments?.stripe?.publishableKey ?? ''),
+        webhookSecret: String(v?.payments?.stripe?.webhookSecret ?? ''),
+        currency: String(v?.payments?.stripe?.currency ?? 'usd'),
+        // NEW:
+        successUrl: String(v?.payments?.stripe?.successUrl ?? ''),
+        cancelUrl: String(v?.payments?.stripe?.cancelUrl ?? ''),
+        priceUsdLite: safeNumber(v?.payments?.stripe?.priceUsdLite, defaultSettings.payments.stripe.priceUsdLite),
+        priceUsdPro: safeNumber(v?.payments?.stripe?.priceUsdPro, defaultSettings.payments.stripe.priceUsdPro),
+        priceUsdEnterprise: safeNumber(
+          v?.payments?.stripe?.priceUsdEnterprise,
+          defaultSettings.payments.stripe.priceUsdEnterprise,
+        ),
+      },
     },
     instanceDefaults: {
       antifloodMaxUserMessagesPerMinute: safeNumber(
@@ -175,7 +207,6 @@ function stableStringify(obj: any): string {
   const normalize = (v: any): any => {
     if (v === null || v === undefined) return v;
     if (typeof v !== 'object') return v;
-
     if (Array.isArray(v)) return v.map(normalize);
 
     const out: Record<string, any> = {};
@@ -274,7 +305,7 @@ type ConfirmExitModalProps = {
 
 const ConfirmExitModal: React.FC<ConfirmExitModalProps> = ({ open, onExit, onStay }) => {
   return (
-    <BaseModal open={open} title="Несохранённые изменения" onClose={onStay}>
+    <BaseModal open={open} title="Подтверждение" onClose={onStay}>
       <div style={{ marginBottom: 12, opacity: 0.9 }}>У вас несохраненные изменения. Выйти?</div>
       <div className="flex gap-8" style={{ justifyContent: 'flex-end' }}>
         <button type="button" className="btn btn-secondary" onClick={onStay}>
@@ -402,11 +433,11 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
   const [error, setError] = useState<string | null>(null);
 
   const [me, setMe] = useState<any>(null);
+
   const [form, setForm] = useState<MiniappPublicSettings>(defaultSettings);
+  const [initialSnapshot, setInitialSnapshot] = useState(stableStringify(defaultSettings));
 
-  const [initialSnapshot, setInitialSnapshot] = useState<string>(stableStringify(defaultSettings));
-
-  const [newOwnerId, setNewOwnerId] = useState<string>('');
+  const [newOwnerId, setNewOwnerId] = useState('');
   const [addOwnerOpen, setAddOwnerOpen] = useState(false);
 
   const [savedModalOpen, setSavedModalOpen] = useState(false);
@@ -453,6 +484,7 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
                   telegramStars: false,
                   ton: false,
                   yookassa: false,
+                  stripe: false,
                 },
               },
             }
@@ -472,6 +504,7 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
     };
 
     load();
+
     return () => {
       cancelled = true;
     };
@@ -497,6 +530,18 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
     if (v.payments.enabled.yookassa) {
       const ret = (v.payments.yookassa.returnUrl || '').trim();
       if (!isHttpsUrl(ret)) errs.yk_return = 'Return URL должен начинаться с https://';
+    }
+
+    // NEW: Stripe redirects
+    if (v.payments.enabled.stripe) {
+      const s = (v.payments.stripe.successUrl || '').trim();
+      const c = (v.payments.stripe.cancelUrl || '').trim();
+
+      if (!s) errs.stripe_success_url = 'Stripe successUrl обязателен.';
+      else if (!isHttpsUrl(s)) errs.stripe_success_url = 'Stripe successUrl должен начинаться с https://';
+
+      if (!c) errs.stripe_cancel_url = 'Stripe cancelUrl обязателен.';
+      else if (!isHttpsUrl(c)) errs.stripe_cancel_url = 'Stripe cancelUrl должен начинаться с https://';
     }
 
     return errs;
@@ -525,6 +570,7 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
                 telegramStars: false,
                 ton: false,
                 yookassa: false,
+                stripe: false,
               },
             }
           : form.payments,
@@ -532,6 +578,7 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
 
       const errs = validatePayments(normalized);
       setPaymentErrors(errs);
+
       if (Object.keys(errs).some((k) => !!errs[k])) {
         setError('Исправь ошибки в настройках Payments.');
         return;
@@ -567,16 +614,6 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
       },
     }));
     setNewOwnerId('');
-  };
-
-  const removeOwnerId = (id: number) => {
-    setForm((prev) => ({
-      ...prev,
-      singleTenant: {
-        ...prev.singleTenant,
-        allowedUserIds: (prev.singleTenant.allowedUserIds || []).filter((x) => x !== id),
-      },
-    }));
   };
 
   const requestDeleteOwner = (id: number) => {
@@ -651,30 +688,22 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
     addOwnerId();
     const raw = newOwnerId.trim();
     const id = Number(raw);
-    if (raw && Number.isFinite(id) && id > 0) {
-      setAddOwnerOpen(false);
-    }
+    if (raw && Number.isFinite(id) && id > 0) setAddOwnerOpen(false);
   };
 
   const handleBack = () => {
     if (!onBack) return;
-
     if (dirty) {
       setConfirmExitOpen(true);
       return;
     }
-
     onBack();
   };
 
   if (loading) return <div className="card">Loading superadmin…</div>;
 
   if (!isSuperadmin) {
-    return (
-      <div className="card" style={{ color: 'var(--color-error)' }}>
-        Forbidden: superadmin only
-      </div>
-    );
+    return <div className="card" style={{ color: 'var(--color-error)' }}>Forbidden: superadmin only</div>;
   }
 
   const confirmTitle =
@@ -692,31 +721,18 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
         : 'Удалить?';
 
   return (
-    <div style={{ padding: '12px', paddingBottom: '72px' }}>
+    <div style={{ padding: 12, paddingBottom: 72 }}>
       {/* Header */}
       <div className="card" style={{ marginBottom: 16 }}>
-        <div className="cardbody">
+        <div className="card-body">
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <img
-              src={logoRed}
-              alt="GraceHub"
-              style={{
-                width: 32,
-                height: 32,
-                borderRadius: 10,
-              }}
-            />
+            <img src={logoRed} alt="GraceHub" style={{ width: 32, height: 32, borderRadius: 10 }} />
             <span style={{ fontSize: 22, fontWeight: 600 }}>GraceHub Admin Panel</span>
           </div>
         </div>
       </div>
 
-      <InfoModal
-        open={savedModalOpen}
-        title="Saved"
-        text="Настройки успешно сохранены."
-        onClose={() => setSavedModalOpen(false)}
-      />
+      <InfoModal open={savedModalOpen} title="Saved" text="Настройки сохранены." onClose={() => setSavedModalOpen(false)} />
 
       <ConfirmExitModal
         open={confirmExitOpen}
@@ -758,7 +774,6 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
             placeholder="Введите user_id"
           />
         </div>
-
         <div className="flex gap-8" style={{ justifyContent: 'flex-end' }}>
           <button type="button" className="btn btn-secondary" onClick={() => setAddOwnerOpen(false)}>
             Cancel
@@ -769,7 +784,7 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
         </div>
       </BaseModal>
 
-      <BaseModal open={addSuperadminOpen} title="Добавить суперадмина" onClose={() => setAddSuperadminOpen(false)}>
+      <BaseModal open={addSuperadminOpen} title="Добавить superadmin" onClose={() => setAddSuperadminOpen(false)}>
         <div className="form-group">
           <label className="form-label">Telegram user_id</label>
           <input
@@ -786,7 +801,6 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
             placeholder="Например: 123456789"
           />
         </div>
-
         <div className="flex gap-8" style={{ justifyContent: 'flex-end' }}>
           <button type="button" className="btn btn-secondary" onClick={() => setAddSuperadminOpen(false)}>
             Cancel
@@ -800,719 +814,889 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
       <div className="card">
         <div className="card-header">
           <div className="card-title">Superadmin panel</div>
-          {onBack && (
-            <button type="button" className="btn btn-secondary" onClick={handleBack} disabled={saving}>
-              ← Back
+          <div style={{ display: 'flex', gap: 8 }}>
+            {onBack && (
+              <button type="button" className="btn btn-secondary" onClick={handleBack} disabled={saving}>
+                ← Back
+              </button>
+            )}
+          </div>
+        </div>
+
+        {dirty && (
+          <div className="card" style={{ marginTop: 8, marginBottom: 8, position: 'sticky', top: 8, zIndex: 50 }}>
+            <button className="btn btn-primary btn-block" type="button" onClick={save} disabled={saving}>
+              💾 Save
             </button>
-          )}
-        </div>
-      </div>
-
-      {dirty && (
-        <div
-          className="card"
-          style={{
-            marginTop: 8,
-            marginBottom: 8,
-            position: 'sticky',
-            top: 8,
-            zIndex: 50,
-          }}
-        >
-          <button className="btn btn-primary btn-block" type="button" onClick={save} disabled={saving}>
-            💾 Save
-          </button>
-        </div>
-      )}
-
-      {error && (
-        <div
-          className="card"
-          style={{
-            background: 'rgba(255, 51, 51, 0.1)',
-            borderColor: 'rgba(255, 51, 51, 0.3)',
-          }}
-        >
-          <p style={{ margin: 0, color: 'var(--tg-color-text)' }}>{error}</p>
-        </div>
-      )}
-
-      <div className="card" style={{ marginTop: 12 }}>
-        <h3 style={{ margin: '0 0 12px 0', fontSize: '14px' }}>Single-tenant</h3>
-
-        <div className="form-group" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <label className="form-label" style={{ marginBottom: 0 }}>
-            Enable single-tenant mode
-          </label>
-
-          <MiniSwitch
-            checked={form.singleTenant.enabled}
-            disabled={saving}
-            ariaLabel="Toggle single-tenant"
-            onChange={(checked) => {
-              setForm((p) => {
-                if (checked) {
-                  return {
-                    ...p,
-                    singleTenant: { ...p.singleTenant, enabled: true },
-                    payments: {
-                      ...p.payments,
-                      enabled: {
-                        telegramStars: false,
-                        ton: false,
-                        yookassa: false,
-                      },
-                    },
-                  };
-                }
-
-                return {
-                  ...p,
-                  singleTenant: { ...p.singleTenant, enabled: false },
-                };
-              });
-
-              setPaymentErrors({});
-            }}
-          />
-        </div>
-
-        {form.singleTenant.enabled && (
-          <div className="form-group" style={{ marginTop: 8 }}>
-            <label className="form-label">Owner Telegram IDs</label>
-
-            <button className="btn btn-secondary" type="button" onClick={openAddOwner} disabled={saving}>
-              Add
-            </button>
-
-            <div style={{ marginTop: 12 }}>
-              {(form.singleTenant.allowedUserIds || []).length === 0 ? (
-                <div style={{ opacity: 0.7 }}>No IDs configured.</div>
-              ) : (
-                (form.singleTenant.allowedUserIds || []).map((id) => (
-                  <div
-                    key={id}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      gap: 10,
-                      padding: '8px 0',
-                      borderBottom: '1px solid rgba(0,0,0,0.06)',
-                    }}
-                  >
-                    <div>{id}</div>
-                    <button
-                      type="button"
-                      className="btn btn-outline"
-                      onClick={() => requestDeleteOwner(id)}
-                      title={`Удалить ${id}`}
-                      aria-label={`Удалить ${id}`}
-                      style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}
-                    >
-                      <TrashIcon />
-                    </button>
-                  </div>
-                ))
-              )}
-            </div>
-
-            <div style={{ opacity: 0.7, marginTop: 6, fontSize: 12 }}>
-              Это allowlist пользователей, которым разрешён доступ к панели в single-tenant режиме.
-            </div>
           </div>
         )}
-      </div>
 
-      <div className="card" style={{ marginTop: 12 }}>
-        <h3 style={{ margin: '0 0 12px 0', fontSize: '14px' }}>Superadmins</h3>
-
-        <button className="btn btn-secondary" onClick={openAddSuperadmin} type="button">
-          Add superadmin
-        </button>
-
-        <div style={{ marginTop: 12 }}>
-          {(form.superadmins || []).length === 0 ? (
-            <div style={{ opacity: 0.7 }}>No superadmins configured in DB settings.</div>
-          ) : (
-            (form.superadmins || []).map((id) => (
-              <div
-                key={id}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  gap: 10,
-                  padding: '8px 0',
-                  borderBottom: '1px solid rgba(0,0,0,0.06)',
-                }}
-              >
-                <div>{id}</div>
-                <button
-                  type="button"
-                  className="btn btn-outline"
-                  onClick={() => requestDeleteSuperadmin(id)}
-                  title={`Удалить ${id}`}
-                  aria-label={`Удалить ${id}`}
-                  style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}
-                >
-                  <TrashIcon />
-                </button>
-              </div>
-            ))
-          )}
-        </div>
-      </div>
-
-      {/* Instance defaults */}
-      <div className="card" style={{ marginTop: 12 }}>
-        <h3 style={{ margin: '0 0 12px 0', fontSize: '14px' }}>Instance defaults</h3>
-
-        <div className="form-group">
-          <label className="form-label">Лимит сообщений в минуту (рекомендуется до 30)</label>
-          <input
-            className="form-input"
-            type="number"
-            value={form.instanceDefaults.antifloodMaxUserMessagesPerMinute}
-            onChange={(e) =>
-              setForm((p) => ({
-                ...p,
-                instanceDefaults: { ...p.instanceDefaults, antifloodMaxUserMessagesPerMinute: Number(e.target.value) },
-              }))
-            }
-          />
-        </div>
-
-        <div className="form-group">
-          <label className="form-label">Лимит вложений (mb)</label>
-          <input
-            className="form-input"
-            type="number"
-            value={form.instanceDefaults.workerMaxFileMb}
-            onChange={(e) =>
-              setForm((p) => ({
-                ...p,
-                instanceDefaults: { ...p.instanceDefaults, workerMaxFileMb: Number(e.target.value) },
-              }))
-            }
-          />
-        </div>
-
-        <div className="form-group">
-          <label className="form-label">Лимит подключаемых ботов</label>
-          <input
-            className="form-input"
-            type="number"
-            disabled={form.singleTenant.enabled}
-            value={form.instanceDefaults.maxInstancesPerUser}
-            onChange={(e) =>
-              setForm((p) => ({
-                ...p,
-                instanceDefaults: { ...p.instanceDefaults, maxInstancesPerUser: Number(e.target.value) },
-              }))
-            }
-          />
-        </div>
-      </div>
-
-      {/* Payments */}
-      <div className="card" style={{ marginTop: 12 }}>
-        <h3 style={{ margin: '0 0 12px 0', fontSize: '14px' }}>Payments (UI)</h3>
-
-        {form.singleTenant.enabled ? (
+        {error && (
           <div
+            className="card"
             style={{
-              padding: '10px 12px',
-              borderRadius: 10,
-              background: 'rgba(33, 150, 243, 0.12)',
-              border: '1px solid rgba(33, 150, 243, 0.25)',
-              color: 'var(--tg-color-text)',
-              fontSize: 13,
-              lineHeight: 1.35,
+              background: 'rgba(255, 51, 51, 0.1)',
+              borderColor: 'rgba(255, 51, 51, 0.3)',
+              marginTop: 8,
             }}
           >
-            В режиме single-tenant платёжные шлюзы отключены. Предполагается, что это установка для личного
-            использования.
+            <p style={{ margin: 0, color: 'var(--tg-color-text)' }}>{error}</p>
           </div>
-        ) : (
-          <>
-            {/* Telegram Stars */}
-            <div className="form-group" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <label className="form-label" style={{ marginBottom: 0 }}>
-                Telegram Stars
-              </label>
-              <MiniSwitch
-                checked={form.payments.enabled.telegramStars}
-                disabled={saving}
-                ariaLabel="Toggle Telegram Stars"
-                onChange={(checked) =>
-                  setForm((p) => ({
+        )}
+
+        {/* Single-tenant */}
+        <div className="card" style={{ marginTop: 12 }}>
+          <h3 style={{ margin: '0 0 12px 0', fontSize: 14 }}>Single-tenant</h3>
+
+          <div className="form-group" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <label className="form-label" style={{ marginBottom: 0 }}>
+              Enable single-tenant mode
+            </label>
+            <MiniSwitch
+              checked={form.singleTenant.enabled}
+              disabled={saving}
+              ariaLabel="Toggle single-tenant"
+              onChange={(checked) => {
+                setForm((p) => {
+                  if (checked) {
+                    return {
+                      ...p,
+                      singleTenant: { ...p.singleTenant, enabled: true },
+                      payments: {
+                        ...p.payments,
+                        enabled: {
+                          telegramStars: false,
+                          ton: false,
+                          yookassa: false,
+                          stripe: false,
+                        },
+                      },
+                    };
+                  }
+                  return {
                     ...p,
-                    payments: { ...p.payments, enabled: { ...p.payments.enabled, telegramStars: checked } },
-                  }))
-                }
-              />
-            </div>
+                    singleTenant: { ...p.singleTenant, enabled: false },
+                  };
+                });
+                setPaymentErrors({});
+              }}
+            />
+          </div>
 
-            {form.payments.enabled.telegramStars && (
-              <div style={{ marginTop: 8 }}>
-                <div className="form-group">
-                  <label className="form-label">Price Lite (Stars)</label>
-                  <input
-                    className="form-input"
-                    type="number"
-                    min={0}
-                    value={form.payments.telegramStars.priceStarsLite}
-                    onChange={(e) =>
-                      setForm((p) => ({
-                        ...p,
-                        payments: {
-                          ...p.payments,
-                          telegramStars: { ...p.payments.telegramStars, priceStarsLite: Number(e.target.value) },
-                        },
-                      }))
-                    }
-                  />
+          {form.singleTenant.enabled && (
+            <>
+              <div className="form-group" style={{ marginTop: 8 }}>
+                <label className="form-label">Owner Telegram IDs</label>
+                <button className="btn btn-secondary" type="button" onClick={openAddOwner} disabled={saving}>
+                  Add
+                </button>
+
+                <div style={{ marginTop: 12 }}>
+                  {(form.singleTenant.allowedUserIds || []).length === 0 ? (
+                    <div style={{ opacity: 0.7 }}>No IDs configured.</div>
+                  ) : (
+                    (form.singleTenant.allowedUserIds || []).map((id) => (
+                      <div
+                        key={id}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          gap: 10,
+                          padding: '8px 0',
+                          borderBottom: '1px solid rgba(0,0,0,0.06)',
+                        }}
+                      >
+                        <div>{id}</div>
+                        <button
+                          type="button"
+                          className="btn btn-outline"
+                          onClick={() => requestDeleteOwner(id)}
+                          title={`Удалить ${id}`}
+                          aria-label={`Удалить ${id}`}
+                          style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}
+                        >
+                          <TrashIcon />
+                        </button>
+                      </div>
+                    ))
+                  )}
                 </div>
 
-                <div className="form-group">
-                  <label className="form-label">Price Pro (Stars)</label>
-                  <input
-                    className="form-input"
-                    type="number"
-                    min={0}
-                    value={form.payments.telegramStars.priceStarsPro}
-                    onChange={(e) =>
-                      setForm((p) => ({
-                        ...p,
-                        payments: {
-                          ...p.payments,
-                          telegramStars: { ...p.payments.telegramStars, priceStarsPro: Number(e.target.value) },
-                        },
-                      }))
-                    }
-                  />
-                </div>
-
-                <div className="form-group">
-                  <label className="form-label">Price Ent (Stars)</label>
-                  <input
-                    className="form-input"
-                    type="number"
-                    min={0}
-                    value={form.payments.telegramStars.priceStarsEnterprise}
-                    onChange={(e) =>
-                      setForm((p) => ({
-                        ...p,
-                        payments: {
-                          ...p.payments,
-                          telegramStars: {
-                            ...p.payments.telegramStars,
-                            priceStarsEnterprise: Number(e.target.value),
-                          },
-                        },
-                      }))
-                    }
-                  />
+                <div style={{ opacity: 0.7, marginTop: 6, fontSize: 12 }}>
+                  Это allowlist пользователей, которым разрешён доступ к панели в single-tenant режиме.
                 </div>
               </div>
+            </>
+          )}
+        </div>
+
+        {/* Superadmins */}
+        <div className="card" style={{ marginTop: 12 }}>
+          <h3 style={{ margin: '0 0 12px 0', fontSize: 14 }}>Superadmins</h3>
+
+          <button className="btn btn-secondary" onClick={openAddSuperadmin} type="button" disabled={saving}>
+            Add superadmin
+          </button>
+
+          <div style={{ marginTop: 12 }}>
+            {(form.superadmins || []).length === 0 ? (
+              <div style={{ opacity: 0.7 }}>No superadmins configured in DB settings.</div>
+            ) : (
+              (form.superadmins || []).map((id) => (
+                <div
+                  key={id}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: 10,
+                    padding: '8px 0',
+                    borderBottom: '1px solid rgba(0,0,0,0.06)',
+                  }}
+                >
+                  <div>{id}</div>
+                  <button
+                    type="button"
+                    className="btn btn-outline"
+                    onClick={() => requestDeleteSuperadmin(id)}
+                    title={`Удалить ${id}`}
+                    aria-label={`Удалить ${id}`}
+                    style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}
+                  >
+                    <TrashIcon />
+                  </button>
+                </div>
+              ))
             )}
+          </div>
+        </div>
 
-            {/* TON */}
-            <div className="form-group" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <label className="form-label" style={{ marginBottom: 0 }}>
-                TON
-              </label>
-              <MiniSwitch
-                checked={form.payments.enabled.ton}
-                disabled={saving}
-                ariaLabel="Toggle TON payments"
-                onChange={(checked) => {
-                  setForm((p) => ({
-                    ...p,
-                    payments: { ...p.payments, enabled: { ...p.payments.enabled, ton: checked } },
-                  }));
+        {/* Instance defaults */}
+        <div className="card" style={{ marginTop: 12 }}>
+          <h3 style={{ margin: '0 0 12px 0', fontSize: 14 }}>Instance defaults</h3>
 
-                  setPaymentErrors((prev) => {
-                    const n = { ...prev };
-                    Object.keys(n)
-                      .filter((k) => k.startsWith('ton_'))
-                      .forEach((k) => delete n[k]);
-                    return n;
-                  });
-                }}
-              />
+          <div className="form-group">
+            <label className="form-label">Лимит сообщений в минуту (рекомендуется до 30)</label>
+            <input
+              className="form-input"
+              type="number"
+              value={form.instanceDefaults.antifloodMaxUserMessagesPerMinute}
+              onChange={(e) =>
+                setForm((p) => ({
+                  ...p,
+                  instanceDefaults: { ...p.instanceDefaults, antifloodMaxUserMessagesPerMinute: Number(e.target.value) },
+                }))
+              }
+            />
+          </div>
+
+          <div className="form-group">
+            <label className="form-label">Лимит вложений (mb)</label>
+            <input
+              className="form-input"
+              type="number"
+              value={form.instanceDefaults.workerMaxFileMb}
+              onChange={(e) =>
+                setForm((p) => ({
+                  ...p,
+                  instanceDefaults: { ...p.instanceDefaults, workerMaxFileMb: Number(e.target.value) },
+                }))
+              }
+            />
+          </div>
+
+          <div className="form-group">
+            <label className="form-label">Лимит подключаемых ботов</label>
+            <input
+              className="form-input"
+              type="number"
+              disabled={form.singleTenant.enabled}
+              value={form.instanceDefaults.maxInstancesPerUser}
+              onChange={(e) =>
+                setForm((p) => ({
+                  ...p,
+                  instanceDefaults: { ...p.instanceDefaults, maxInstancesPerUser: Number(e.target.value) },
+                }))
+              }
+            />
+          </div>
+        </div>
+
+        {/* Payments */}
+        <div className="card" style={{ marginTop: 12 }}>
+          <h3 style={{ margin: '0 0 12px 0', fontSize: 14 }}>Payments (UI)</h3>
+
+          {form.singleTenant.enabled ? (
+            <div
+              style={{
+                padding: '10px 12px',
+                borderRadius: 10,
+                background: 'rgba(33, 150, 243, 0.12)',
+                border: '1px solid rgba(33, 150, 243, 0.25)',
+                color: 'var(--tg-color-text)',
+                fontSize: 13,
+                lineHeight: 1.35,
+              }}
+            >
+              В режиме single-tenant платёжные шлюзы отключены. Предполагается, что это установка для личного
+              использования.
             </div>
+          ) : (
+            <>
+              {/* Telegram Stars */}
+              <div className="form-group" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <label className="form-label" style={{ marginBottom: 0 }}>
+                  Telegram Stars
+                </label>
+                <MiniSwitch
+                  checked={form.payments.enabled.telegramStars}
+                  disabled={saving}
+                  ariaLabel="Toggle Telegram Stars"
+                  onChange={(checked) =>
+                    setForm((p) => ({
+                      ...p,
+                      payments: { ...p.payments, enabled: { ...p.payments.enabled, telegramStars: checked } },
+                    }))
+                  }
+                />
+              </div>
 
-            {form.payments.enabled.ton && (
-              <div style={{ marginTop: 8 }}>
-                <div className="form-group">
-                  <label className="form-label">Network</label>
-                  <select
-                    className="form-select"
-                    value={form.payments.ton.network}
-                    onChange={(e) => {
-                      const next = e.target.value as any;
-
-                      setForm((p) => {
-                        const prevNet = p.payments.ton.network;
-                        const prevApi = (p.payments.ton.apiBaseUrl || '').trim();
-
-                        // Автоподмена API URL при смене сети, если URL равен дефолтному для предыдущей сети.
-                        const shouldAutoSwitchApi =
-                          (prevNet === 'testnet' && prevApi === TON_TESTNET_DEFAULT_API) ||
-                          (prevNet === 'mainnet' && prevApi === TON_MAINNET_DEFAULT_API);
-
-                        return {
+              {form.payments.enabled.telegramStars && (
+                <div style={{ marginTop: 8 }}>
+                  <div className="form-group">
+                    <label className="form-label">Price Lite (Stars)</label>
+                    <input
+                      className="form-input"
+                      type="number"
+                      min={0}
+                      value={form.payments.telegramStars.priceStarsLite}
+                      onChange={(e) =>
+                        setForm((p) => ({
                           ...p,
                           payments: {
                             ...p.payments,
-                            ton: {
-                              ...p.payments.ton,
-                              network: next,
-                              apiBaseUrl: shouldAutoSwitchApi
-                                ? next === 'mainnet'
-                                  ? TON_MAINNET_DEFAULT_API
-                                  : TON_TESTNET_DEFAULT_API
-                                : p.payments.ton.apiBaseUrl,
-                            },
+                            telegramStars: { ...p.payments.telegramStars, priceStarsLite: Number(e.target.value) },
                           },
-                        };
-                      });
+                        }))
+                      }
+                    />
+                  </div>
 
-                      // На смене сети сбросим ошибку API URL, т.к. могли подставить корректный дефолт.
-                      setPaymentErrors((prev) => ({ ...prev, ton_api: '' }));
-                    }}
-                  >
-                    <option value="testnet">Testnet</option>
-                    <option value="mainnet">Mainnet</option>
-                  </select>
-                </div>
+                  <div className="form-group">
+                    <label className="form-label">Price Pro (Stars)</label>
+                    <input
+                      className="form-input"
+                      type="number"
+                      min={0}
+                      value={form.payments.telegramStars.priceStarsPro}
+                      onChange={(e) =>
+                        setForm((p) => ({
+                          ...p,
+                          payments: {
+                            ...p.payments,
+                            telegramStars: { ...p.payments.telegramStars, priceStarsPro: Number(e.target.value) },
+                          },
+                        }))
+                      }
+                    />
+                  </div>
 
-                <div className="form-group">
-                  <label className="form-label">Wallet</label>
-                  <input
-                    className="form-input"
-                    value={form.payments.ton.walletAddress}
-                    placeholder="0QC3VqDed0SODLgoel_sv0oV3iBjUOKJuQjXdWhDENohmt_W"
-                    onChange={(e) => {
-                      const v = e.target.value;
-                      setForm((p) => ({
-                        ...p,
-                        payments: { ...p.payments, ton: { ...p.payments.ton, walletAddress: v } },
-                      }));
-                      setPaymentErrors((prev) => ({ ...prev, ton_wallet: '' }));
-                    }}
-                    onBlur={() => {
-                      const v = (form.payments.ton.walletAddress || '').trim();
-                      setPaymentErrors((prev) => ({
-                        ...prev,
-                        ton_wallet: isTonFriendlyAddressLike(v) ? '' : 'Некорректный TON-адрес (friendly).',
-                      }));
-                    }}
-                  />
-                  {paymentErrors.ton_wallet ? (
-                    <small style={{ color: 'var(--tg-color-text-secondary)', display: 'block', marginTop: 4 }}>
-                      {paymentErrors.ton_wallet}
-                    </small>
-                  ) : null}
+                  <div className="form-group">
+                    <label className="form-label">Price Ent (Stars)</label>
+                    <input
+                      className="form-input"
+                      type="number"
+                      min={0}
+                      value={form.payments.telegramStars.priceStarsEnterprise}
+                      onChange={(e) =>
+                        setForm((p) => ({
+                          ...p,
+                          payments: {
+                            ...p.payments,
+                            telegramStars: { ...p.payments.telegramStars, priceStarsEnterprise: Number(e.target.value) },
+                          },
+                        }))
+                      }
+                    />
+                  </div>
                 </div>
+              )}
 
-                <div className="form-group">
-                  <label className="form-label">API URL</label>
-                  <input
-                    className="form-input"
-                    value={form.payments.ton.apiBaseUrl}
-                    placeholder="https://testnet.toncenter.com/api/v2"
-                    onChange={(e) => {
-                      const v = e.target.value;
-                      setForm((p) => ({
-                        ...p,
-                        payments: { ...p.payments, ton: { ...p.payments.ton, apiBaseUrl: v } },
-                      }));
-                      setPaymentErrors((prev) => ({ ...prev, ton_api: '' }));
-                    }}
-                    onBlur={() => {
-                      const v = (form.payments.ton.apiBaseUrl || '').trim();
-                      setPaymentErrors((prev) => ({
-                        ...prev,
-                        ton_api: isHttpsUrl(v) ? '' : 'TON API URL должен начинаться с https://',
-                      }));
-                    }}
-                  />
-                  {paymentErrors.ton_api ? (
-                    <small style={{ color: 'var(--tg-color-text-secondary)', display: 'block', marginTop: 4 }}>
-                      {paymentErrors.ton_api}
-                    </small>
-                  ) : null}
-                </div>
-
-                <div className="form-group">
-                  <label className="form-label">
-                    API key <small style={{ opacity: 0.7 }}>(необязательно)</small>
-                  </label>
-                  <input
-                    className="form-input"
-                    value={form.payments.ton.apiKey}
-                    onChange={(e) =>
-                      setForm((p) => ({
-                        ...p,
-                        payments: { ...p.payments, ton: { ...p.payments.ton, apiKey: e.target.value } },
-                      }))
-                    }
-                  />
-                </div>
-
-                <div className="form-group">
-                  <label className="form-label">Delay (sec)</label>
-                  <input
-                    className="form-input"
-                    type="number"
-                    min={1}
-                    value={form.payments.ton.checkDelaySeconds}
-                    onChange={(e) => {
-                      const n = Number(e.target.value);
-                      setForm((p) => ({
-                        ...p,
-                        payments: { ...p.payments, ton: { ...p.payments.ton, checkDelaySeconds: n } },
-                      }));
-                      setPaymentErrors((prev) => ({ ...prev, ton_delay: '' }));
-                    }}
-                    onBlur={() => {
-                      const n = Number(form.payments.ton.checkDelaySeconds);
-                      setPaymentErrors((prev) => ({
-                        ...prev,
-                        ton_delay: Number.isFinite(n) && n >= 1 ? '' : 'Delay ≥ 1 сек.',
-                      }));
-                    }}
-                  />
-                  {paymentErrors.ton_delay ? (
-                    <small style={{ color: 'var(--tg-color-text-secondary)', display: 'block', marginTop: 4 }}>
-                      {paymentErrors.ton_delay}
-                    </small>
-                  ) : null}
-                </div>
-
-                <div className="form-group">
-                  <label className="form-label">Confirmations</label>
-                  <input
-                    className="form-input"
-                    type="number"
-                    min={1}
-                    value={form.payments.ton.confirmationsRequired}
-                    onChange={(e) => {
-                      const n = Number(e.target.value);
-                      setForm((p) => ({
-                        ...p,
-                        payments: { ...p.payments, ton: { ...p.payments.ton, confirmationsRequired: n } },
-                      }));
-                      setPaymentErrors((prev) => ({ ...prev, ton_confirmations: '' }));
-                    }}
-                    onBlur={() => {
-                      const n = Number(form.payments.ton.confirmationsRequired);
-                      setPaymentErrors((prev) => ({
-                        ...prev,
-                        ton_confirmations: Number.isFinite(n) && n >= 1 ? '' : 'Confirmations ≥ 1.',
-                      }));
-                    }}
-                  />
-                  {paymentErrors.ton_confirmations ? (
-                    <small style={{ color: 'var(--tg-color-text-secondary)', display: 'block', marginTop: 4 }}>
-                      {paymentErrors.ton_confirmations}
-                    </small>
-                  ) : null}
-                </div>
-
-                <div className="form-group">
-                  <label className="form-label">Price Lite (TON)</label>
-                  <input
-                    className="form-input"
-                    type="number"
-                    value={form.payments.ton.pricePerPeriodLite}
-                    onChange={(e) =>
-                      setForm((p) => ({
-                        ...p,
-                        payments: {
-                          ...p.payments,
-                          ton: { ...p.payments.ton, pricePerPeriodLite: Number(e.target.value) },
-                        },
-                      }))
-                    }
-                  />
-                </div>
-
-                <div className="form-group">
-                  <label className="form-label">Price Pro (TON)</label>
-                  <input
-                    className="form-input"
-                    type="number"
-                    value={form.payments.ton.pricePerPeriodPro}
-                    onChange={(e) =>
-                      setForm((p) => ({
-                        ...p,
-                        payments: {
-                          ...p.payments,
-                          ton: { ...p.payments.ton, pricePerPeriodPro: Number(e.target.value) },
-                        },
-                      }))
-                    }
-                  />
-                </div>
-
-                <div className="form-group">
-                  <label className="form-label">Price Ent (TON)</label>
-                  <input
-                    className="form-input"
-                    type="number"
-                    value={form.payments.ton.pricePerPeriodEnterprise}
-                    onChange={(e) =>
-                      setForm((p) => ({
-                        ...p,
-                        payments: {
-                          ...p.payments,
-                          ton: { ...p.payments.ton, pricePerPeriodEnterprise: Number(e.target.value) },
-                        },
-                      }))
-                    }
-                  />
-                </div>
+              {/* TON */}
+              <div className="form-group" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <label className="form-label" style={{ marginBottom: 0 }}>
+                  TON
+                </label>
+                <MiniSwitch
+                  checked={form.payments.enabled.ton}
+                  disabled={saving}
+                  ariaLabel="Toggle TON payments"
+                  onChange={(checked) => {
+                    setForm((p) => ({
+                      ...p,
+                      payments: { ...p.payments, enabled: { ...p.payments.enabled, ton: checked } },
+                    }));
+                    setPaymentErrors((prev) => {
+                      const n = { ...prev };
+                      Object.keys(n)
+                        .filter((k) => k.startsWith('ton_'))
+                        .forEach((k) => delete n[k]);
+                      return n;
+                    });
+                  }}
+                />
               </div>
-            )}
 
-            {/* YooKassa */}
-            <div className="form-group" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <label className="form-label" style={{ marginBottom: 0 }}>
-                YooKassa
-              </label>
-              <MiniSwitch
-                checked={form.payments.enabled.yookassa}
-                disabled={saving}
-                ariaLabel="Toggle YooKassa payments"
-                onChange={(checked) =>
-                  setForm((p) => ({
-                    ...p,
-                    payments: { ...p.payments, enabled: { ...p.payments.enabled, yookassa: checked } },
-                  }))
-                }
-              />
-            </div>
+              {form.payments.enabled.ton && (
+                <div style={{ marginTop: 8 }}>
+                  <div className="form-group">
+                    <label className="form-label">Network</label>
+                    <select
+                      className="form-select"
+                      value={form.payments.ton.network}
+                      onChange={(e) => {
+                        const next = e.target.value as any;
+                        setForm((p) => {
+                          const prevNet = p.payments.ton.network;
+                          const prevApi = (p.payments.ton.apiBaseUrl || '').trim();
+                          const shouldAutoSwitchApi =
+                            (prevNet === 'testnet' && prevApi === TON_TESTNET_DEFAULT_API) ||
+                            (prevNet === 'mainnet' && prevApi === TON_MAINNET_DEFAULT_API);
 
-            {form.payments.enabled.yookassa && (
-              <div style={{ marginTop: 8 }}>
-                <div className="form-group">
-                  <label className="form-label">Shop ID</label>
-                  <input
-                    className="form-input"
-                    value={form.payments.yookassa.shopId}
-                    onChange={(e) =>
-                      setForm((p) => ({
-                        ...p,
-                        payments: { ...p.payments, yookassa: { ...p.payments.yookassa, shopId: e.target.value } },
-                      }))
-                    }
-                  />
+                          return {
+                            ...p,
+                            payments: {
+                              ...p.payments,
+                              ton: {
+                                ...p.payments.ton,
+                                network: next,
+                                apiBaseUrl: shouldAutoSwitchApi
+                                  ? next === 'mainnet'
+                                    ? TON_MAINNET_DEFAULT_API
+                                    : TON_TESTNET_DEFAULT_API
+                                  : p.payments.ton.apiBaseUrl,
+                              },
+                            },
+                          };
+                        });
+
+                        setPaymentErrors((prev) => ({ ...prev, ton_api: '' }));
+                      }}
+                    >
+                      <option value="testnet">Testnet</option>
+                      <option value="mainnet">Mainnet</option>
+                    </select>
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label">Wallet</label>
+                    <input
+                      className="form-input"
+                      value={form.payments.ton.walletAddress}
+                      placeholder="0QC3VqDed0SODLgoelsv0oV3iBjUOKJuQjXdWhDENohmtW"
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setForm((p) => ({ ...p, payments: { ...p.payments, ton: { ...p.payments.ton, walletAddress: v } } }));
+                        setPaymentErrors((prev) => ({ ...prev, ton_wallet: '' }));
+                      }}
+                      onBlur={() => {
+                        const v = (form.payments.ton.walletAddress || '').trim();
+                        setPaymentErrors((prev) => ({
+                          ...prev,
+                          ton_wallet: isTonFriendlyAddressLike(v) ? '' : 'Некорректный TON-адрес (friendly).',
+                        }));
+                      }}
+                    />
+                    {paymentErrors.ton_wallet ? (
+                      <small style={{ color: 'var(--tg-color-text-secondary)', display: 'block', marginTop: 4 }}>
+                        {paymentErrors.ton_wallet}
+                      </small>
+                    ) : null}
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label">API URL</label>
+                    <input
+                      className="form-input"
+                      value={form.payments.ton.apiBaseUrl}
+                      placeholder="https://testnet.toncenter.com/api/v2"
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setForm((p) => ({ ...p, payments: { ...p.payments, ton: { ...p.payments.ton, apiBaseUrl: v } } }));
+                        setPaymentErrors((prev) => ({ ...prev, ton_api: '' }));
+                      }}
+                      onBlur={() => {
+                        const v = (form.payments.ton.apiBaseUrl || '').trim();
+                        setPaymentErrors((prev) => ({
+                          ...prev,
+                          ton_api: isHttpsUrl(v) ? '' : 'TON API URL должен начинаться с https://',
+                        }));
+                      }}
+                    />
+                    {paymentErrors.ton_api ? (
+                      <small style={{ color: 'var(--tg-color-text-secondary)', display: 'block', marginTop: 4 }}>
+                        {paymentErrors.ton_api}
+                      </small>
+                    ) : null}
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label">
+                      API key <small style={{ opacity: 0.7 }}>(необязательно)</small>
+                    </label>
+                    <input
+                      className="form-input"
+                      value={form.payments.ton.apiKey}
+                      onChange={(e) =>
+                        setForm((p) => ({ ...p, payments: { ...p.payments, ton: { ...p.payments.ton, apiKey: e.target.value } } }))
+                      }
+                    />
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label">Delay (sec)</label>
+                    <input
+                      className="form-input"
+                      type="number"
+                      min={1}
+                      value={form.payments.ton.checkDelaySeconds}
+                      onChange={(e) => {
+                        const n = Number(e.target.value);
+                        setForm((p) => ({
+                          ...p,
+                          payments: { ...p.payments, ton: { ...p.payments.ton, checkDelaySeconds: n } },
+                        }));
+                        setPaymentErrors((prev) => ({ ...prev, ton_delay: '' }));
+                      }}
+                      onBlur={() => {
+                        const n = Number(form.payments.ton.checkDelaySeconds);
+                        setPaymentErrors((prev) => ({
+                          ...prev,
+                          ton_delay: Number.isFinite(n) && n >= 1 ? '' : 'Delay ≥ 1 сек.',
+                        }));
+                      }}
+                    />
+                    {paymentErrors.ton_delay ? (
+                      <small style={{ color: 'var(--tg-color-text-secondary)', display: 'block', marginTop: 4 }}>
+                        {paymentErrors.ton_delay}
+                      </small>
+                    ) : null}
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label">Confirmations</label>
+                    <input
+                      className="form-input"
+                      type="number"
+                      min={1}
+                      value={form.payments.ton.confirmationsRequired}
+                      onChange={(e) => {
+                        const n = Number(e.target.value);
+                        setForm((p) => ({
+                          ...p,
+                          payments: { ...p.payments, ton: { ...p.payments.ton, confirmationsRequired: n } },
+                        }));
+                        setPaymentErrors((prev) => ({ ...prev, ton_confirmations: '' }));
+                      }}
+                      onBlur={() => {
+                        const n = Number(form.payments.ton.confirmationsRequired);
+                        setPaymentErrors((prev) => ({
+                          ...prev,
+                          ton_confirmations: Number.isFinite(n) && n >= 1 ? '' : 'Confirmations ≥ 1.',
+                        }));
+                      }}
+                    />
+                    {paymentErrors.ton_confirmations ? (
+                      <small style={{ color: 'var(--tg-color-text-secondary)', display: 'block', marginTop: 4 }}>
+                        {paymentErrors.ton_confirmations}
+                      </small>
+                    ) : null}
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label">Price Lite (TON)</label>
+                    <input
+                      className="form-input"
+                      type="number"
+                      value={form.payments.ton.pricePerPeriodLite}
+                      onChange={(e) =>
+                        setForm((p) => ({
+                          ...p,
+                          payments: { ...p.payments, ton: { ...p.payments.ton, pricePerPeriodLite: Number(e.target.value) } },
+                        }))
+                      }
+                    />
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label">Price Pro (TON)</label>
+                    <input
+                      className="form-input"
+                      type="number"
+                      value={form.payments.ton.pricePerPeriodPro}
+                      onChange={(e) =>
+                        setForm((p) => ({
+                          ...p,
+                          payments: { ...p.payments, ton: { ...p.payments.ton, pricePerPeriodPro: Number(e.target.value) } },
+                        }))
+                      }
+                    />
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label">Price Ent (TON)</label>
+                    <input
+                      className="form-input"
+                      type="number"
+                      value={form.payments.ton.pricePerPeriodEnterprise}
+                      onChange={(e) =>
+                        setForm((p) => ({
+                          ...p,
+                          payments: {
+                            ...p.payments,
+                            ton: { ...p.payments.ton, pricePerPeriodEnterprise: Number(e.target.value) },
+                          },
+                        }))
+                      }
+                    />
+                  </div>
                 </div>
+              )}
 
-                <div className="form-group">
-                  <label className="form-label">Secret</label>
-                  <input
-                    className="form-input"
-                    value={form.payments.yookassa.secretKey}
-                    onChange={(e) =>
-                      setForm((p) => ({
-                        ...p,
-                        payments: { ...p.payments, yookassa: { ...p.payments.yookassa, secretKey: e.target.value } },
-                      }))
-                    }
-                  />
-                </div>
-
-                <div className="form-group">
-                  <label className="form-label">Return URL</label>
-                  <input
-                    className="form-input"
-                    value={form.payments.yookassa.returnUrl}
-                    placeholder="https://..."
-                    onChange={(e) => {
-                      const v = e.target.value;
-                      setForm((p) => ({
-                        ...p,
-                        payments: { ...p.payments, yookassa: { ...p.payments.yookassa, returnUrl: v } },
-                      }));
-                      setPaymentErrors((prev) => ({ ...prev, yk_return: '' }));
-                    }}
-                    onBlur={() => {
-                      const v = (form.payments.yookassa.returnUrl || '').trim();
-                      setPaymentErrors((prev) => ({
-                        ...prev,
-                        yk_return: isHttpsUrl(v) ? '' : 'Return URL должен начинаться с https://',
-                      }));
-                    }}
-                  />
-                  {paymentErrors.yk_return ? (
-                    <small style={{ color: 'var(--tg-color-text-secondary)', display: 'block', marginTop: 4 }}>
-                      {paymentErrors.yk_return}
-                    </small>
-                  ) : null}
-                </div>
-
-                <div className="form-group">
-                  <label className="form-label">Price Lite (RUB)</label>
-                  <input
-                    className="form-input"
-                    type="number"
-                    value={form.payments.yookassa.priceRubLite}
-                    onChange={(e) =>
-                      setForm((p) => ({
-                        ...p,
-                        payments: {
-                          ...p.payments,
-                          yookassa: { ...p.payments.yookassa, priceRubLite: Number(e.target.value) },
-                        },
-                      }))
-                    }
-                  />
-                </div>
-
-                <div className="form-group">
-                  <label className="form-label">Price Pro (RUB)</label>
-                  <input
-                    className="form-input"
-                    type="number"
-                    value={form.payments.yookassa.priceRubPro}
-                    onChange={(e) =>
-                      setForm((p) => ({
-                        ...p,
-                        payments: {
-                          ...p.payments,
-                          yookassa: { ...p.payments.yookassa, priceRubPro: Number(e.target.value) },
-                        },
-                      }))
-                    }
-                  />
-                </div>
-
-                <div className="form-group">
-                  <label className="form-label">Price Ent (RUB)</label>
-                  <input
-                    className="form-input"
-                    type="number"
-                    value={form.payments.yookassa.priceRubEnterprise}
-                    onChange={(e) =>
-                      setForm((p) => ({
-                        ...p,
-                        payments: {
-                          ...p.payments,
-                          yookassa: { ...p.payments.yookassa, priceRubEnterprise: Number(e.target.value) },
-                        },
-                      }))
-                    }
-                  />
-                </div>
+              {/* YooKassa */}
+              <div className="form-group" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <label className="form-label" style={{ marginBottom: 0 }}>
+                  YooKassa
+                </label>
+                <MiniSwitch
+                  checked={form.payments.enabled.yookassa}
+                  disabled={saving}
+                  ariaLabel="Toggle YooKassa payments"
+                  onChange={(checked) =>
+                    setForm((p) => ({
+                      ...p,
+                      payments: { ...p.payments, enabled: { ...p.payments.enabled, yookassa: checked } },
+                    }))
+                  }
+                />
               </div>
-            )}
-          </>
-        )}
+
+              {form.payments.enabled.yookassa && (
+                <div style={{ marginTop: 8 }}>
+                  <div className="form-group">
+                    <label className="form-label">Shop ID</label>
+                    <input
+                      className="form-input"
+                      value={form.payments.yookassa.shopId}
+                      onChange={(e) =>
+                        setForm((p) => ({
+                          ...p,
+                          payments: { ...p.payments, yookassa: { ...p.payments.yookassa, shopId: e.target.value } },
+                        }))
+                      }
+                    />
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label">Secret</label>
+                    <input
+                      className="form-input"
+                      value={form.payments.yookassa.secretKey}
+                      onChange={(e) =>
+                        setForm((p) => ({
+                          ...p,
+                          payments: { ...p.payments, yookassa: { ...p.payments.yookassa, secretKey: e.target.value } },
+                        }))
+                      }
+                    />
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label">Return URL</label>
+                    <input
+                      className="form-input"
+                      value={form.payments.yookassa.returnUrl}
+                      placeholder="https://..."
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setForm((p) => ({ ...p, payments: { ...p.payments, yookassa: { ...p.payments.yookassa, returnUrl: v } } }));
+                        setPaymentErrors((prev) => ({ ...prev, yk_return: '' }));
+                      }}
+                      onBlur={() => {
+                        const v = (form.payments.yookassa.returnUrl || '').trim();
+                        setPaymentErrors((prev) => ({
+                          ...prev,
+                          yk_return: isHttpsUrl(v) ? '' : 'Return URL должен начинаться с https://',
+                        }));
+                      }}
+                    />
+                    {paymentErrors.yk_return ? (
+                      <small style={{ color: 'var(--tg-color-text-secondary)', display: 'block', marginTop: 4 }}>
+                        {paymentErrors.yk_return}
+                      </small>
+                    ) : null}
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label">Price Lite (RUB)</label>
+                    <input
+                      className="form-input"
+                      type="number"
+                      value={form.payments.yookassa.priceRubLite}
+                      onChange={(e) =>
+                        setForm((p) => ({
+                          ...p,
+                          payments: { ...p.payments, yookassa: { ...p.payments.yookassa, priceRubLite: Number(e.target.value) } },
+                        }))
+                      }
+                    />
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label">Price Pro (RUB)</label>
+                    <input
+                      className="form-input"
+                      type="number"
+                      value={form.payments.yookassa.priceRubPro}
+                      onChange={(e) =>
+                        setForm((p) => ({
+                          ...p,
+                          payments: { ...p.payments, yookassa: { ...p.payments.yookassa, priceRubPro: Number(e.target.value) } },
+                        }))
+                      }
+                    />
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label">Price Ent (RUB)</label>
+                    <input
+                      className="form-input"
+                      type="number"
+                      value={form.payments.yookassa.priceRubEnterprise}
+                      onChange={(e) =>
+                        setForm((p) => ({
+                          ...p,
+                          payments: {
+                            ...p.payments,
+                            yookassa: { ...p.payments.yookassa, priceRubEnterprise: Number(e.target.value) },
+                          },
+                        }))
+                      }
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* Stripe */}
+              <div className="form-group" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <label className="form-label" style={{ marginBottom: 0 }}>
+                  Stripe
+                </label>
+                <MiniSwitch
+                  checked={form.payments.enabled.stripe}
+                  disabled={saving}
+                  ariaLabel="Toggle Stripe payments"
+                  onChange={(checked) => {
+                    setForm((p) => ({
+                      ...p,
+                      payments: { ...p.payments, enabled: { ...p.payments.enabled, stripe: checked } },
+                    }));
+                    setPaymentErrors((prev) => {
+                      const n = { ...prev };
+                      Object.keys(n)
+                        .filter((k) => k.startsWith('stripe_'))
+                        .forEach((k) => delete n[k]);
+                      return n;
+                    });
+                  }}
+                />
+              </div>
+
+              {form.payments.enabled.stripe && (
+                <div style={{ marginTop: 8 }}>
+                  <div className="form-group">
+                    <label className="form-label">Secret Key</label>
+                    <input
+                      className="form-input"
+                      value={form.payments.stripe.secretKey}
+                      onChange={(e) =>
+                        setForm((p) => ({
+                          ...p,
+                          payments: { ...p.payments, stripe: { ...p.payments.stripe, secretKey: e.target.value } },
+                        }))
+                      }
+                    />
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label">Publishable Key</label>
+                    <input
+                      className="form-input"
+                      value={form.payments.stripe.publishableKey}
+                      onChange={(e) =>
+                        setForm((p) => ({
+                          ...p,
+                          payments: { ...p.payments, stripe: { ...p.payments.stripe, publishableKey: e.target.value } },
+                        }))
+                      }
+                    />
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label">Webhook Secret</label>
+                    <input
+                      className="form-input"
+                      value={form.payments.stripe.webhookSecret}
+                      onChange={(e) =>
+                        setForm((p) => ({
+                          ...p,
+                          payments: { ...p.payments, stripe: { ...p.payments.stripe, webhookSecret: e.target.value } },
+                        }))
+                      }
+                    />
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label">Currency (e.g., usd)</label>
+                    <input
+                      className="form-input"
+                      value={form.payments.stripe.currency}
+                      onChange={(e) =>
+                        setForm((p) => ({
+                          ...p,
+                          payments: {
+                            ...p.payments,
+                            stripe: { ...p.payments.stripe, currency: e.target.value.toLowerCase() },
+                          },
+                        }))
+                      }
+                    />
+                  </div>
+
+                  {/* NEW */}
+                  <div className="form-group">
+                    <label className="form-label">Success URL</label>
+                    <input
+                      className="form-input"
+                      value={form.payments.stripe.successUrl || ''}
+                      placeholder="https://your-domain/miniapp/billing/success"
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setForm((p) => ({
+                          ...p,
+                          payments: { ...p.payments, stripe: { ...p.payments.stripe, successUrl: v } },
+                        }));
+                        setPaymentErrors((prev) => ({ ...prev, stripe_success_url: '' }));
+                      }}
+                      onBlur={() => {
+                        const v = (form.payments.stripe.successUrl || '').trim();
+                        setPaymentErrors((prev) => ({
+                          ...prev,
+                          stripe_success_url: !v
+                            ? 'Stripe successUrl обязателен.'
+                            : isHttpsUrl(v)
+                              ? ''
+                              : 'Stripe successUrl должен начинаться с https://',
+                        }));
+                      }}
+                    />
+                    {paymentErrors.stripe_success_url ? (
+                      <small style={{ color: 'var(--tg-color-text-secondary)', display: 'block', marginTop: 4 }}>
+                        {paymentErrors.stripe_success_url}
+                      </small>
+                    ) : null}
+                  </div>
+
+                  {/* NEW */}
+                  <div className="form-group">
+                    <label className="form-label">Cancel URL</label>
+                    <input
+                      className="form-input"
+                      value={form.payments.stripe.cancelUrl || ''}
+                      placeholder="https://your-domain/miniapp/billing/cancel"
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setForm((p) => ({
+                          ...p,
+                          payments: { ...p.payments, stripe: { ...p.payments.stripe, cancelUrl: v } },
+                        }));
+                        setPaymentErrors((prev) => ({ ...prev, stripe_cancel_url: '' }));
+                      }}
+                      onBlur={() => {
+                        const v = (form.payments.stripe.cancelUrl || '').trim();
+                        setPaymentErrors((prev) => ({
+                          ...prev,
+                          stripe_cancel_url: !v
+                            ? 'Stripe cancelUrl обязателен.'
+                            : isHttpsUrl(v)
+                              ? ''
+                              : 'Stripe cancelUrl должен начинаться с https://',
+                        }));
+                      }}
+                    />
+                    {paymentErrors.stripe_cancel_url ? (
+                      <small style={{ color: 'var(--tg-color-text-secondary)', display: 'block', marginTop: 4 }}>
+                        {paymentErrors.stripe_cancel_url}
+                      </small>
+                    ) : null}
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label">Price Lite (USD)</label>
+                    <input
+                      className="form-input"
+                      type="number"
+                      step="0.01"
+                      value={form.payments.stripe.priceUsdLite}
+                      onChange={(e) =>
+                        setForm((p) => ({
+                          ...p,
+                          payments: { ...p.payments, stripe: { ...p.payments.stripe, priceUsdLite: Number(e.target.value) } },
+                        }))
+                      }
+                    />
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label">Price Pro (USD)</label>
+                    <input
+                      className="form-input"
+                      type="number"
+                      step="0.01"
+                      value={form.payments.stripe.priceUsdPro}
+                      onChange={(e) =>
+                        setForm((p) => ({
+                          ...p,
+                          payments: { ...p.payments, stripe: { ...p.payments.stripe, priceUsdPro: Number(e.target.value) } },
+                        }))
+                      }
+                    />
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label">Price Ent (USD)</label>
+                    <input
+                      className="form-input"
+                      type="number"
+                      step="0.01"
+                      value={form.payments.stripe.priceUsdEnterprise}
+                      onChange={(e) =>
+                        setForm((p) => ({
+                          ...p,
+                          payments: {
+                            ...p.payments,
+                            stripe: { ...p.payments.stripe, priceUsdEnterprise: Number(e.target.value) },
+                          },
+                        }))
+                      }
+                    />
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
       </div>
     </div>
   );

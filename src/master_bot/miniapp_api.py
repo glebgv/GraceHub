@@ -11,6 +11,7 @@ import json
 import logging
 import base64
 import binascii
+import stripe
 import time
 import os
 import secrets
@@ -226,6 +227,7 @@ class PaymentMethod(str, Enum):
     telegram_stars = "telegram_stars"
     ton = "ton"
     yookassa = "yookassa"
+    stripe = "stripe"
 
 class CreateInvoiceRequest(BaseModel):
     plan_code: str = Field(..., description="Код тарифа (lite/pro/enterprise/demo)")
@@ -236,13 +238,29 @@ class CreateInvoiceRequest(BaseModel):
     )
 
 class CreateInvoiceResponse(BaseModel):
-    invoice_id: int
-    invoice_link: str
+    invoice_id: int = Field(..., description="Unique identifier for the invoice")
+    invoice_link: str = Field(..., description="URL to the invoice or payment page")
 
     # Для TON (для Stars будут None)
-    amount_minor_units: Optional[int] = None  # nanoton
-    amount_ton: Optional[float] = None        # человеко-читаемая
-    currency: Optional[str] = None            # "TON" / "XTR"
+    amount_minor_units: Optional[int] = Field(None, description="Amount in minor units (e.g., nanoton for TON)")
+    amount_ton: Optional[float] = Field(None, description="Human-readable amount in TON")
+    
+    # Для Stripe (для других методов будут None)
+    session_id: Optional[str] = Field(None, description="Stripe Checkout session ID")
+    amount_cents: Optional[int] = Field(None, description="Amount in cents (minor units for Stripe currencies like USD)")
+
+    currency: Optional[str] = Field(None, description="Currency code (e.g., 'TON', 'XTR', 'USD')")
+
+class StripeInvoiceStatusResponse(BaseModel):
+    invoice_id: int
+    status: str  # pending, succeeded, failed, canceled
+    session_id: Optional[str] = None
+    payment_intent_id: Optional[str] = None
+    period_applied: bool = False
+
+class StripeInvoiceCancelResponse(BaseModel):
+    invoice_id: int
+    status: str  # canceled
 
 class TonInvoiceStatusResponse(BaseModel):
     invoice_id: int
@@ -1445,14 +1463,13 @@ def create_miniapp_app(
         import json
         from urllib.parse import quote
         import base64  # Добавлен для генерации memo в TON
-
         request_id = str(uuid.uuid4())
         t0 = time.monotonic()
 
         user_id = current_user["user_id"]
 
         # IMPORTANT: req.payment_method может быть Enum (PaymentMethod.telegram_stars)
-        # Нормализуем в строку: "telegram_stars" | "ton" | "yookassa"
+        # Нормализуем в строку: "telegram_stars" | "ton" | "yookassa" | "stripe"
         payment_method = (
             getattr(req, "payment_method", None)
             or getattr(req, "paymentmethod", None)
@@ -1495,6 +1512,7 @@ def create_miniapp_app(
                 "telegram_stars": "telegramStars",
                 "ton": "ton",
                 "yookassa": "yookassa",
+                "stripe": "stripe",  # Добавлен для Stripe
             }.get(pm)
 
             if not method_key:
@@ -1877,6 +1895,166 @@ def create_miniapp_app(
                     currency="RUB",
                 )
 
+            # -------------------------
+            # Stripe (Checkout session URL)
+            # -------------------------
+            if payment_method == "stripe":
+                raw = await get_miniapp_public()
+                payments = raw.get("payments") or {}
+                stripe_cfg = payments.get("stripe") or {}
+
+                # config from SuperAdmin / DB (platformsettings.miniapp_public.payments.stripe.*)
+                secret_key = str(stripe_cfg.get("secretKey") or "").strip()
+                currency = str(stripe_cfg.get("currency") or "usd").strip().lower()
+                # Для success/cancel используем фиксированные или добавьте поля в SuperAdmin
+                success_url = "https://your-domain/success?session_id={CHECKOUT_SESSION_ID}"  # Замените на реальный
+                cancel_url = "https://your-domain/cancel"  # Замените на реальный
+                test_mode = bool(stripe_cfg.get("testMode", False))
+
+                logger.info(
+                    "billing.create_invoice stripe config request_id=%s secret_set=%s currency=%s success_url_set=%s cancel_url_set=%s test_mode=%s",
+                    request_id,
+                    bool(secret_key),
+                    currency,
+                    bool(success_url),
+                    bool(cancel_url),
+                    test_mode,
+                )
+
+                if not secret_key:
+                    raise HTTPException(status_code=500, detail="Stripe: secretKey не настроен в панели администратора")
+                if not success_url or not cancel_url:
+                    raise HTTPException(status_code=500, detail="Stripe: success_url/cancel_url не настроены")
+
+                plan = req.plan_code.lower()
+                price_map_usd = {
+                    "lite": float(stripe_cfg.get("priceUsdLite", 0) or 0),
+                    "pro": float(stripe_cfg.get("priceUsdPro", 0) or 0),
+                    "enterprise": float(stripe_cfg.get("priceUsdEnterprise", 0) or 0),
+                }
+
+                logger.info(
+                    "billing.create_invoice stripe price_map_usd request_id=%s price_lite=%s price_pro=%s price_enterprise=%s",
+                    request_id, price_map_usd["lite"], price_map_usd["pro"], price_map_usd["enterprise"],
+                )
+
+                if plan not in price_map_usd or price_map_usd[plan] <= 0:
+                    raise HTTPException(status_code=400, detail="Stripe: цена не настроена в панели администратора")
+
+                amount_usd = float(price_map_usd[plan]) * float(periods)
+                amount_minor_units = int(round(amount_usd * 100))  # Центы для USD (или другой валюты)
+                amount_value = f"{amount_usd:.2f}"
+
+                logger.info(
+                    "billing.create_invoice stripe amount request_id=%s amount_usd=%s amount_value=%s amount_minor_units=%s",
+                    request_id, amount_usd, amount_value, amount_minor_units,
+                )
+                try:
+                    invoice_id = await miniapp_db.db.insert_billing_invoice(
+                        instance_id=account_instance_id,
+                        user_id=user_id,
+                        plan_code=req.plan_code,
+                        periods=periods,
+                        amount_stars=0,
+                        product_code=product["product_code"],
+                        payload="",
+                        invoice_link="",
+                        status="pending",
+                        payment_method="stripe",
+                        currency=currency.upper(),
+                        amount_minor_units=amount_minor_units,
+                    )
+                except Exception:
+                    logger.exception(
+                        "billing.create_invoice stripe db.insert_billing_invoice failed request_id=%s instance_id=%s account_instance_id=%s user_id=%s product_code=%s",
+                        request_id, instance_id, account_instance_id, user_id, product.get("product_code"),
+                    )
+                    raise
+
+                logger.info(
+                    "billing.create_invoice stripe db invoice created request_id=%s invoice_id=%s",
+                    request_id, invoice_id,
+                )
+
+                stripe.api_key = secret_key
+
+                try:
+                    session = stripe.checkout.Session.create(
+                        payment_method_types=['card'],
+                        line_items=[{
+                            'price_data': {
+                                'currency': currency,
+                                'product_data': {
+                                    'name': f"{product.get('title') or product['name']} x{periods}",
+                                },
+                                'unit_amount': amount_minor_units,
+                            },
+                            'quantity': 1,
+                        }],
+                        mode='payment',
+                        success_url=success_url,
+                        cancel_url=cancel_url,
+                        metadata={
+                            "saas_invoice_id": invoice_id,
+                            "instance_id": account_instance_id,
+                            "user_id": user_id,
+                            "plan_code": req.plan_code,
+                            "periods": periods,
+                            "request_id": request_id,
+                            "test_mode": test_mode,
+                        },
+                    )
+                except stripe.error.StripeError as e:
+                    logger.exception("billing.create_invoice stripe session create error request_id=%s: %s", request_id, e)
+                    raise HTTPException(status_code=502, detail="Stripe: ошибка создания сессии")
+                except Exception:
+                    logger.exception("billing.create_invoice stripe request failed request_id=%s", request_id)
+                    raise HTTPException(status_code=502, detail="Stripe: не удалось создать сессию")
+
+                session_id = session.id
+                invoice_link = session.url
+
+                logger.info(
+                    "billing.create_invoice stripe parsed request_id=%s invoice_id=%s session_id=%s invoice_link=%s",
+                    request_id, invoice_id, session_id, invoice_link,
+                )
+
+                if not session_id or not invoice_link:
+                    logger.error(
+                        "billing.create_invoice stripe missing fields request_id=%s data=%s",
+                        request_id, session,
+                    )
+                    raise HTTPException(status_code=502, detail="Stripe: некорректный ответ API")
+
+                payload = f"stripe:{session_id}"
+
+                try:
+                    await miniapp_db.db.update_billing_invoice_link_and_payload(
+                        invoice_id=invoice_id,
+                        payload=payload,
+                        invoice_link=invoice_link,
+                        external_id=session_id,  # важно: session.id -> billinginvoices.externalid
+                    )
+
+                except Exception:
+                    logger.exception(
+                        "billing.create_invoice stripe db.update_billing_invoice_link_and_payload failed request_id=%s invoice_id=%s payload=%s invoice_link=%s",
+                        request_id, invoice_id, payload, invoice_link,
+                    )
+                    raise
+
+                logger.info(
+                    "billing.create_invoice done request_id=%s method=stripe invoice_id=%s session_id=%s elapsed_ms=%s",
+                    request_id, invoice_id, session_id, int((time.monotonic() - t0) * 1000),
+                )
+                return CreateInvoiceResponse(
+                    invoice_id=invoice_id,
+                    invoice_link=invoice_link,
+                    session_id=session_id,
+                    amount_minor_units=amount_minor_units,
+                    currency=currency.upper(),
+                )
+
             raise HTTPException(status_code=400, detail="Неизвестный метод оплаты")
 
         except HTTPException as e:
@@ -2164,6 +2342,116 @@ def create_miniapp_app(
 
         # Если ничего не нашли — возвращаем текущий статус (pending или cancelled)
         return {"status": current_status}
+        
+    @app.get("/api/invoices/stripe/{invoice_id}/status", response_model=StripeInvoiceStatusResponse)
+    async def get_stripe_invoice_status(
+        invoice_id: int,
+        current_user: Dict[str, Any] = Depends(get_current_user),
+    ):
+        # DB-first (вариант A): не ходим в Stripe API, доверяем webhook'у + БД
+        invoice = await miniapp_db.db.fetchone(
+            """
+            SELECT
+                invoice_id,
+                user_id,
+                payment_method,
+                status,
+                external_id,
+                period_applied,
+                created_at,
+                updated_at,
+                paid_at
+            FROM billing_invoices
+            WHERE invoice_id = $1 AND user_id = $2
+            LIMIT 1
+            """,
+            (invoice_id, current_user["user_id"]),
+        )
+        if not invoice:
+            raise HTTPException(status_code=404, detail="Invoice not found")
+
+        if str(invoice.get("payment_method") or "").lower() != "stripe":
+            raise HTTPException(status_code=400, detail="Not a Stripe invoice")
+
+        # Вариант A: статус возвращаем из БД (его обновляет webhook через external_id) и period_applied тоже из БД
+        # Важно: "status" в ответе теперь будет твоим внутренним (pending/succeeded/failed/cancelled),
+        # а не Stripe payment_status (paid/unpaid).
+        return StripeInvoiceStatusResponse(
+            invoice_id=int(invoice["invoice_id"]),
+            status=str(invoice.get("status") or "pending"),
+            session_id=invoice.get("external_id"),
+            payment_intent_id=None,  # без Stripe API мы его не знаем; если нужно — сохраняй в БД в webhook
+            period_applied=bool(invoice.get("period_applied", False)),
+        )
+
+
+    @app.post("/api/invoices/stripe/{invoice_id}/cancel", response_model=StripeInvoiceCancelResponse)
+    async def cancel_stripe_invoice(
+        invoice_id: int,
+        current_user: Dict[str, Any] = Depends(get_current_user),
+    ):
+        invoice = await miniapp_db.db.fetchone(
+            "SELECT * FROM billing_invoices WHERE invoice_id = $1 AND user_id = $2",
+            (invoice_id, current_user['user_id'])
+        )
+        if not invoice:
+            raise HTTPException(status_code=404, detail="Invoice not found")
+
+        stripe.api_key = settings.STRIPE_SECRET_KEY
+
+        try:
+            session = stripe.checkout.Session.retrieve(invoice['external_id'])
+            if session.status != 'complete':
+                stripe.checkout.Session.expire(invoice['external_id'])
+                await miniapp_db.db.update_billing_invoice_status(invoice_id, "canceled")
+            return StripeInvoiceCancelResponse(invoice_id=invoice_id, status="canceled")
+        except stripe.error.StripeError as e:
+            logger.error(f"Stripe cancel error for invoice {invoice_id}: {e}")
+            raise HTTPException(status_code=500, detail="Ошибка отмены сессии Stripe")
+
+    @app.post("/api/webhook/stripe")
+    async def stripe_webhook(request: Request):
+        payload = await request.body()
+        sig_header = request.headers.get("stripe-signature")
+
+        if not sig_header:
+            raise HTTPException(status_code=400, detail="Missing stripe-signature")
+
+        ps = await miniapp_db.db.get_platform_setting("miniapp_public", default=None)
+        if isinstance(ps, str):
+            try:
+                ps = json.loads(ps)
+            except Exception:
+                ps = None
+
+        if not isinstance(ps, dict):
+            raise HTTPException(status_code=500, detail="Platform settings not configured")
+
+        stripe_cfg = (ps.get("payments") or {}).get("stripe") or {}
+        wh_secret = str(stripe_cfg.get("webhookSecret") or "").strip()
+
+        if not wh_secret:
+            raise HTTPException(status_code=500, detail="Stripe webhookSecret not configured")
+
+        try:
+            event = stripe.Webhook.construct_event(payload, sig_header, wh_secret)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid payload")
+        except stripe.error.SignatureVerificationError:
+            raise HTTPException(status_code=400, detail="Invalid signature")
+
+        if event.get("type") == "checkout.session.completed":
+            session = (event.get("data") or {}).get("object") or {}
+
+            external_id = session.get("id")
+            metadata = session.get("metadata") or {}
+            invoice_id = metadata.get("saas_invoice_id") or metadata.get("saasInvoiceId")
+
+            if external_id and invoice_id:
+                await miniapp_db.db.update_billing_invoice_status_by_external(external_id, "succeeded")
+                await miniapp_db.db.apply_invoice_to_billing(int(invoice_id))
+
+        return {"status": "ok"}
 
     @app.get("/api/platform/single-tenant", response_model=SingleTenantConfig)
     async def get_single_tenant_config_endpoint(
@@ -2615,45 +2903,154 @@ def create_miniapp_app(
         data = await master_db.get_platform_setting("miniapp_public", default={})
         return {"key": "miniapp_public", "value": data}
 
+    logger = logging.getLogger("master_bot.platform_settings")
+
+
+    def _short_hash(obj: Any) -> str:
+        try:
+            s = json.dumps(obj, ensure_ascii=False, sort_keys=True, default=str)
+        except Exception:
+            s = str(obj)
+        return hashlib.sha256(s.encode("utf-8")).hexdigest()[:12]
+
+
+    def _safe_enabled(value: Any) -> Optional[Dict[str, Any]]:
+        """
+        Достаём только payments.enabled (без секретов).
+        """
+        if not isinstance(value, dict):
+            return None
+        payments = value.get("payments")
+        if not isinstance(payments, dict):
+            return None
+        enabled = payments.get("enabled")
+        if not isinstance(enabled, dict):
+            return None
+        return {
+            "telegramStars": enabled.get("telegramStars"),
+            "ton": enabled.get("ton"),
+            "yookassa": enabled.get("yookassa"),
+            "stripe": enabled.get("stripe"),
+        }
+
+
+    def _enabled_debug(value: Any) -> Dict[str, Any]:
+        """
+        Диагностика структуры payments/enabled (без секретов).
+        """
+        if not isinstance(value, dict):
+            return {"valueType": type(value).__name__, "paymentsType": None, "enabledType": None, "enabledKeys": None}
+
+        payments = value.get("payments", None)
+        if not isinstance(payments, dict):
+            return {"valueType": "dict", "paymentsType": type(payments).__name__, "enabledType": None, "enabledKeys": None}
+
+        enabled = payments.get("enabled", None)
+        if not isinstance(enabled, dict):
+            return {"valueType": "dict", "paymentsType": "dict", "enabledType": type(enabled).__name__, "enabledKeys": None}
+
+        return {"valueType": "dict", "paymentsType": "dict", "enabledType": "dict", "enabledKeys": sorted(enabled.keys())}
+
+
     @app.post("/api/platform/settings/{key}")
     async def set_platform_settings(
         key: str,
         payload: PlatformSettingUpsert,
+        request: Request,
         current_user: Dict[str, Any] = Depends(get_current_user),
     ):
         await require_superadmin(current_user)
 
-        # 1) сохраняем как и раньше (platformsettings.key -> JSONB value)
-        await master_db.set_platform_setting(key, payload.value)
+        uid = current_user.get("userId") or current_user.get("userid") or current_user.get("id")
+        ip = request.client.host if request.client else None
+        ct = request.headers.get("content-type")
 
-        # 2) если обновили miniapp_public — синхронизируем Stars-цены в таблицы биллинга
+        incoming = payload.value
+
+        # BEFORE (что было в БД до записи)
+        before = await master_db.get_platform_setting(key, default=None)
+
+        logger.warning(
+            "platform_settings.save IN ip=%s user=%s key=%s content_type=%s before_hash=%s incoming_hash=%s before_enabled=%s incoming_enabled=%s incoming_dbg=%s",
+            ip,
+            uid,
+            key,
+            ct,
+            _short_hash(before),
+            _short_hash(incoming),
+            _safe_enabled(before),
+            _safe_enabled(incoming),
+            _enabled_debug(incoming),
+        )
+
+        # Нормализация miniapp_public перед сохранением
         if key == "miniapp_public":
-            v = payload.value or {}
-            payments = v.get("payments") or {}
-            tg_stars = payments.get("telegramStars") or {}
+            v = incoming or {}
+            if not isinstance(v, dict):
+                raise HTTPException(status_code=400, detail="miniapp_public value must be object")
 
+            payments = v.get("payments") or {}
+            if not isinstance(payments, dict):
+                payments = {}
+
+            enabled = payments.get("enabled") or {}
+            if not isinstance(enabled, dict):
+                enabled = {}
+
+            # ВАЖНО: гарантируем наличие всех флагов, включая stripe
+            enabled["telegramStars"] = bool(enabled.get("telegramStars", False))
+            enabled["ton"] = bool(enabled.get("ton", False))
+            enabled["yookassa"] = bool(enabled.get("yookassa", False))
+            enabled["stripe"] = bool(enabled.get("stripe", False))
+
+            payments["enabled"] = enabled
+            v["payments"] = payments
+
+            # сохраняем УЖЕ нормализованное значение
+            await master_db.set_platform_setting(key, v)
+
+            # AFTER (что получилось в БД)
+            after = await master_db.get_platform_setting(key, default=None)
+            logger.warning(
+                "platform_settings.save OUT ip=%s user=%s key=%s after_hash=%s after_enabled=%s after_dbg=%s",
+                ip,
+                uid,
+                key,
+                _short_hash(after),
+                _safe_enabled(after),
+                _enabled_debug(after),
+            )
+
+            # синхронизируем Stars-цены
+            tg_stars = payments.get("telegramStars") or {}
             price_lite = tg_stars.get("priceStarsLite")
             price_pro = tg_stars.get("priceStarsPro")
             price_ent = tg_stars.get("priceStarsEnterprise")
 
-            mapping = [
-                ("lite", price_lite),
-                ("pro", price_pro),
-                ("enterprise", price_ent),
-            ]
-
+            mapping = [("lite", price_lite), ("pro", price_pro), ("enterprise", price_ent)]
             for plancode, price in mapping:
                 if price is None:
                     continue
-
-                # валидация + запись в saasplans
                 await master_db.update_saas_plan_price_stars(plancode, int(price))
-
-                # обновляем billingproducts.amountstars, т.к. create_invoice берёт сумму именно оттуда
                 await master_db.sync_billing_product_amount_from_plan(plancode)
 
-        return {"status": "ok"}
+            return {"status": "ok"}
 
+        # все остальные ключи — как раньше
+        await master_db.set_platform_setting(key, incoming)
+
+        after = await master_db.get_platform_setting(key, default=None)
+        logger.warning(
+            "platform_settings.save OUT ip=%s user=%s key=%s after_hash=%s after_enabled=%s after_dbg=%s",
+            ip,
+            uid,
+            key,
+            _short_hash(after),
+            _safe_enabled(after),
+            _enabled_debug(after),
+        )
+
+        return {"status": "ok"}
 
     @app.get("/api/instances/{instance_id}/billing", response_model=BillingInfo)
     async def get_instance_billing_endpoint(

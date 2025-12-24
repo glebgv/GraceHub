@@ -7,7 +7,10 @@
  * - Добавлен ApiError (статус + тело ответа), чтобы UI мог различать ошибки по коду.
  * - В request() добавлен accept: application/json и более надёжный разбор ошибок.
  * - Небольшая нормализация snake_case/camelCase в DTO там, где UI уже ожидает snake_case.
- * - PaymentMethod приведён к значениям, которые реально ждёт backend: telegramstars/ton/yookassa. [file:9]
+ * - PaymentMethod приведён к значениям, которые реально ждёт backend: telegramstars/ton/yookassa/stripe.
+ *
+ * FIX (важно): добавлен Stripe в MiniappPublicSettings.payments.enabled и нормализацию,
+ * иначе enabled.stripe вырезался при сохранении из SuperAdmin.
  */
 
 export interface AuthRequest {
@@ -61,8 +64,8 @@ export interface SaasPlanDTO {
 
 // --- Billing invoices ---
 
-// NB: backend принимает paymentmethod значения: telegramstars/ton/yookassa. [file:9]
-export type PaymentMethod = 'telegramstars' | 'ton' | 'yookassa';
+// NB: backend принимает paymentmethod значения: telegramstars/ton/yookassa/stripe.
+export type PaymentMethod = 'telegramstars' | 'ton' | 'yookassa' | 'stripe';
 
 // NB: оставляем твой текущий контракт snake_case, чтобы не перепахивать Billing.tsx.
 export interface CreateInvoiceRequest {
@@ -78,6 +81,7 @@ export interface CreateInvoiceResponse {
   amount_minor_units?: number;
   amount_ton?: number;
   currency?: string;
+  session_id?: string;
 }
 
 export interface TonInvoiceStatusResponse {
@@ -91,6 +95,23 @@ export interface YooKassaStatusResponse {
   invoice_id: number;
   status: string; // pending/succeeded/canceled/waiting_for_capture/...
   payment_id?: string | null;
+  period_applied: boolean;
+}
+
+/**
+ * Stripe invoice status polling (snake_case для UI)
+ * Backend: StripeInvoiceStatusResponseBaseModel:
+ * - invoiceid
+ * - status: pending/succeeded/failed/canceled
+ * - sessionid
+ * - paymentintentid
+ * - periodapplied
+ */
+export interface StripeInvoiceStatusResponse {
+  invoice_id: number;
+  status: 'pending' | 'succeeded' | 'failed' | 'canceled';
+  session_id?: string | null;
+  payment_intent_id?: string | null;
   period_applied: boolean;
 }
 
@@ -118,7 +139,7 @@ export interface ManageHealthResponse {
 
 /**
  * То, что хранится в platform_settings["miniapp_public"].
- * Важно: single-tenant режим в бекенде читается из singleTenant.allowedUserIds. [file:9]
+ * Важно: single-tenant режим в бекенде читается из singleTenant.allowedUserIds.
  */
 export interface MiniappPublicSettings {
   singleTenant: {
@@ -135,6 +156,7 @@ export interface MiniappPublicSettings {
       telegramStars: boolean;
       ton: boolean;
       yookassa: boolean;
+      stripe: boolean; // FIX: было потеряно
     };
 
     // prices for Telegram Stars
@@ -164,6 +186,21 @@ export interface MiniappPublicSettings {
       priceRubLite: number;
       priceRubPro: number;
       priceRubEnterprise: number;
+    };
+
+    stripe: {
+      secretKey: string;
+      publishableKey: string;
+      webhookSecret: string;
+      currency: string;
+      priceUsdLite: number;
+      priceUsdPro: number;
+      priceUsdEnterprise: number;
+
+      // если добавишь на бэке/в UI — просто раскомментируй:
+      // successUrl?: string;
+      // cancelUrl?: string;
+      // testMode?: boolean;
     };
   };
 
@@ -211,23 +248,31 @@ function safeNumber(v: any, fallback: number) {
  * Нормализация miniapp_public:
  * - гарантирует наличие singleTenant.allowedUserIds
  * - мигрирует старое singleTenant.ownerTelegramId -> allowedUserIds
- * - гарантирует наличие payments.telegramStars.priceStars*
+ * - гарантирует наличие payments.* секций и enabled-флагов
  */
 function normalizeMiniappPublicSettings(raw: any): MiniappPublicSettings {
   const v = raw || {};
   const st = v?.singleTenant || {};
   const p = v?.payments || {};
   const ts = p?.telegramStars || {};
+  const ton = p?.ton || {};
+  const yk = p?.yookassa || {};
+  const sp = p?.stripe || {};
 
   let allowed = normalizeIds(st?.allowedUserIds);
   if (allowed.length === 0 && st?.ownerTelegramId !== null && st?.ownerTelegramId !== undefined) {
     allowed = normalizeIds([st.ownerTelegramId]);
   }
 
-  // дефолты — такие же, как ты добавил в SuperAdmin.tsx (можешь подстроить)
+  // дефолты — можно синхронизировать с SuperAdmin.tsx
   const defaultStarsLite = 100;
   const defaultStarsPro = 300;
   const defaultStarsEnt = 999;
+
+  const defaultStripeCurrency = 'usd';
+  const defaultUsdLite = 4.99;
+  const defaultUsdPro = 9.99;
+  const defaultUsdEnt = 29.99;
 
   return {
     ...v,
@@ -238,12 +283,14 @@ function normalizeMiniappPublicSettings(raw: any): MiniappPublicSettings {
       // ownerTelegramId оставляем как legacy-поле (не используем в UI, но не ломаем старые данные)
       ownerTelegramId: st?.ownerTelegramId === undefined ? undefined : st?.ownerTelegramId,
     },
+    superadmins: Array.isArray(v?.superadmins) ? normalizeIds(v.superadmins) : [],
     payments: {
       ...p,
       enabled: {
         telegramStars: !!p?.enabled?.telegramStars,
         ton: !!p?.enabled?.ton,
         yookassa: !!p?.enabled?.yookassa,
+        stripe: !!p?.enabled?.stripe, // FIX: раньше вырезалось
       },
       telegramStars: {
         priceStarsLite: safeNumber(ts?.priceStarsLite, defaultStarsLite),
@@ -251,13 +298,44 @@ function normalizeMiniappPublicSettings(raw: any): MiniappPublicSettings {
         priceStarsEnterprise: safeNumber(ts?.priceStarsEnterprise, defaultStarsEnt),
       },
       ton: {
-        ...(p?.ton || {}),
+        network: ton?.network === 'mainnet' ? 'mainnet' : 'testnet',
+        walletAddress: String(ton?.walletAddress ?? ''),
+        apiBaseUrl: String(ton?.apiBaseUrl ?? ''),
+        apiKey: String(ton?.apiKey ?? ''),
+        checkDelaySeconds: safeNumber(ton?.checkDelaySeconds, 5),
+        confirmationsRequired: safeNumber(ton?.confirmationsRequired, 1),
+        pricePerPeriodLite: safeNumber(ton?.pricePerPeriodLite, 0.5),
+        pricePerPeriodPro: safeNumber(ton?.pricePerPeriodPro, 2.0),
+        pricePerPeriodEnterprise: safeNumber(ton?.pricePerPeriodEnterprise, 5.0),
       },
       yookassa: {
-        ...(p?.yookassa || {}),
+        shopId: String(yk?.shopId ?? ''),
+        secretKey: String(yk?.secretKey ?? ''),
+        returnUrl: String(yk?.returnUrl ?? ''),
+        testMode: yk?.testMode !== undefined ? !!yk.testMode : true,
+        priceRubLite: safeNumber(yk?.priceRubLite, 199),
+        priceRubPro: safeNumber(yk?.priceRubPro, 499),
+        priceRubEnterprise: safeNumber(yk?.priceRubEnterprise, 1999),
+      },
+      stripe: {
+        secretKey: String(sp?.secretKey ?? ''),
+        publishableKey: String(sp?.publishableKey ?? ''),
+        webhookSecret: String(sp?.webhookSecret ?? ''),
+        currency: String(sp?.currency ?? defaultStripeCurrency).toLowerCase(),
+        priceUsdLite: safeNumber(sp?.priceUsdLite, defaultUsdLite),
+        priceUsdPro: safeNumber(sp?.priceUsdPro, defaultUsdPro),
+        priceUsdEnterprise: safeNumber(sp?.priceUsdEnterprise, defaultUsdEnt),
       },
     },
-  } as MiniappPublicSettings;
+    instanceDefaults: {
+      antifloodMaxUserMessagesPerMinute: safeNumber(
+        v?.instanceDefaults?.antifloodMaxUserMessagesPerMinute,
+        20,
+      ),
+      workerMaxFileMb: safeNumber(v?.instanceDefaults?.workerMaxFileMb, 10),
+      maxInstancesPerUser: safeNumber(v?.instanceDefaults?.maxInstancesPerUser, 3),
+    },
+  };
 }
 
 class ApiClient {
@@ -343,7 +421,7 @@ class ApiClient {
     });
 
     if (!response.ok) {
-      // FastAPI обычно возвращает {detail: "..."} [file:9]
+      // FastAPI обычно возвращает {detail: "..."}
       const detail =
         (json && (json.detail ?? json.message ?? json.error)) ||
         (text ? text.slice(0, 200) : '') ||
@@ -440,7 +518,7 @@ class ApiClient {
   }
 
   async addOperator(instanceId: string, userId: number, role: string) {
-    // backend ожидает поля userid/username/role (а не user_id). [file:9]
+    // backend ожидает поля userid/username/role (а не user_id).
     return this.request('POST', `/api/instances/${instanceId}/operators`, {
       userid: userId,
       role,
@@ -461,9 +539,6 @@ class ApiClient {
   }
 
   async createBillingInvoice(instanceId: string, payload: CreateInvoiceRequest): Promise<CreateInvoiceResponse> {
-    // backend модель в Python: plancode/periods/paymentmethod (camelCase не нужно),
-    // но ты намеренно используешь snake_case в UI.
-    // Оставляем как есть, если backend уже умеет это принимать через alias/ручной парсинг.
     return this.request<CreateInvoiceResponse>('POST', `/api/instances/${instanceId}/billing/create_invoice`, payload);
   }
 
@@ -483,6 +558,19 @@ class ApiClient {
     return this.request<YooKassaStatusResponse>('GET', `/api/billing/yookassa/status?${params.toString()}`);
   }
 
+  // Stripe invoice status polling
+  async getStripeInvoiceStatus(invoiceId: number): Promise<StripeInvoiceStatusResponse> {
+    const raw = await this.request<any>('GET', `/api/invoices/stripe/${invoiceId}/status`); // endpoint есть на бэке
+    // нормализуем в snake_case, чтобы UI был единообразным
+    return {
+      invoice_id: Number(raw?.invoiceid ?? raw?.invoice_id ?? invoiceId),
+      status: String(raw?.status ?? 'pending') as any,
+      session_id: raw?.sessionid ?? raw?.session_id ?? null,
+      payment_intent_id: raw?.paymentintentid ?? raw?.payment_intent_id ?? null,
+      period_applied: !!(raw?.periodapplied ?? raw?.period_applied),
+    };
+  }
+
   // === Platform settings ===
 
   /**
@@ -495,7 +583,7 @@ class ApiClient {
 
   /**
    * POST /api/platform/settings/{key}
-   * Только superadmin (backend проверяет роли). [file:9]
+   * Только superadmin (backend проверяет роли).
    */
   async setPlatformSetting(key: string, value: Record<string, any>): Promise<SimpleStatusResponse> {
     const payload: PlatformSettingUpsertRequest = { value };
@@ -509,7 +597,7 @@ class ApiClient {
   }
 
   async setMiniappPublicSettings(value: MiniappPublicSettings): Promise<SimpleStatusResponse> {
-    // перед сохранением гарантируем нормальный массив id + наличие stars pricing
+    // перед сохранением нормализуем (важно: теперь НЕ вырезает enabled.stripe)
     const normalized = normalizeMiniappPublicSettings(value);
 
     // важно: ownerTelegramId не нужен; если он там остался — можно убрать, чтобы не плодить legacy

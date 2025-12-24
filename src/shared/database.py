@@ -77,6 +77,7 @@ class MasterDatabase:
         self.cipher = Fernet(key)
 
         await self.create_tables()
+        await self.ensure_default_platform_settings()
         logger.info(f"Master database (Postgres) initialized: {self.dsn}")
 
     async def count_instances_for_user(self, userid: int) -> int:
@@ -962,6 +963,86 @@ class MasterDatabase:
         )
 
 
+    async def ensure_default_platform_settings(self) -> None:
+        """
+        Гарантирует дефолтные значения в platform_settings.miniapp_public.
+        Для миграции: добавляет/обновляет только отсутствующие поля в JSON.
+        """
+        key = "miniapp_public"
+        default_data = {
+            "singleTenant": {
+                "enabled": False,
+                "allowedUserIds": [],
+            },
+            "superadmins": [],
+            "payments": {
+                "enabled": {
+                    "telegramStars": True,
+                    "ton": True,
+                    "yookassa": False,
+                    "stripe": False,  # Новый дефолт
+                },
+                "telegramStars": {
+                    "priceStarsLite": 100,
+                    "priceStarsPro": 300,
+                    "priceStarsEnterprise": 999,
+                },
+                "ton": {
+                    "network": "testnet",
+                    "walletAddress": "",
+                    "apiBaseUrl": "https://testnet.toncenter.com/api/v2",
+                    "apiKey": "",
+                    "checkDelaySeconds": 5,
+                    "confirmationsRequired": 1,
+                    "pricePerPeriodLite": 0.5,
+                    "pricePerPeriodPro": 2.0,
+                    "pricePerPeriodEnterprise": 5.0,
+                },
+                "yookassa": {
+                    "shopId": "",
+                    "secretKey": "",
+                    "returnUrl": "",
+                    "testMode": True,
+                    "priceRubLite": 199,
+                    "priceRubPro": 499,
+                    "priceRubEnterprise": 1999,
+                },
+                "stripe": {  # Новый блок с дефолтами
+                    "secretKey": "",
+                    "publishableKey": "",
+                    "webhookSecret": "",
+                    "currency": "usd",
+                    "priceUsdLite": 4.99,
+                    "priceUsdPro": 9.99,
+                    "priceUsdEnterprise": 29.99,
+                },
+            },
+            "instanceDefaults": {
+                "antifloodMaxUserMessagesPerMinute": 20,
+                "workerMaxFileMb": 10,
+                "maxInstancesPerUser": 3,
+            },
+        }
+
+        # Получаем текущие данные
+        current = await self.get_platform_setting(key, default=default_data)
+
+        # Миграция: добавляем отсутствующие поля (рекурсивно мержим дефолты)
+        def merge_dict(target: dict, source: dict) -> dict:
+            for k, v in source.items():
+                if k not in target:
+                    target[k] = v
+                elif isinstance(v, dict) and isinstance(target[k], dict):
+                    merge_dict(target[k], v)
+            return target
+
+        updated = merge_dict(current, default_data)
+
+        # Если изменилось — сохраняем
+        if updated != current:
+            await self.set_platform_setting(key, updated)
+            logger.info(f"Applied migration for {key}: added/updated Stripe defaults")
+
     async def _create_miniapp_tables(self, conn) -> None:
         await conn.execute(
             """
@@ -1189,35 +1270,37 @@ class MasterDatabase:
             """
         )
 
-        # billing_invoices: сессии оплаты (Telegram Stars + TON + YooKassa)
+        # billing_invoices: сессии оплаты (Telegram Stars + TON + YooKassa + Stripe)
         await conn.execute(
             """
             CREATE TABLE IF NOT EXISTS billing_invoices (
                 invoice_id          BIGSERIAL PRIMARY KEY,
                 instance_id         TEXT NOT NULL,
-                user_id             BIGINT,              
+                user_id             BIGINT,
 
                 product_id          INTEGER NOT NULL
                     REFERENCES billing_products(product_id)
                     ON DELETE RESTRICT,
 
-                -- Универсальное поле для любых методов:
-                payload             TEXT NOT NULL,      
+                plan_code           TEXT,
+                periods             INTEGER NOT NULL DEFAULT 1,
 
-                -- Telegram Stars:
-                telegram_invoice_id TEXT,              
-                invoice_link        TEXT,              
+                payload             TEXT NOT NULL,
 
-                -- Суммы:
-                stars_amount        INTEGER NOT NULL,    
-                amount_minor_units  BIGINT,           
+                telegram_invoice_id TEXT,
+                invoice_link        TEXT,
+
+                stars_amount        INTEGER NOT NULL,
+                amount_minor_units  BIGINT,
 
                 currency            TEXT NOT NULL DEFAULT 'XTR',
                 payment_method      TEXT NOT NULL DEFAULT 'telegram_stars',
 
-                -- Для TON и внешних провайдеров:
-                provider_tx_hash    TEXT,               
-                memo                TEXT,                       -- Для TON comment/memo (уникальный)
+                provider_tx_hash    TEXT,
+                memo                TEXT,
+
+                external_id         TEXT,
+                period_applied      BOOLEAN NOT NULL DEFAULT FALSE,
 
                 status              TEXT NOT NULL DEFAULT 'pending',
                 error_code          TEXT,
@@ -1232,9 +1315,29 @@ class MasterDatabase:
                     REFERENCES bot_instances(instance_id)
                     ON DELETE CASCADE,
 
-                -- Уникальность хэша транзакции (разрешает множественные NULL)
                 CONSTRAINT unique_provider_tx_hash UNIQUE (provider_tx_hash)
             )
+
+            """
+        )
+
+        # Миграции для существующих баз: добавляем новые поля и constraints
+        await conn.execute("ALTER TABLE billing_invoices ADD COLUMN IF NOT EXISTS external_id TEXT;")
+        await conn.execute("ALTER TABLE billing_invoices ADD COLUMN IF NOT EXISTS plan_code TEXT;")
+        await conn.execute("ALTER TABLE billing_invoices ADD COLUMN IF NOT EXISTS period_applied BOOLEAN NOT NULL DEFAULT FALSE;")
+        await conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS unique_external_id_non_null ON billing_invoices (external_id) WHERE external_id IS NOT NULL;")  # Partial UNIQUE index для NULL-safe
+        await conn.execute("ALTER TABLE billing_invoices ADD COLUMN IF NOT EXISTS periods INTEGER NOT NULL DEFAULT 1;")
+        await conn.execute(
+            """
+            ALTER TABLE billing_invoices 
+            DROP CONSTRAINT IF EXISTS check_payment_method;
+            """
+        )
+        await conn.execute(
+            """
+            ALTER TABLE billing_invoices 
+            ADD CONSTRAINT check_payment_method 
+            CHECK (payment_method IN ('telegram_stars', 'ton', 'yookassa', 'stripe'));
             """
         )
 
@@ -1388,12 +1491,28 @@ class MasterDatabase:
                 # Удаляем инстанс
                 await conn.execute("DELETE FROM bot_instances WHERE instance_id = $1", *(instance_id,))
 
+
     async def update_billing_invoice_link_and_payload(
         self,
         invoice_id: int,
         payload: str,
         invoice_link: str,
+        external_id: str | None = None,
     ) -> None:
+        if external_id:
+            await self.execute(
+                """
+                UPDATE billing_invoices
+                SET payload = $1,
+                    invoice_link = $2,
+                    external_id = $3,
+                    updated_at = NOW()
+                WHERE invoice_id = $4
+                """,
+                (payload, invoice_link, external_id, invoice_id),
+            )
+            return
+
         await self.execute(
             """
             UPDATE billing_invoices
@@ -1417,9 +1536,9 @@ class MasterDatabase:
         invoice_link: str,
         status: str = "pending",
         *,
-        payment_method: str = "telegram_stars",  # telegram_stars | ton | yookassa
-        currency: str = "XTR",                   # XTR | TON | RUB
-        amount_minor_units: int | None = None,   # для TON: nanoton, для nanokassa: kopeks
+        payment_method: str = "telegram_stars",    # telegram_stars | ton | yookassa | stripe
+        currency: str = "XTR",                     # XTR | TON | RUB | (Stripe: USD/EUR/...)
+        amount_minor_units: int | None = None,     # TON: nanoton, YooKassa: kopeks, Stripe: cents
     ) -> int:
         # product_code = billing_products.code → достаём product_id
         product_row = await self.fetchone(
@@ -1429,12 +1548,23 @@ class MasterDatabase:
             WHERE code = $1
             LIMIT 1
             """,
-            (product_code,)
+            (product_code,),
         )
         if not product_row:
             raise ValueError(f"Unknown billing product_code={product_code}")
 
         product_id = product_row["product_id"]
+
+        # Нормализуем periods (на всякий)
+        try:
+            periods_val = int(periods)
+        except Exception:
+            periods_val = 1
+        if periods_val <= 0:
+            periods_val = 1
+
+        # Нормализация plan_code (может быть пустым)
+        plan_code_val = str(plan_code or "").strip().lower() or None
 
         # Нормализация payment_method (на случай enum/алиасов)
         if hasattr(payment_method, "value"):
@@ -1443,7 +1573,7 @@ class MasterDatabase:
         payment_method = str(payment_method or "").strip().lower()
 
         # алиасы, если где-то в коде встречаются другие значения
-        if payment_method in ("telegram_stars", "tg_stars", "stars"):
+        if payment_method in ("telegram_stars", "tg_stars", "stars", "telegramstars", "telegram-stars"):
             payment_method = "telegram_stars"
 
         # Нормализация под метод
@@ -1461,7 +1591,7 @@ class MasterDatabase:
 
         elif payment_method == "yookassa":
             # Для YooKassa сохраняем сумму в минимальных единицах (копейки) в amount_minor_units
-            currency = currency or "RUB"
+            currency = (currency or "RUB").strip().upper()
             if currency != "RUB":
                 # чтобы не разъехались ожидания в остальном коде
                 raise ValueError(f"YooKassa invoice requires currency=RUB, got {currency}")
@@ -1469,6 +1599,18 @@ class MasterDatabase:
             stars_amount_val = 0  # stars_amount NOT NULL
             if amount_minor_units is None or int(amount_minor_units) <= 0:
                 raise ValueError("YooKassa invoice requires amount_minor_units > 0 (kopeks)")
+            amount_minor_val = int(amount_minor_units)
+
+        elif payment_method == "stripe":
+            # Stripe: тоже храним сумму в минимальных единицах (центы) в amount_minor_units.
+            # Валюту берём из аргумента currency (например USD/EUR).
+            currency = str(currency or "").strip().upper()
+            if not currency:
+                raise ValueError("Stripe invoice requires currency (e.g. USD)")
+
+            stars_amount_val = 0  # stars_amount NOT NULL
+            if amount_minor_units is None or int(amount_minor_units) <= 0:
+                raise ValueError("Stripe invoice requires amount_minor_units > 0 (cents)")
             amount_minor_val = int(amount_minor_units)
 
         else:
@@ -1480,6 +1622,8 @@ class MasterDatabase:
                 instance_id,
                 user_id,
                 product_id,
+                plan_code,
+                periods,
                 payload,
                 telegram_invoice_id,
                 invoice_link,
@@ -1489,13 +1633,15 @@ class MasterDatabase:
                 payment_method,
                 status
             )
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
             RETURNING invoice_id
             """,
             (
                 instance_id,
                 user_id,
                 product_id,
+                plan_code_val,
+                periods_val,
                 payload,
                 None,
                 invoice_link,
@@ -1508,6 +1654,104 @@ class MasterDatabase:
         )
         return row["invoice_id"]
 
+
+    async def update_billing_invoice_status(self, invoice_id: int, status: str) -> None:
+        """
+        Обновляет статус инвойса в billing_invoices.
+        Аналогично логике для TON/YooKassa.
+        """
+        await self.execute(
+            """
+            UPDATE billing_invoices
+            SET status = $1,
+                updated_at = NOW()
+            WHERE invoice_id = $2
+            """,
+            (status, invoice_id),
+        )
+        logger.info(f"Updated invoice {invoice_id} status to {status}")
+
+    async def update_billing_invoice_status_by_external(self, external_id: str, status: str) -> None:
+        """
+        Обновляет статус инвойса по external_id (для webhook Stripe).
+        """
+        await self.execute(
+            """
+            UPDATE billing_invoices
+            SET status = $1,
+                updated_at = NOW()
+            WHERE external_id = $2
+            """,
+            (status, external_id),
+        )
+        logger.info(f"Updated invoice by external_id {external_id} status to {status}")
+
+    async def apply_invoice_to_billing(self, invoice_id: int) -> None:
+        """
+        Применяет оплаченный инвойс к instance_billing: продлевает период, сбрасывает счётчики.
+        (Аналогично для Stars/TON/YooKassa; адаптируйте под вашу логику, если метод уже есть под другим именем).
+        """
+        now = datetime.now(timezone.utc)
+        invoice = await self.fetchone(
+            "SELECT * FROM billing_invoices WHERE invoice_id = $1",
+            (invoice_id,)
+        )
+        if not invoice or invoice['status'] != 'succeeded':
+            logger.warning(f"Cannot apply invoice {invoice_id}: invalid status")
+            return
+
+        instance_id = invoice['instance_id']
+        periods = invoice['periods']
+        plan_code = invoice['plan_code']
+
+        # Получаем текущий биллинг
+        billing = await self.fetchone(
+            "SELECT * FROM instance_billing WHERE instance_id = $1",
+            (instance_id,)
+        )
+        if not billing:
+            logger.error(f"No billing for instance {instance_id}")
+            return
+
+        # Получаем план для period_days и tickets_limit
+        plan = await self.fetchone(
+            "SELECT period_days, tickets_limit FROM saas_plans WHERE code = $1",
+            (plan_code,)
+        )
+        if not plan:
+            logger.error(f"Plan {plan_code} not found")
+            return
+
+        # Вычисляем новый period_end (продлеваем от текущего конца или now)
+        current_end = billing['period_end'] if billing['period_end'] > now else now
+        new_end = current_end + timedelta(days=plan['period_days'] * periods)
+
+        await self.execute(
+            """
+            UPDATE instance_billing
+            SET plan_id = (SELECT plan_id FROM saas_plans WHERE code = $1),
+                period_end = $2,
+                tickets_used = 0,
+                tickets_limit = $3,
+                over_limit = FALSE,
+                service_paused = FALSE,
+                updated_at = NOW()
+            WHERE instance_id = $4
+            """,
+            (plan_code, new_end, plan['tickets_limit'], instance_id),
+        )
+
+        # Обновляем инвойс как applied
+        await self.execute(
+            """
+            UPDATE billing_invoices
+            SET period_applied = TRUE,
+                updated_at = NOW()
+            WHERE invoice_id = $1
+            """,
+            (invoice_id,)
+        )
+        logger.info(f"Applied invoice {invoice_id} to instance {instance_id}")
 
     async def get_instance(self, instance_id: str) -> Optional[BotInstance]:
         row = await self.fetchone("SELECT * FROM bot_instances WHERE instance_id = $1", (instance_id,))

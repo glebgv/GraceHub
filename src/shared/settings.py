@@ -63,6 +63,11 @@ BILLING_CRON_INTERVAL = int(os.getenv("BILLING_CRON_INTERVAL", "3600"))
 
 WORKER_MAX_FILE_MB: int = int(os.getenv("WORKER_MAX_FILE_MB", 50))
 
+#STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")  # sk_test_...
+#STRIPE_PUBLISHABLE_KEY = os.getenv("STRIPE_PUBLISHABLE_KEY", "")  # pk_test_...
+#STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")  # whsec_... (для валидации сигнатур)
+#STRIPE_CURRENCY = os.getenv("STRIPE_CURRENCY", "usd")  # или "rub"
+
 
 ANTIFLOOD_MAX_USER_MESSAGES_PER_MINUTE = int(os.getenv("ANTIFLOOD_MAX_USER_MESSAGES_PER_MINUTE", "30"))
 

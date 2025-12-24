@@ -95,6 +95,12 @@ const CopyIcon: React.FC<{ size?: number }> = ({ size = 16 }) => (
   </svg>
 );
 
+type StripeInvoice = {
+  invoiceId: number;
+  invoiceLink: string;
+  sessionId: string; // Из response
+};
+
 const Billing: React.FC<BillingProps> = ({ instanceId }) => {
   const { t } = useTranslation();
 
@@ -107,7 +113,8 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
     telegramStars: boolean;
     ton: boolean;
     yookassa: boolean;
-  }>({ telegramStars: true, ton: true, yookassa: true });
+    stripe: boolean; // Новый
+  }>({ telegramStars: true, ton: true, yookassa: true, stripe: true });
   const [paymentsLoading, setPaymentsLoading] = useState(true);
 
   const [selectedPlan, setSelectedPlan] = useState<SaasPlanDTO | null>(null);
@@ -148,6 +155,14 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
   const [ykChecking, setYkChecking] = useState(false);
   const [ykCheckError, setYkCheckError] = useState<string | null>(null);
   const ykPollAbortRef = useRef<{ aborted: boolean }>({ aborted: false });
+
+  // Stripe invoice
+  const [stripeInvoice, setStripeInvoice] = useState<StripeInvoice | null>(null);
+
+  const [isStripeModalOpen, setIsStripeModalOpen] = useState(false);
+  const [stripeChecking, setStripeChecking] = useState(false);
+  const [stripeCheckError, setStripeCheckError] = useState<string | null>(null);
+  const stripePollAbortRef = useRef<{ aborted: boolean }>({ aborted: false });
 
   // UI feedback "Скопировано"
   const [copiedMsg, setCopiedMsg] = useState<string | null>(null);
@@ -192,6 +207,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
           telegramStars: !!s?.payments?.enabled?.telegramStars,
           ton: !!s?.payments?.enabled?.ton,
           yookassa: !!s?.payments?.enabled?.yookassa,
+          stripe: !!s?.payments?.enabled?.stripe, // Новый
         });
       } catch (e: any) {
         // Fail-open to avoid breaking billing if settings are temporarily unavailable
@@ -199,7 +215,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
         console.warn('Failed to load miniapp public settings for payments:', e?.message || e);
         if (cancelled) return;
 
-        setPaymentsEnabled({ telegramStars: true, ton: true, yookassa: true });
+        setPaymentsEnabled({ telegramStars: true, ton: true, yookassa: true, stripe: true });
       } finally {
         if (!cancelled) setPaymentsLoading(false);
       }
@@ -218,9 +234,10 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
     if (paymentsEnabled.telegramStars) out.push({ value: 'telegram_stars', label: t('billing.payment_method_stars') });
     if (paymentsEnabled.ton) out.push({ value: 'ton', label: t('billing.payment_method_ton') });
     if (paymentsEnabled.yookassa) out.push({ value: 'yookassa', label: t('billing.payment_method_yookassa') });
+    if (paymentsEnabled.stripe) out.push({ value: 'stripe', label: t('billing.payment_method_stripe') });
 
     return out;
-  }, [paymentsEnabled.telegramStars, paymentsEnabled.ton, paymentsEnabled.yookassa, t]);
+  }, [paymentsEnabled.telegramStars, paymentsEnabled.ton, paymentsEnabled.yookassa, paymentsEnabled.stripe, t]);
 
   const hasAnyPaymentMethods = paymentMethods.length > 0;
 
@@ -295,7 +312,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
 
   // Disable background scroll when ANY modal is open
   useEffect(() => {
-    const anyModalOpen = isModalOpen || isTonModalOpen || isYkModalOpen || !!paymentResult;
+    const anyModalOpen = isModalOpen || isTonModalOpen || isYkModalOpen || isStripeModalOpen || !!paymentResult;
     if (!anyModalOpen) return;
 
     const prevOverflow = document.body.style.overflow;
@@ -304,7 +321,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
     return () => {
       document.body.style.overflow = prevOverflow;
     };
-  }, [isModalOpen, isTonModalOpen, isYkModalOpen, paymentResult]);
+  }, [isModalOpen, isTonModalOpen, isYkModalOpen, isStripeModalOpen, paymentResult]);
 
   const openPlanModal = (plan: SaasPlanDTO) => {
     setSelectedPlan(plan);
@@ -326,6 +343,13 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
     setYkCheckError(null);
     ykPollAbortRef.current.aborted = true;
 
+    // reset Stripe state
+    setStripeInvoice(null);
+    setIsStripeModalOpen(false);
+    setStripeChecking(false);
+    setStripeCheckError(null);
+    stripePollAbortRef.current.aborted = true;
+
     setCopiedMsg(null);
     setIsModalOpen(true);
   };
@@ -337,6 +361,9 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
 
     ykPollAbortRef.current.aborted = true;
     setYkChecking(false);
+
+    stripePollAbortRef.current.aborted = true;
+    setStripeChecking(false);
 
     setIsModalOpen(false);
     setSelectedPlan(null);
@@ -377,6 +404,21 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
         window.location.href = link;
       }
     }
+  };
+
+  const openStripeLinkExternally = (link: string) => {
+    const tg = (window as any).Telegram?.WebApp;
+    try {
+      tg?.openLink?.(link, { try_instant_view: false });
+      return;
+    } catch {}
+
+    try {
+      window.open(link, '_blank', 'noopener,noreferrer');
+      return;
+    } catch {}
+
+    window.location.href = link;
   };
 
   const pollTonStatus = async (invoiceId: number, abortRef: { aborted: boolean }, timeoutMs: number = 120000) => {
@@ -482,6 +524,58 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
 
     setIsYkModalOpen(false);
     setYkInvoice(null);
+
+    showCopied(t('billing.cancelled'));
+  };
+
+  const pollStripeStatus = async (invoiceId: number, abortRef: { aborted: boolean }, timeoutMs: number = 120000) => {
+    const started = Date.now();
+    while (Date.now() - started < timeoutMs) {
+      if (abortRef.aborted) throw new Error('aborted');
+
+      const st = await apiClient.getStripeInvoiceStatus(invoiceId);
+
+      if (abortRef.aborted) throw new Error('aborted');
+
+      if (st.status === 'succeeded' && st.period_applied) return st;
+      if (st.status === 'failed') throw new Error(t('billing.payment_failed'));
+
+      await sleep(2500);
+    }
+    throw new Error(t('billing.payment_failed'));
+  };
+
+  const handleCheckStripePayment = async () => {
+    if (!stripeInvoice?.invoiceId) return;
+
+    stripePollAbortRef.current = { aborted: false };
+    setStripeChecking(true);
+    setStripeCheckError(null);
+
+    try {
+      const st = await pollStripeStatus(stripeInvoice.invoiceId, stripePollAbortRef.current, 120000);
+      if (st.status === 'succeeded') {
+        setIsStripeModalOpen(false);
+        closeModal();
+        if (selectedPlan && selectedPeriod) {
+          setPaymentResult({ planName: selectedPlan.planName, months: selectedPeriod.multiplier });
+        }
+      }
+    } catch (e: any) {
+      if (e?.message === 'aborted') return;
+      setStripeCheckError(e?.message || t('billing.payment_failed'));
+    } finally {
+      setStripeChecking(false);
+    }
+  };
+
+  const handleCancelStripePayment = () => {
+    stripePollAbortRef.current.aborted = true;
+    setStripeChecking(false);
+    setStripeCheckError(null);
+
+    setIsStripeModalOpen(false);
+    setStripeInvoice(null);
 
     showCopied(t('billing.cancelled'));
   };
@@ -612,6 +706,26 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
         openYooKassaLinkExternally(invoiceLink);
 
         setIsYkModalOpen(true);
+        return;
+      }
+
+      // Stripe
+      if (paymentMethod === 'stripe') {
+        setStripeCheckError(null);
+        setStripeChecking(false);
+        stripePollAbortRef.current.aborted = true;
+
+        setStripeInvoice({
+          invoiceId: resp.invoice_id,
+          invoiceLink: resp.invoice_link,
+          sessionId: resp.session_id,
+        });
+
+        // открываем автоматически
+        openStripeLinkExternally(resp.invoice_link);
+
+        setIsStripeModalOpen(true);
+        setIsModalOpen(false);
         return;
       }
 
@@ -876,6 +990,87 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
     return ReactDOM.createPortal(content, document.body);
   };
 
+  const StripePaymentModal = () => {
+    if (!isStripeModalOpen || !stripeInvoice) return null;
+
+    const content = (
+      <div className="modal-backdrop" onClick={() => setIsStripeModalOpen(false)} style={{ zIndex: 9999 }}>
+        <div
+          className="modal"
+          onClick={(e) => e.stopPropagation()}
+          style={{
+            maxWidth: 520,
+            width: 'calc(100% - 24px)',
+            maxHeight: '80vh',
+            overflow: 'hidden',
+            display: 'flex',
+            flexDirection: 'column',
+          }}
+        >
+          <div className="modal-header">
+            <h3 className="modal-title modal-title--gradient">{t('billing.stripe_title')}</h3>
+            <button type="button" className="modal-close" onClick={() => setIsStripeModalOpen(false)}>
+              ✕
+            </button>
+          </div>
+
+          <div className="modal-body">
+            {copiedMsg && (
+              <div
+                style={{
+                  marginBottom: 10,
+                  fontSize: 12,
+                  padding: '6px 8px',
+                  borderRadius: 8,
+                  background: 'rgba(34,197,94,0.12)',
+                  border: '1px solid rgba(34,197,94,0.25)',
+                }}
+              >
+                {copiedMsg}
+              </div>
+            )}
+
+            <p style={{ marginTop: 0, fontSize: 13, opacity: 0.85 }}>{t('billing.stripe_hint')}</p>
+
+            <div style={{ fontSize: 12, opacity: 0.8, wordBreak: 'break-all' }}>
+              {t('billing.stripe_invoice_id')}: {stripeInvoice.invoiceId}
+            </div>
+
+            {stripeCheckError && (
+              <p style={{ marginTop: 10, fontSize: 12, color: 'var(--tg-color-error, #dc2626)' }}>{stripeCheckError}</p>
+            )}
+          </div>
+
+          <div className="modal-footer" style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              className="btn"
+              onClick={() => openStripeLinkExternally(stripeInvoice.invoiceLink)}
+              disabled={submitting || stripeChecking}
+            >
+              {t('billing.open_payment_page')}
+            </button>
+
+            <button
+              type="button"
+              className="btn btn--secondary"
+              onClick={handleCheckStripePayment}
+              disabled={submitting || stripeChecking}
+            >
+              {stripeChecking ? t('billing.checking') : t('billing.check_payment')}
+            </button>
+
+            <button type="button" className="btn btn--ghost" onClick={handleCancelStripePayment} disabled={submitting}>
+              {t('billing.cancel_payment')}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+
+    return ReactDOM.createPortal(content, document.body);
+  };
+
   if (loading || paymentsLoading) {
     return (
       <div style={{ padding: '12px' }}>
@@ -975,7 +1170,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
                 overscrollBehavior: 'contain',
               }}
             >
-              <p style={{ marginBottom: 8 }}>
+              <p style={{ marginBottom: 8, fontSize: 13, opacity: 0.85 }}>
                 {t('billing.modal_description', {
                   name: selectedPlan.planName,
                   ticketsLimit: selectedPlan.ticketsLimit,
@@ -1013,7 +1208,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
                 <select
                   value={paymentMethod}
                   onChange={(e) => setPaymentMethod(e.target.value as PaymentMethod | '')}
-                  disabled={!hasAnyPaymentMethods || submitting || tonChecking || ykChecking}
+                  disabled={!hasAnyPaymentMethods || submitting || tonChecking || ykChecking || stripeChecking}
                   className="modal-select"
                   style={{
                     width: '100%',
@@ -1041,6 +1236,8 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
                 {paymentMethod === 'yookassa' && (
                   <p style={{ marginTop: 8, fontSize: 12, opacity: 0.8 }}>{t('billing.yk_hint_inline')}</p>
                 )}
+
+                {paymentMethod === 'stripe' && <p style={{ marginTop: 8, fontSize: 12, opacity: 0.8 }}>{t('billing.stripe_hint')}</p>}
               </div>
 
               {/* Выбор периода */}
@@ -1064,7 +1261,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
                           color: isActive ? 'var(--tg-color-text)' : 'var(--tg-color-hint-color)',
                           minHeight: '44px',
                         }}
-                        disabled={submitting || tonChecking || ykChecking}
+                        disabled={submitting || tonChecking || ykChecking || stripeChecking}
                       >
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
                           <span>{t(opt.labelKey, { months: opt.multiplier })}</span>
@@ -1107,7 +1304,9 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
                       ? t('billing.ton_price_after_invoice')
                       : paymentMethod === 'yookassa'
                         ? t('billing.yk_price_after_invoice')
-                        : '—'}
+                        : paymentMethod === 'stripe'
+                          ? t('billing.stripe_price_after_invoice')
+                          : '—'}
                 </div>
 
                 {submitError && (
@@ -1121,7 +1320,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
                 type="button"
                 className="btn btn--secondary"
                 onClick={closeModal}
-                disabled={submitting || tonChecking || ykChecking}
+                disabled={submitting || tonChecking || ykChecking || stripeChecking}
               >
                 {t('billing.button_cancel')}
               </button>
@@ -1129,7 +1328,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
               <button
                 type="button"
                 className="btn"
-                disabled={!selectedPlan.productCode || !paymentMethod || !hasAnyPaymentMethods || submitting || tonChecking || ykChecking}
+                disabled={!selectedPlan.productCode || !paymentMethod || !hasAnyPaymentMethods || submitting || tonChecking || ykChecking || stripeChecking}
                 onClick={handleCreateInvoice}
               >
                 {submitting ? t('billing.button_processing') : t('billing.button_choose')}
@@ -1142,6 +1341,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
       {/* Отдельные окна оплаты */}
       <TonPaymentModal />
       <YooKassaPaymentModal />
+      <StripePaymentModal />
 
       {/* Модалка успеха */}
       {paymentResult && (
