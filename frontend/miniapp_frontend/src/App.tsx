@@ -91,6 +91,9 @@ const App: React.FC<AppProps> = ({
   // NEW: отдельное состояние под "лимит инстансов", чтобы не уводить в глобальный error-screen
   const [limitMessage, setLimitMessage] = useState<string | null>(null);
 
+  // ✨ NEW: page animation trigger
+  const [pageAnim, setPageAnim] = useState(false);
+
   const isSuperadmin = useMemo(() => {
     const roles = user?.roles || [];
     return Array.isArray(roles) && roles.includes('superadmin');
@@ -103,6 +106,13 @@ const App: React.FC<AppProps> = ({
     const message = (ps.maintenance_message as string | undefined) || '';
     return { enabled, message };
   }, [platformSettings]);
+
+  // ✨ NEW: page transition animation
+  useEffect(() => {
+    setPageAnim(true);
+    const timeoutId = window.setTimeout(() => setPageAnim(false), 260);
+    return () => window.clearTimeout(timeoutId);
+  }, [currentPage]);
 
   useEffect(() => {
     const initApp = async () => {
@@ -408,7 +418,7 @@ const App: React.FC<AppProps> = ({
         if (err.status === 400 || err.status === 403) {
           if (looksLikeLimit) {
             setLimitMessage(text);
-            // важное: add-modal можно закрыть, чтобы пользователь не “застрял” в форме
+            // важное: add-modal можно закрыть, чтобы пользователь не "застрял" в форме
             setShowAddModal(false);
             // возвращаем на список инстансов
             setCurrentPage('instances');
@@ -709,7 +719,8 @@ const App: React.FC<AppProps> = ({
         </header>
       )}
 
-      <main className="main-content">
+      {/* ✨ UPDATED: main с анимацией */}
+      <main className={`main-content ${pageAnim ? 'gh-page-animating' : ''}`}>
         {currentPage === 'instances' && (
           <InstancesList
             instances={instances}

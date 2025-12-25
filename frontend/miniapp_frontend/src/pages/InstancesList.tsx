@@ -350,7 +350,10 @@ const InstancesList: React.FC<InstancesListProps> = ({
                   type="button"
                   className="btn"
                   onClick={() => setRestartModalOpen(false)}
-                  style={{ flex: 1 }}
+                  style={{
+                    flex: 1,
+                    background: 'var(--tg-theme-secondary-bg-color)',
+                  }}
                 >
                   {t('settings.restart_later') || 'Позже'}
                 </button>
