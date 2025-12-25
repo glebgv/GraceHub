@@ -68,4 +68,5 @@ docs/
 .requirements.hash
 mkdocs.yml
 11
+frontend/miniapp_frontend/node_modules/
 deploy_git.sh
