@@ -213,5 +213,28 @@
   "common": {
     "cancel": "Cancelar",
     "saving": "Guardando..."
+  },
+  "superAdmin": {
+    "firstLaunch_offer_block_hint": "Activa una ventana de bloqueo en FirstLaunch hasta que el usuario acepte la oferta.",
+    "single_tenant_allowlist_hint": "Esta es una allowlist de usuarios a los que se les permite acceder al panel en modo single-tenant.",
+    "antiflood_limit_hint": "Límite de mensajes por minuto (recomendado hasta 30)",
+    "attachments_limit_mb_hint": "Límite de archivos adjuntos (MB)",
+    "bots_limit_hint": "Límite de bots conectados",
+    "single_tenant_payments_disabled_hint": "En modo single-tenant, las pasarelas de pago están deshabilitadas. Se asume que es una instalación para uso personal.",
+    "saved_title": "Guardado",
+    "saved_text": "Configuración guardada.",
+    "add_superadmin_title": "Añadir superadmin",
+    "telegram_user_id_placeholder_example": "Por ejemplo: 123456789",
+    "confirm_delete_superadmin_title": "Eliminar superadmin",
+    "confirm_delete_owner_title": "Eliminar owner ID",
+    "confirm_title": "Confirmación",
+
+    "confirm_delete_superadmin_text": "¿Eliminar superadmin {{id}}?",
+    "confirm_delete_owner_text": "¿Eliminar owner ID {{id}}?",
+    "confirm_delete_text": "¿Eliminar?",
+    "delete": "Eliminar",
+    "cancel": "Cancelar",
+    "add_owner_title": "Añadir owner ID",
+    "owner_user_id_placeholder": "Introduce el user_id"
   }
 }

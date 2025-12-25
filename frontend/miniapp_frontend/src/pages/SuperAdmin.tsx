@@ -9,7 +9,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 
 import { apiClient } from '../api/client';
 import type { MiniappPublicSettings } from '../api/client';
-
+import { useTranslation } from 'react-i18next';
 import logoRed from '../assets/logo-red.png';
 
 interface SuperAdminProps {
@@ -445,6 +445,7 @@ const MiniSwitch: React.FC<{
 };
 
 const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
+  const { t } = useTranslation();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -749,17 +750,17 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
 
   const confirmTitle =
     pendingDelete?.kind === 'superadmin'
-      ? 'Удалить суперадмина'
+      ? t('superAdmin.confirm_delete_superadmin_title')
       : pendingDelete?.kind === 'owner'
-        ? 'Удалить owner ID'
-        : 'Подтверждение';
+        ? t('superAdmin.confirm_delete_owner_title')
+        : t('superAdmin.confirm_title');
 
   const confirmText =
     pendingDelete?.kind === 'superadmin'
-      ? `Удалить суперадмина ${pendingDelete.id}?`
+      ? t('superAdmin.confirm_delete_superadmin_text', { id: pendingDelete.id })
       : pendingDelete?.kind === 'owner'
-        ? `Удалить owner ID ${pendingDelete.id}?`
-        : 'Удалить?';
+        ? t('superAdmin.confirm_delete_owner_text', { id: pendingDelete.id })
+        : t('superAdmin.confirm_delete_text');
 
   return (
     <div style={{ padding: 12, paddingBottom: 72 }}>
@@ -773,7 +774,12 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
         </div>
       </div>
 
-      <InfoModal open={savedModalOpen} title="Saved" text="Настройки сохранены." onClose={() => setSavedModalOpen(false)} />
+      <InfoModal
+        open={savedModalOpen}
+        title={t('superAdmin.saved_title')}
+        text={t('superAdmin.saved_text')}
+        onClose={() => setSavedModalOpen(false)}
+      />
 
       <ConfirmExitModal
         open={confirmExitOpen}
@@ -788,8 +794,8 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
         open={confirmDeleteOpen}
         title={confirmTitle}
         text={confirmText}
-        confirmText="Удалить"
-        cancelText="Отмена"
+        confirmText={t('superAdmin.delete')}
+        cancelText={t('superAdmin.cancel')}
         danger
         onCancel={() => {
           setConfirmDeleteOpen(false);
@@ -798,7 +804,11 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
         onConfirm={confirmDelete}
       />
 
-      <BaseModal open={addOwnerOpen} title="Добавить owner ID" onClose={() => setAddOwnerOpen(false)}>
+      <BaseModal
+        open={addOwnerOpen}
+        title={t('superAdmin.add_owner_title')}
+        onClose={() => setAddOwnerOpen(false)}
+      >
         <div className="form-group">
           <label className="form-label">Telegram user_id</label>
           <input
@@ -812,9 +822,10 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
                 submitAddOwner();
               }
             }}
-            placeholder="Введите user_id"
+            placeholder={t('superAdmin.owner_user_id_placeholder')}
           />
         </div>
+
         <div className="flex gap-8" style={{ justifyContent: 'flex-end' }}>
           <button type="button" className="btn btn-secondary" onClick={() => setAddOwnerOpen(false)}>
             Cancel
@@ -825,7 +836,7 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
         </div>
       </BaseModal>
 
-      <BaseModal open={addSuperadminOpen} title="Добавить superadmin" onClose={() => setAddSuperadminOpen(false)}>
+      <BaseModal open={addSuperadminOpen} title={t('superAdmin.add_superadmin_title')} onClose={() => setAddSuperadminOpen(false)}>
         <div className="form-group">
           <label className="form-label">Telegram user_id</label>
           <input
@@ -839,7 +850,7 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
                 submitAddSuperadmin();
               }
             }}
-            placeholder="Например: 123456789"
+            placeholder={t('superAdmin.telegram_user_id_placeholder_example')}
           />
         </div>
         <div className="flex gap-8" style={{ justifyContent: 'flex-end' }}>
@@ -942,7 +953,7 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
               </div>
 
               <div style={{ opacity: 0.7, marginTop: 6, fontSize: 12 }}>
-                Включает блокирующее окно на FirstLaunch до принятия оферты пользователем.
+                {t('superAdmin.firstLaunch_offer_block_hint')}
               </div>
             </div>
           )}
@@ -1028,7 +1039,7 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
                 </div>
 
                 <div style={{ opacity: 0.7, marginTop: 6, fontSize: 12 }}>
-                  Это allowlist пользователей, которым разрешён доступ к панели в single-tenant режиме.
+                  {t('superAdmin.single_tenant_allowlist_hint')}
                 </div>
               </div>
             </>
@@ -1081,7 +1092,7 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
           <h3 style={{ margin: '0 0 12px 0', fontSize: 14 }}>Instance defaults</h3>
 
           <div className="form-group">
-            <label className="form-label">Лимит сообщений в минуту (рекомендуется до 30)</label>
+            <label className="form-label">{t('superAdmin.antiflood_limit_hint')}</label>
             <input
               className="form-input"
               type="number"
@@ -1096,7 +1107,7 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
           </div>
 
           <div className="form-group">
-            <label className="form-label">Лимит вложений (mb)</label>
+            <label className="form-label">{t('superAdmin.attachments_limit_mb_hint')}</label>
             <input
               className="form-input"
               type="number"
@@ -1111,7 +1122,7 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
           </div>
 
           <div className="form-group">
-            <label className="form-label">Лимит подключаемых ботов</label>
+            <label className="form-label">{t('superAdmin.bots_limit_hint')}</label>
             <input
               className="form-input"
               type="number"
@@ -1143,7 +1154,7 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
                 lineHeight: 1.35,
               }}
             >
-              В режиме single-tenant платёжные шлюзы отключены. Предполагается, что это установка для личного использования.
+              {t('superAdmin.single_tenant_payments_disabled_hint')}
             </div>
           ) : (
             <>

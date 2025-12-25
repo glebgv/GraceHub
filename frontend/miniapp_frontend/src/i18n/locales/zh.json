@@ -213,5 +213,28 @@
   "common": {
     "cancel": "取消",
     "saving": "正在保存..."
+  },
+  "superAdmin": {
+    "firstLaunch_offer_block_hint": "启用 FirstLaunch 阻塞窗口，直到用户接受要约。",
+    "single_tenant_allowlist_hint": "这是允许在 single-tenant 模式下访问面板的用户 allowlist。",
+    "antiflood_limit_hint": "每分钟消息上限（建议不超过 30）",
+    "attachments_limit_mb_hint": "附件大小上限（MB）",
+    "bots_limit_hint": "可连接机器人数量上限",
+    "single_tenant_payments_disabled_hint": "在 single-tenant 模式下，支付网关将被禁用。该模式假定用于个人使用的安装。",
+    "saved_title": "已保存",
+    "saved_text": "设置已保存。",
+    "add_superadmin_title": "添加 superadmin",
+    "telegram_user_id_placeholder_example": "例如：123456789",
+    "confirm_delete_superadmin_title": "删除 superadmin",
+    "confirm_delete_owner_title": "删除 owner ID",
+    "confirm_title": "确认",
+
+    "confirm_delete_superadmin_text": "删除 superadmin {{id}}？",
+    "confirm_delete_owner_text": "删除 owner ID {{id}}？",
+    "confirm_delete_text": "删除？",
+    "delete": "删除",
+    "cancel": "取消",
+    "add_owner_title": "添加 owner ID",
+    "owner_user_id_placeholder": "请输入 user_id"
   }
 }

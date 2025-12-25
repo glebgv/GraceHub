@@ -214,5 +214,27 @@
   "common": {
     "cancel": "Отмена",
     "saving": "Сохранение..."
+  },
+  "superAdmin": {
+    "firstLaunch_offer_block_hint": "Включает блокирующее окно на FirstLaunch до принятия оферты пользователем.",
+    "single_tenant_allowlist_hint": "Это allowlist пользователей, которым разрешён доступ к панели в single-tenant режиме.",
+    "antiflood_limit_hint": "Лимит сообщений в минуту (рекомендуется до 30)",
+    "attachments_limit_mb_hint": "Лимит вложений (mb)",
+    "bots_limit_hint": "Лимит подключаемых ботов",
+    "single_tenant_payments_disabled_hint": "В режиме single-tenant платёжные шлюзы отключены. Предполагается, что это установка для личного использования.",
+    "saved_title": "Сохранено",
+    "saved_text": "Настройки сохранены.",
+    "add_superadmin_title": "Добавить superadmin",
+    "telegram_user_id_placeholder_example": "Например: 123456789",
+    "confirm_delete_superadmin_title": "Удалить суперадмина",
+    "confirm_delete_owner_title": "Удалить owner ID",
+    "confirm_title": "Подтверждение",
+    "confirm_delete_superadmin_text": "Удалить суперадмина {{id}}?",
+    "confirm_delete_owner_text": "Удалить owner ID {{id}}?",
+    "confirm_delete_text": "Удалить?",
+    "delete": "Удалить",
+    "cancel": "Отмена",
+    "add_owner_title": "Добавить owner ID",
+    "owner_user_id_placeholder": "Введите user_id"
   }
 }
