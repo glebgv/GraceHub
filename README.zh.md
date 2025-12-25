@@ -124,6 +124,7 @@ gracehub/
 | **Telegram Stars** | Telegram 原生货币 | 与 [Telegram Mini Apps Billing](https://core.telegram.org/bots/payments) 直接集成。付款在 Telegram 平台内处理。 |
 | **TON Coin** | 加密货币 (Toncoin) | 直接转账到 TON 钱包。交易在 TON 区块链上处理，无需在平台端使用智能合约。 |
 | **YooKassa** | 支付聚合器 (RU) | 按第 54-FZ 法律接受付款（银行卡、SBP、电子钱包）。带有支付确认网络钩子的 REST API。 |
+| **Stripe** | 银行卡（及 Stripe 的其他支付方式） | 通过 Stripe API 接收国际付款；通过 Stripe Webhook 确认支付。 |
 
 ## ⚙️ 环境设置
 

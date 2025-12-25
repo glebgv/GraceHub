@@ -124,6 +124,7 @@ The platform is integrated with the following payment systems to accept payments
 | **Telegram Stars** | Telegram Native Currency | Direct integration with [Telegram Mini Apps Billing](https://core.telegram.org/bots/payments). Payments are processed within the Telegram platform. |
 | **TON Coin** | Cryptocurrency (Toncoin) | Direct transfers to TON wallet. Transactions are processed on the TON blockchain without using smart contracts on the platform side. |
 | **YooKassa** | Payment Aggregator (RU) | Payment acceptance under law 54-FZ (bank cards, SBP, e-wallets). REST API with webhooks for payment confirmation. |
+| **Stripe** | Bank cards (and other Stripe methods) | Accept international payments via the Stripe API; confirm payments via Stripe webhooks. |
 
 ## ⚙️ Environment Setup
 
