@@ -121,6 +121,38 @@ class MasterBot:
             "allowed_user_ids": list(st.get("allowed_user_ids", []))  # Ensure it's a list
         }
 
+    def _format_db_startup_error(self, e: Exception) -> str:
+        # Частые случаи: "Connection refused", timeout, DNS, auth, etc.
+        msg = str(e).strip()
+
+        # socket / OS level
+        if isinstance(e, ConnectionRefusedError):
+            return "Connection refused (database is not accepting TCP connections)."
+        if isinstance(e, TimeoutError):
+            return "Connection timed out (database host/port unreachable or overloaded)."
+        if isinstance(e, socket.gaierror):
+            return "Host name resolution failed (invalid DB host or DNS issue)."
+
+        # asyncpg / psycopg / SQLAlchemy часто заворачивают в свои исключения,
+        # поэтому дополнительно матчим текст (дешево и практично).
+        low = msg.lower()
+        if "connection refused" in low:
+            return "Connection refused (database is not accepting TCP connections)."
+        if "password authentication failed" in low or "authentication failed" in low:
+            return "Authentication failed (invalid database user/password)."
+        if "does not exist" in low and "database" in low:
+            return "Database does not exist (check DB name)."
+        if "no route to host" in low:
+            return "No route to host (network connectivity issue)."
+        if "name or service not known" in low:
+            return "Host name resolution failed (invalid DB host or DNS issue)."
+        if "timeout" in low:
+            return "Connection timed out (database host/port unreachable or overloaded)."
+
+        # fallback
+        return msg or e.__class__.__name__
+
+
     async def _notify_owner_invalid_token(
         self,
         owner_id: int,
@@ -2040,29 +2072,40 @@ class MasterBot:
     # ====================== ЗАПУСК МАСТЕРА ======================
 
     async def run(self) -> None:
-        logger.info("Starting GraceHub Platform Master Bot...")
+        logger.info("Starting GraceHub Platform Master Bot...")  
 
-        await self.db.init()
-        await self.load_existing_instances()
+        # --- Startup DB check (fail fast) ---
+        try:
+            await self.db.init()  
+        except Exception as e:
+            reason = self._format_db_startup_error(e)  
+            logger.critical(
+                f"Database connection check failed on startup: {reason}",
+                exc_info=True,
+            )  
+            raise SystemExit(2)  
+        # --- end Startup DB check ---
+
+        await self.load_existing_instances()  
 
         # Монитор воркеров
-        logger.info("Worker monitor interval = %s", settings.WORKER_MONITOR_INTERVAL)
+        logger.info("Worker monitor interval = %s", settings.WORKER_MONITOR_INTERVAL)  
         asyncio.create_task(
             self.monitor_workers(interval=settings.WORKER_MONITOR_INTERVAL)
-        )
+        )  
 
         # Биллинг‑крон
-        logger.info("Billing cron interval = %s", settings.BILLING_CRON_INTERVAL)
+        logger.info("Billing cron interval = %s", settings.BILLING_CRON_INTERVAL)  
         asyncio.create_task(
             self.run_billing_cron_loop(interval_seconds=settings.BILLING_CRON_INTERVAL)
-        )
+        )  
 
         # Глобальный loop для автозакрытия тикетов
-        asyncio.create_task(self.auto_close_tickets_loop())
+        asyncio.create_task(self.auto_close_tickets_loop())  
 
-        await self.start_webhook_server()
+        await self.start_webhook_server()  
 
-        master_webhook_url = f"https://{self.webhook_domain}/master_webhook"
+        master_webhook_url = f"https://{self.webhook_domain}/master_webhook"  
         await self.bot.set_webhook(
             url=master_webhook_url,
             allowed_updates=[
@@ -2072,11 +2115,12 @@ class MasterBot:
                 "successful_payment",
             ],
             drop_pending_updates=True,
-        )
-        logger.info(f"Master bot webhook set to {master_webhook_url}")
+        )  
+        logger.info(f"Master bot webhook set to {master_webhook_url}")  
 
         while True:
-            await asyncio.sleep(1)
+            await asyncio.sleep(1)  
+
 
     async def load_existing_instances(self):
         instances = await self.db.get_all_active_instances()
@@ -2143,22 +2187,27 @@ class MasterBot:
 
 
 async def main():
-    """Main function"""
-    # Configuration - in production load from environment
-    MASTER_BOT_TOKEN = os.getenv("MASTER_BOT_TOKEN")
-    WEBHOOK_DOMAIN = os.getenv("WEBHOOK_DOMAIN")
-    WEBHOOK_PORT = os.getenv("WEBHOOK_PORT", "8443")
+    """Main function"""  
+    # Configuration - in production load from environment  
+    MASTER_BOT_TOKEN = os.getenv("MASTER_BOT_TOKEN")  
+    WEBHOOK_DOMAIN = os.getenv("WEBHOOK_DOMAIN")  
+    WEBHOOK_PORT = os.getenv("WEBHOOK_PORT", "8443")  
 
-    master_bot = MasterBot(MASTER_BOT_TOKEN, WEBHOOK_DOMAIN, int(WEBHOOK_PORT))
+    master_bot = MasterBot(MASTER_BOT_TOKEN, WEBHOOK_DOMAIN, int(WEBHOOK_PORT))  
 
     try:
-        await master_bot.run()
+        await master_bot.run()  
+    except SystemExit as e:
+        # Controlled shutdown (e.g. DB startup check failed in run())  
+        logger.error(f"Master bot stopped during startup (exit code {e.code}).")  
+        raise  
     except KeyboardInterrupt:
-        logger.info("Master bot stopped by user")
+        logger.info("Master bot stopped by user")  
     except Exception as e:
-        logger.error(f"Master bot crashed: {e}")
+        logger.error(f"Master bot crashed: {e}", exc_info=True)  
     finally:
-        await master_bot.bot.session.close()
+        await master_bot.bot.session.close()  
+
 
 
 if __name__ == "__main__":
