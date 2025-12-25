@@ -2,13 +2,14 @@
 import React, { useEffect, useState } from 'react';
 import { apiClient } from '../api/client';
 import { useTranslation } from 'react-i18next';
+import { formatDurationSeconds } from '../utils/formatDuration';
 
 interface DashboardProps {
   instanceId: string;
 }
 
 const Dashboard: React.FC<DashboardProps> = ({ instanceId }) => {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation(); // useTranslation возвращает t и i18n instance [web:21]
 
   const [stats, setStats] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -69,6 +70,12 @@ const Dashboard: React.FC<DashboardProps> = ({ instanceId }) => {
   const apiCalls = usage.api_calls ?? usage.apicalls ?? 0;
   const messages = usage.messages ?? 0;
 
+  // Форматируем секунды в локализованную длительность (дни/часы/минуты/секунды) через Intl.DurationFormat [web:13][web:1]
+  const avgFirstResponseText = formatDurationSeconds(
+    avgFirstResponseSec,
+    i18n.resolvedLanguage || i18n.language || 'ru'
+  ); // resolvedLanguage часто предпочтительнее как “фактическая” выбранная локаль [web:28]
+
   return (
     <div style={{ padding: '12px' }}>
       <div className="card">
@@ -127,7 +134,7 @@ const Dashboard: React.FC<DashboardProps> = ({ instanceId }) => {
 
       <div className="card">
         <div className="stat-label">{t('dashboard.avgResponseLabel')}</div>
-        <div className="stat-value">{avgFirstResponseSec}s</div>
+        <div className="stat-value">{avgFirstResponseText}</div>
 
         <div className="stat-label" style={{ marginTop: '12px' }}>
           {t('dashboard.uniqueUsersLabel')}
