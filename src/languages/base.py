@@ -229,3 +229,8 @@ class Texts:
     master_current_plan_no_date: str
     billing_unknown_plan_name: str
     master_current_plan_paused: str
+    ticket_taken_self: str
+    ticket_no_assignees: str
+
+    first_message_forwarded: str
+    session_flood_message: str

@@ -96,7 +96,7 @@ GraceHub es una plataforma SaaS que le permite desplegar su soporte directamente
 | Gestión de Bots | API de Telegram Bot |
 | Base de Datos | PostgreSQL 15+ |
 | Proxy | Nginx |
-| Versión de Python | 3.11+ |
+| Versión de Python | 3.10+ |
 
 ## 📁 Estructura del Proyecto
 
@@ -125,13 +125,6 @@ La plataforma está integrada con los siguientes sistemas de pago para aceptar p
 | **TON Coin** | Criptomoneda (Toncoin) | Transferencias directas a billetera TON. Las transacciones se procesan en la cadena de bloques TON sin usar contratos inteligentes en el lado de la plataforma. |
 | **YooKassa** | Agregador de Pagos (RU) | Aceptación de pagos según la ley 54-FZ (tarjetas bancarias, SBP, billeteras electrónicas). API REST con webhooks para confirmación de pagos. |
 
-## 📋 Requisitos
-
-- Python 3.10+
-- Node.js 20+
-- PostgreSQL 15+
-- Nginx (opcional)
-- Nombre de dominio
 
 ## ⚙️ Configuración del Entorno
 

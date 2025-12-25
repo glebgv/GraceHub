@@ -303,7 +303,7 @@ TEXTS_ZH = Texts(
     master_remove_confirm_cancel="❌ 取消",
     master_menu_billing="💳 套餐与支付",
     attachment_too_big = "文件太大。请发送一个更小的文件。",
-    too_many_messages="消息发送过于频繁，请稍后再试。",
+    too_many_messages="⚠️ 消息发送过于频繁，请稍后再试。",
     billing_plans_title="为你的账户选择套餐：",
     billing_plan_line="• <b>{plan_name}</b>: {price_stars} ⭐ / {period_days} 天，限 {tickets_limit} 工单",
     menu_rating = "工单关闭评分",
@@ -322,5 +322,8 @@ TEXTS_ZH = Texts(
     master_current_plan_no_date = "当前套餐：{plan_name}，剩余 {days_left} 天。",
     master_current_plan_paused = "套餐 {plan_name} 已暂停（至 {date}）。请续费以继续使用。",
     billing_unknown_plan_name = "未知套餐",
-
+    ticket_taken_self = "✅ 工单已分配给你",
+    ticket_no_assignees = "没有可分配的客服",
+    first_message_forwarded = "✅ 消息已转发至客服，很快回复！",
+    session_flood_message = "⏳ 您的消息已送达，请等待客服回复！",
 )

@@ -1,13 +1,14 @@
 # src/shared/database.py
 import os
+import json
 import logging
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional, List, Any, Dict, Tuple
 
-import psycopg2
-import psycopg2.extras
+import asyncpg
 from cryptography.fernet import Fernet
+from cachetools import TTLCache
 
 from .models import BotInstance, InstanceStatus
 from . import settings
@@ -17,33 +18,44 @@ logger = logging.getLogger(__name__)
 
 def get_master_dsn() -> str:
     """
-    Возвращает DSN для master-БД.
-    Обязательно должен быть задан env DATABASE_URL (postgresql://...).
+    Возвращает DSN для master-БД из settings.py или env
     """
+    # 1. Импорт settings с правильным путем
+    try:
+        from . import settings
+        return settings.DATABASE_URL
+    except (ImportError, AttributeError):
+        pass
+    
+    # 2. Fallback на env переменную
     env_dsn = os.getenv("DATABASE_URL")
     if env_dsn:
         return env_dsn
-
+    
     raise RuntimeError(
-        "DATABASE_URL не задан. Укажи DATABASE_URL=postgresql://user:pass@host:port/dbname"
+        "DATABASE_URL не задан.\n"
+        "1. Добавь в .env: DB_USER, DB_PASSWORD, DB_HOST, DB_NAME\n"
+        "2. Или DATABASE_URL=postgresql://user:pass@host:port/dbname"
     )
+
 
 
 class MasterDatabase:
     """
     Master DB на PostgreSQL.
-    - Подключение через psycopg2.
+    - Подключение через asyncpg с пулом соединений.
     - Шифрование токенов через Fernet, ключ хранится в settings.ENCRYPTION_KEY_FILE.
     """
 
     def __init__(self, dsn: Optional[str] = None):
         self.dsn: str = dsn or get_master_dsn()
-        self.conn: Optional[psycopg2.extensions.connection] = None
+        self.pool: Optional[asyncpg.Pool] = None
         self.cipher: Optional[Fernet] = None
+        self.settings_cache = TTLCache(maxsize=100, ttl=60)  # Кэш для платформенных настроек
 
     async def init(self) -> None:
         """
-        Полная инициализация: проверка DSN, создание sync‑коннекта,
+        Полная инициализация: проверка DSN, создание пула соединений,
         настройка шифрования и создание таблиц.
         Вызывать один раз при старте мастера или воркера.
         """
@@ -53,15 +65,145 @@ class MasterDatabase:
                 "Задай env DATABASE_URL=postgresql://..."
             )
 
-        self.conn = psycopg2.connect(self.dsn)
-        self.conn.autocommit = False
-        self.conn.cursor_factory = psycopg2.extras.DictCursor
+        self.pool = await asyncpg.create_pool(
+            self.dsn,
+            min_size=5,
+            max_size=20,
+            timeout=30,
+            max_inactive_connection_lifetime=300
+        )
 
         key = self.get_or_create_encryption_key()
         self.cipher = Fernet(key)
 
         await self.create_tables()
+        await self.ensure_default_platform_settings()
         logger.info(f"Master database (Postgres) initialized: {self.dsn}")
+
+    async def count_instances_for_user(self, userid: int) -> int:
+        row = await self.fetchone(
+            "SELECT COUNT(*) AS cnt FROM bot_instances WHERE user_id = $1",
+            (userid,)
+        )
+        return int(row["cnt"]) if row else 0
+
+    async def get_offer_settings(self) -> Dict[str, Any]:
+        raw = await self.get_platform_setting("miniapp_public", default=None)
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except Exception:
+                raw = None
+
+        raw = raw if isinstance(raw, dict) else {}
+        offer = raw.get("offer") or {}
+        if not isinstance(offer, dict):
+            offer = {}
+
+        enabled = bool(offer.get("enabled", False))
+        url = str(offer.get("url", "") or "").strip()
+        return {"enabled": enabled, "url": url}
+
+
+    async def get_user_offer_status(self, user_id: int) -> Dict[str, Any]:
+        row = await self.fetchone(
+            """
+            SELECT user_id, offer_url, accepted, accepted_at
+            FROM user_offer_acceptance
+            WHERE user_id = $1
+            """,
+            (user_id,),
+        )
+
+        return (
+            dict(row)
+            if row
+            else {"user_id": user_id, "offer_url": None, "accepted": False, "accepted_at": None}
+        )
+
+
+    async def upsert_user_offer(
+        self,
+        user_id: int,
+        offer_url: str,
+        accepted: bool,
+        source: str,
+    ) -> None:
+        await self.execute(
+            """
+            INSERT INTO user_offer_acceptance (
+            user_id, offer_url, accepted, accepted_at, source, updated_at
+            )
+            VALUES (
+            $1,
+            $2,
+            $3,
+            CASE WHEN $3 THEN NOW() ELSE NULL END,
+            $4,
+            NOW()
+            )
+            ON CONFLICT (user_id)
+            DO UPDATE SET
+            offer_url = EXCLUDED.offer_url,
+            accepted = EXCLUDED.accepted,
+            accepted_at = CASE WHEN EXCLUDED.accepted THEN NOW() ELSE NULL END,
+            source = EXCLUDED.source,
+            updated_at = NOW()
+            """,
+            (user_id, offer_url, accepted, source),
+        )
+
+
+    async def has_accepted_offer(self, user_id: int, offer_url: str) -> bool:
+        if not offer_url:
+            return True
+
+        row = await self.fetchone(
+            """
+            SELECT accepted
+            FROM user_offer_acceptance
+            WHERE user_id = $1 AND offer_url = $2
+            """,
+            (user_id, offer_url),
+        )
+        return bool(row and row["accepted"])
+
+    async def get_max_instances_per_user(self) -> int:
+        raw = await self.get_platform_setting("miniapp_public", default=None)
+        if isinstance(raw, str):
+            try:
+                import json
+                raw = json.loads(raw)
+            except Exception:
+                raw = None
+        raw = raw if isinstance(raw, dict) else {}
+        inst = raw.get("instanceDefaults") or {}
+        inst = inst if isinstance(inst, dict) else {}
+        try:
+            v = int(inst.get("maxInstancesPerUser") or 0)
+        except Exception:
+            v = 0
+        return max(v, 0)
+
+
+    async def update_instance_webhook(
+        self,
+        instance_id: str,
+        webhook_url: str,
+        webhook_path: str,
+        webhook_secret: str,
+    ) -> None:
+        await self.execute(
+            """
+            UPDATE bot_instances
+            SET webhook_url = $1,
+                webhook_path = $2,
+                webhook_secret = $3,
+                updated_at = NOW()
+            WHERE instance_id = $4
+            """,
+            (webhook_url, webhook_path, webhook_secret, instance_id),
+        )
 
     def get_or_create_encryption_key(self) -> bytes:
         keyfile = Path(settings.ENCRYPTION_KEY_FILE)
@@ -76,6 +218,82 @@ class MasterDatabase:
             pass
         return key
 
+    async def get_single_tenant(self) -> Dict[str, Any]:
+        data = await self.get_platform_setting("single_tenant", default=None)
+        if not data:
+            return {"enabled": False, "allowed_user_ids": []}
+        return {
+            "enabled": bool(data.get("enabled", False)),
+            "allowed_user_ids": list(data.get("allowed_user_ids") or []),
+        }
+
+    async def set_single_tenant(self, enabled: bool, allowed_user_ids: List[int]) -> None:
+        allowed_user_ids = sorted({int(x) for x in allowed_user_ids})
+        await self.set_platform_setting(
+            "single_tenant",
+            {"enabled": bool(enabled), "allowed_user_ids": allowed_user_ids},
+        )
+
+    async def get_platform_setting(
+        self,
+        key: str,
+        default: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        cache_key = f"platform_setting:{key}"
+        if cache_key in self.settings_cache:
+            return self.settings_cache[cache_key]
+
+        row = await self.fetchone(
+            "SELECT value FROM platform_settings WHERE key = $1 LIMIT 1",
+            (key,)
+        )
+        value = row["value"] if row else default
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except json.JSONDecodeError:
+                value = default
+        self.settings_cache[cache_key] = value
+        return value
+
+
+    async def set_platform_setting(
+        self,
+        key: str,
+        value: Dict[str, Any],
+    ) -> None:
+        value_json = json.dumps(value)
+        await self.execute(
+            """
+            INSERT INTO platform_settings (key, value, created_at, updated_at)
+            VALUES ($1, $2, NOW(), NOW())
+            ON CONFLICT (key) DO UPDATE
+            SET value = EXCLUDED.value,
+                updated_at = NOW()
+            """,
+            (key, value_json)
+        )
+        # Инвалидируем кэш после обновления
+        cache_key = f"platform_setting:{key}"
+        if cache_key in self.settings_cache:
+            del self.settings_cache[cache_key]
+
+    async def track_operator_activity(self, instance_id: str, user_id: int, username: str) -> None:
+        """
+        Обновляет/создаёт оператора по активности в OpenChat.
+        """
+        now = datetime.now(timezone.utc)
+        await self.execute(
+            """
+            INSERT INTO operators (instance_id, user_id, username, last_seen)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (instance_id, user_id)
+            DO UPDATE SET
+                username = EXCLUDED.username,
+                last_seen = EXCLUDED.last_seen
+            """,
+            (instance_id, user_id, username, now),
+        )
 
     async def mark_expiring_notified_today(self, instance_id: str) -> None:
         """
@@ -86,7 +304,7 @@ class MasterDatabase:
             UPDATE instance_billing
                SET last_expiring_notice_date = CURRENT_DATE,
                    updated_at = NOW()
-             WHERE instance_id = %s
+             WHERE instance_id = $1
             """,
             (instance_id,),
         )
@@ -100,7 +318,7 @@ class MasterDatabase:
             UPDATE instance_billing
                SET last_paused_notice_at = NOW(),
                    updated_at = NOW()
-             WHERE instance_id = %s
+             WHERE instance_id = $1
             """,
             (instance_id,),
         )
@@ -199,7 +417,7 @@ class MasterDatabase:
                 webhook_secret,
                 status,
                 created_at,
-                updatedat AS updated_at,    
+                updated_at AS updated_at,    
                 error_message,
                 owner_user_id,
                 admin_private_chat_id
@@ -214,27 +432,22 @@ class MasterDatabase:
         """
         Настройки инстанса для мастер-бота (как dict).
         """
-        assert self.conn is not None
-
-        with self.conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
-            cur.execute(
-                """
-                SELECT
-                    bi.instance_id,
-                    bi.bot_username,
-                    bi.bot_name,
-                    bi.created_at,
-                    bi.owner_user_id,
-                    bi.admin_private_chat_id,
-                    bi.user_id AS owner_id
-                FROM bot_instances bi
-                WHERE bi.instance_id = %s
-                LIMIT 1
-                """,
-                (instance_id,),
-            )
-            row = cur.fetchone()
-
+        row = await self.fetchone(
+            """
+            SELECT
+                bi.instance_id,
+                bi.bot_username,
+                bi.bot_name,
+                bi.created_at,
+                bi.owner_user_id,
+                bi.admin_private_chat_id,
+                bi.user_id AS owner_id
+            FROM bot_instances bi
+            WHERE bi.instance_id = $1
+            LIMIT 1
+            """,
+            (instance_id,)
+        )
         if not row:
             return None
 
@@ -249,24 +462,22 @@ class MasterDatabase:
         general_panel_chat_id = inst.get("general_panel_chat_id")
         language: Optional[str] = None
 
-        with self.conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
-            cur.execute(
-                """
-                SELECT
-                    openchat_username,
-                    general_panel_chat_id,
-                    auto_close_hours,
-                    auto_reply_greeting,
-                    auto_reply_default_answer,
-                    branding_bot_name,
-                    openchat_enabled,
-                    language
-                FROM instance_meta
-                WHERE instance_id = %s
-                """,
-                (instance_id,),
-            )
-            meta = cur.fetchone()
+        meta = await self.fetchone(
+            """
+            SELECT
+                openchat_username,
+                general_panel_chat_id,
+                auto_close_hours,
+                auto_reply_greeting,
+                auto_reply_default_answer,
+                branding_bot_name,
+                openchat_enabled,
+                language
+            FROM instance_meta
+            WHERE instance_id = $1
+            """,
+            (instance_id,)
+        )
 
         if meta:
             m = dict(meta)
@@ -314,12 +525,12 @@ class MasterDatabase:
             """
             UPDATE billing_invoices
             SET status = 'paid',
-                telegram_invoice_id = %s,
-                stars_amount = %s,
-                currency = %s,
+                telegram_invoice_id = $1,
+                stars_amount = $2,
+                currency = $3,
                 paid_at = NOW(),
                 updated_at = NOW()
-            WHERE invoice_id = %s
+            WHERE invoice_id = $4
             """,
             (telegram_invoice_id, total_amount, currency, invoice_id),
         )
@@ -331,40 +542,63 @@ class MasterDatabase:
                 amount_minor_units, currency, payment_method, provider_tx_hash, status,
                 created_at, updated_at, paid_at
             FROM billing_invoices
-            WHERE payload = %s
+            WHERE payload = $1
             LIMIT 1
             """,
-            (payload,),
+            (payload,)
         )
         return dict(row) if row else None
 
     async def mark_billing_invoice_paid_yookassa(
-        self,
-        invoice_id: int,
-        payment_id: str,
-        amount_minor_units: int,
-        currency: str = "RUB",
-    ) -> bool:
-        res = await self.execute(
+            self,
+            invoice_id: int,
+            payment_id: str,
+            amount_minor_units: int,
+            currency: str = "RUB",
+        ) -> bool:
             """
-            UPDATE billing_invoices
-            SET status='paid',
-                provider_tx_hash=%s,
-                amount_minor_units=%s,
-                currency=%s,
-                paid_at=NOW(),
-                updated_at=NOW()
-            WHERE invoice_id=%s AND status != 'paid'
-            """,
-            (payment_id, amount_minor_units, currency, invoice_id),
-        )
-        rowcount = getattr(res, "rowcount", None)
-        if rowcount is None:
-            return True
-        return rowcount > 0
+            Идемпотентно помечает YooKassa-инвойс оплаченным с блокировкой строки.
+            Возвращает True, если статус изменился на 'paid' (был не paid).
+            Возвращает False, если инвойс уже был paid или не найден.
+            """
+            async with self.pool.acquire() as conn:
+                async with conn.transaction():
+                    # Блокируем строку инвойса для исключения race conditions
+                    row = await conn.fetchrow(
+                        """
+                        SELECT status
+                        FROM billing_invoices
+                        WHERE invoice_id = $1
+                        FOR UPDATE
+                        """,
+                        invoice_id
+                    )
+
+                    if not row:
+                        return False  # Инвойс не найден
+
+                    if row["status"] == "paid":
+                        return False  # Уже оплачен — идемпотентно выходим
+
+                    # Обновляем только если статус ещё не paid
+                    await conn.execute(
+                        """
+                        UPDATE billing_invoices
+                        SET status = 'paid',
+                            provider_tx_hash = $1,
+                            amount_minor_units = $2,
+                            currency = $3,
+                            paid_at = NOW(),
+                            updated_at = NOW()
+                        WHERE invoice_id = $4
+                        """,
+                        payment_id, amount_minor_units, currency, invoice_id
+                    )
+                    return True
 
 
     async def get_billing_invoice(self, invoice_id: int) -> dict | None:
+        # Добавлено для TON (комментарий перемещён вне строки SQL)
         row = await self.fetchone(
             """
             SELECT
@@ -382,12 +616,13 @@ class MasterDatabase:
                 status,
                 created_at,
                 updated_at,
-                paid_at
+                paid_at,
+                memo
             FROM billing_invoices
-            WHERE invoice_id = %s
+            WHERE invoice_id = $1
             LIMIT 1
             """,
-            (invoice_id,),
+            (invoice_id,)
         )
         return dict(row) if row else None
 
@@ -404,8 +639,8 @@ class MasterDatabase:
             """
             UPDATE billing_invoices
             SET status = 'cancelled',
-                updated_at = ?
-            WHERE invoice_id = ?
+                updated_at = $1
+            WHERE invoice_id = $2
             AND status != 'paid'
             """,
             (now, invoice_id),
@@ -413,8 +648,8 @@ class MasterDatabase:
 
         # Если нужно понимать, изменилось ли реально — можно проверить статус после
         row = await self.fetchone(
-            "SELECT status FROM billing_invoices WHERE invoice_id = ?",
-            (invoice_id,),
+            "SELECT status FROM billing_invoices WHERE invoice_id = $1",
+            (invoice_id,)
         )
         return bool(row and row["status"] == "cancelled")
 
@@ -444,41 +679,51 @@ class MasterDatabase:
 
 
     async def mark_billing_invoice_paid_ton(
-        self,
-        invoice_id: int,
-        tx_hash: str,
-        amount_minor_units: int,
-        currency: str = "TON",
-    ) -> bool:
-        """
-        Помечает TON-инвойс оплаченным (идемпотентно).
-
-        Возвращает True, если статус реально обновили (pending/cancelled -> paid).
-        Возвращает False, если инвойс уже был paid (или не найден/ничего не обновили).
-        """
-        res = await self.execute(
+            self,
+            invoice_id: int,
+            tx_hash: str,
+            amount_minor_units: int,
+            currency: str = "TON",
+        ) -> bool:
             """
-            UPDATE billing_invoices
-            SET status = 'paid',
-                provider_tx_hash = %s,
-                amount_minor_units = %s,
-                currency = %s,
-                paid_at = NOW(),
-                updated_at = NOW()
-            WHERE invoice_id = %s
-            AND status != 'paid'
-            """,
-            (tx_hash, amount_minor_units, currency, invoice_id),
-        )
+            Идемпотентно помечает TON-инвойс оплаченным с блокировкой строки.
+            Возвращает True, если статус реально обновили (pending/cancelled → paid).
+            Возвращает False, если инвойс уже был paid или не найден.
+            """
+            async with self.pool.acquire() as conn:
+                async with conn.transaction():
+                    # Блокируем строку инвойса
+                    row = await conn.fetchrow(
+                        """
+                        SELECT status
+                        FROM billing_invoices
+                        WHERE invoice_id = $1
+                        FOR UPDATE
+                        """,
+                        invoice_id
+                    )
 
-        # ВАЖНО: это зависит от твоего DB-wrapper.
-        # Если execute возвращает cursor/Result с rowcount — используй его.
-        rowcount = getattr(res, "rowcount", None)
-        if rowcount is None:
-            # fallback: можно сделать SELECT status после UPDATE, но лучше поправить wrapper
-            return True
+                    if not row:
+                        return False  # Инвойс не найден
 
-        return rowcount > 0
+                    if row["status"] == "paid":
+                        return False  # Уже оплачен — идемпотентно
+
+                    # Обновляем данные
+                    await conn.execute(
+                        """
+                        UPDATE billing_invoices
+                        SET status = 'paid',
+                            provider_tx_hash = $1,
+                            amount_minor_units = $2,
+                            currency = $3,
+                            paid_at = NOW(),
+                            updated_at = NOW()
+                        WHERE invoice_id = $4
+                        """,
+                        tx_hash, amount_minor_units, currency, invoice_id
+                    )
+                    return True
 
 
     async def set_billing_invoice_ton_failed(
@@ -495,10 +740,10 @@ class MasterDatabase:
             """
             UPDATE billing_invoices
                SET status = 'failed',
-                   error_code = %s,
-                   error_message = %s,
+                   error_code = $1,
+                   error_message = $2,
                    updated_at = NOW()
-             WHERE invoice_id = %s
+             WHERE invoice_id = $3
             """,
             (error_code, error_message, invoice_id),
         )
@@ -517,11 +762,11 @@ class MasterDatabase:
         await self.execute(
             """
             UPDATE billing_invoices
-               SET provider_tx_hash = COALESCE(%s, provider_tx_hash),
-                   amount_minor_units = COALESCE(%s, amount_minor_units),
-                   currency = %s,
+               SET provider_tx_hash = COALESCE($1, provider_tx_hash),
+                   amount_minor_units = COALESCE($2, amount_minor_units),
+                   currency = $3,
                    updated_at = NOW()
-             WHERE invoice_id = %s
+             WHERE invoice_id = $4
             """,
             (tx_hash, amount_minor_units, currency, invoice_id),
         )
@@ -544,10 +789,10 @@ class MasterDatabase:
             LEFT JOIN billing_products AS bp
               ON bp.plan_id = sp.plan_id
              AND bp.is_active = TRUE
-            WHERE sp.code = %s
+            WHERE sp.code = $1
             LIMIT 1
             """,
-            (plan_code,),
+            (plan_code,)
         )
         return dict(row) if row else None
 
@@ -572,9 +817,9 @@ class MasterDatabase:
             FROM billing_invoices AS bi
             JOIN billing_products AS bp ON bp.product_id = bi.product_id
             JOIN saas_plans       AS sp ON sp.plan_id = bp.plan_id
-            WHERE bi.invoice_id = %s
+            WHERE bi.invoice_id = $1
             """,
-            (invoice_id,),
+            (invoice_id,)
         )
         if not row:
             logger.warning("apply_saas_plan_for_invoice: invoice %s not found", invoice_id)
@@ -603,12 +848,12 @@ class MasterDatabase:
                 last_paused_notice_at
             )
             VALUES (
-                %(instance_id)s,
-                %(plan_id)s,
+                $1,
+                $2,
                 NOW(),
-                NOW() + (%(period_days)s || ' days')::interval,
+                NOW() + ($3 || ' days')::interval,
                 0,
-                %(tickets_limit)s,
+                $4,
                 FALSE,
                 NULL,
                 NULL
@@ -622,8 +867,8 @@ class MasterDatabase:
                             END,
                 period_end = CASE
                                 WHEN instance_billing.period_end > NOW()
-                                THEN instance_billing.period_end + (%(period_days)s || ' days')::interval
-                                ELSE NOW() + (%(period_days)s || ' days')::interval
+                                THEN instance_billing.period_end + ($3 || ' days')::interval
+                                ELSE NOW() + ($3 || ' days')::interval
                             END,
                 tickets_used = 0,
                 tickets_limit = EXCLUDED.tickets_limit,
@@ -633,12 +878,12 @@ class MasterDatabase:
                 last_paused_notice_at     = NULL,
                 updated_at = NOW()
             """,
-            {
-                "instance_id": instance_id,
-                "plan_id": plan_id,
-                "period_days": period_days,
-                "tickets_limit": tickets_limit,
-            },
+            (
+                instance_id,
+                plan_id,
+                str(period_days),
+                tickets_limit,
+            ),
         )
 
         logger.info(
@@ -650,110 +895,250 @@ class MasterDatabase:
 
 
     async def create_tables(self) -> None:
-        assert self.conn is not None
-        cur = self.conn.cursor()
+        assert self.pool is not None
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                # bot_instances
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS bot_instances (
+                        instance_id             TEXT PRIMARY KEY,
+                        user_id                 BIGINT NOT NULL,
+                        token_hash              TEXT NOT NULL UNIQUE,
+                        bot_username            TEXT NOT NULL,
+                        bot_name                TEXT NOT NULL,
+                        webhook_url             TEXT NOT NULL,
+                        webhook_path            TEXT NOT NULL,
+                        webhook_secret          TEXT NOT NULL,
+                        status                  TEXT NOT NULL,
+                        created_at              TIMESTAMPTZ NOT NULL,
+                        updated_at               TIMESTAMPTZ,
+                        error_message           TEXT,
+                        owner_user_id           BIGINT,
+                        admin_private_chat_id   BIGINT
+                    )
+                    """
+                )
 
-        # bot_instances
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS bot_instances (
-                instance_id             TEXT PRIMARY KEY,
-                user_id                 BIGINT NOT NULL,
-                token_hash              TEXT NOT NULL UNIQUE,
-                bot_username            TEXT NOT NULL,
-                bot_name                TEXT NOT NULL,
-                webhook_url             TEXT NOT NULL,
-                webhook_path            TEXT NOT NULL,
-                webhook_secret          TEXT NOT NULL,
-                status                  TEXT NOT NULL,
-                created_at              TIMESTAMPTZ NOT NULL,
-                updatedat               TIMESTAMPTZ,
-                error_message           TEXT,
-                owner_user_id           BIGINT,
-                admin_private_chat_id   BIGINT
-            )
-            """
-        )
+                # encrypted_tokens
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS encrypted_tokens (
+                        instance_id      TEXT PRIMARY KEY,
+                        encrypted_token  BYTEA NOT NULL,
+                        CONSTRAINT fk_tokens_instance
+                            FOREIGN KEY(instance_id)
+                            REFERENCES bot_instances(instance_id)
+                            ON DELETE CASCADE
+                    )
+                    """
+                )
 
-        # encrypted_tokens
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS encrypted_tokens (
-                instance_id      TEXT PRIMARY KEY,
-                encrypted_token  BYTEA NOT NULL,
-                CONSTRAINT fk_tokens_instance
-                    FOREIGN KEY(instance_id)
-                    REFERENCES bot_instances(instance_id)
-                    ON DELETE CASCADE
-            )
-            """
-        )
+                # user_states (master)
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS user_states (
+                        user_id    BIGINT PRIMARY KEY,
+                        state      TEXT NOT NULL,
+                        data       TEXT,
+                        language   TEXT DEFAULT 'ru',
+                        created_at TIMESTAMPTZ DEFAULT NOW()
+                    )
+                    """
+                )
 
-        # user_states (master)
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS user_states (
-                user_id    BIGINT PRIMARY KEY,
-                state      TEXT NOT NULL,
-                data       TEXT,
-                language   TEXT DEFAULT 'ru',
-                created_at TIMESTAMPTZ DEFAULT NOW()
-            )
-            """
-        )
+                # rate_limits
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS rate_limits (
+                        instance_id   TEXT NOT NULL,
+                        chat_id       BIGINT NOT NULL,
+                        last_request  TIMESTAMPTZ NOT NULL,
+                        request_count INTEGER DEFAULT 1,
+                        PRIMARY KEY (instance_id, chat_id)
+                    )
+                    """
+                )
 
-        # rate_limits
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS rate_limits (
-                instance_id   TEXT NOT NULL,
-                chat_id       BIGINT NOT NULL,
-                last_request  TIMESTAMPTZ NOT NULL,
-                request_count INTEGER DEFAULT 1,
-                PRIMARY KEY (instance_id, chat_id)
-            )
-            """
-        )
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS user_offer_acceptance (
+                        user_id BIGINT PRIMARY KEY,
+                        offer_url TEXT NOT NULL,
+                        accepted BOOLEAN NOT NULL DEFAULT FALSE,
+                        accepted_at TIMESTAMPTZ,
+                        source TEXT, -- 'bot' | 'miniapp'
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                    """
+                )
 
-        # usage_stats
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS usage_stats (
-                instance_id   TEXT NOT NULL,
-                date          DATE NOT NULL,
-                message_count INTEGER DEFAULT 0,
-                api_calls     INTEGER DEFAULT 0,
-                PRIMARY KEY (instance_id, date)
-            )
-            """
-        )
+                # ------------------------------------------------------------------------
+                # platform_settings (master-bot / platform-level settings)
+                # ------------------------------------------------------------------------
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS platform_settings (
+                        key         TEXT PRIMARY KEY,
+                        value       JSONB NOT NULL DEFAULT '{}'::jsonb,
+                        created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                    """
+                )
 
-        # Индексы
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_instances_user   ON bot_instances(user_id)")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_instances_status ON bot_instances(status)")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_rate_limits_time ON rate_limits(last_request)")
+                # Индекс для выборок по JSON (если будешь искать по value->...):
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_platform_settings_value_gin "
+                    "ON platform_settings USING GIN (value)"
+                )
 
-        # Таблицы mini app
-        self._create_miniapp_tables(cur)
+                # usage_stats
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS usage_stats (
+                        instance_id   TEXT NOT NULL,
+                        date          DATE NOT NULL,
+                        message_count INTEGER DEFAULT 0,
+                        api_calls     INTEGER DEFAULT 0,
+                        PRIMARY KEY (instance_id, date)
+                    )
+                    """
+                )
 
-        # Таблицы worker (перенос с SQLite)
-        self._create_worker_tables(cur)
+                # instance_settings (уже добавлена ранее)
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS instance_settings (
+                        instance_id TEXT PRIMARY KEY REFERENCES bot_instances(instance_id) ON DELETE CASCADE,
+                        openchat_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+                        autoclose_hours INTEGER NOT NULL DEFAULT 12,
+                        general_panel_chat_id BIGINT,
+                        auto_reply JSONB,
+                        branding JSONB,
+                        privacy_mode_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+                        language TEXT,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        updated_at TIMESTAMPTZ
+                    )
+                    """
+                )
 
-        # Таблицы биллинга SaaS
-        self._create_billing_tables(cur)
+                # blacklisted_users
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS blacklisted_users (
+                        instance_id TEXT NOT NULL REFERENCES bot_instances(instance_id) ON DELETE CASCADE,
+                        user_id BIGINT NOT NULL,
+                        reason TEXT,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        PRIMARY KEY (instance_id, user_id)
+                    )
+                    """
+                )
 
-        self.conn.commit()
+                # Индексы
+                await conn.execute("CREATE INDEX IF NOT EXISTS idx_instances_user   ON bot_instances(user_id)")
+                await conn.execute("CREATE INDEX IF NOT EXISTS idx_instances_status ON bot_instances(status)")
+                await conn.execute("CREATE INDEX IF NOT EXISTS idx_rate_limits_time ON rate_limits(last_request)")
+
+                # Таблицы mini app
+                await self._create_miniapp_tables(conn)
+
+                await self._create_worker_tables(conn)
+
+                # Таблицы биллинга SaaS
+                await self._create_billing_tables(conn)
 
         # Сидим дефолтные тарифы (Demo/Lite/Pro/Enterprise)
         await self.ensure_default_plans()
-        self.conn.commit()
         logger.info(
             "Master database tables initialized (Postgres, including miniapp, worker and billing tables)"
         )
 
-    def _create_miniapp_tables(self, cur) -> None:
-        # users
-        cur.execute(
+
+    async def ensure_default_platform_settings(self) -> None:
+        """
+        Гарантирует дефолтные значения в platform_settings.miniapp_public.
+        Для миграции: добавляет/обновляет только отсутствующие поля в JSON.
+        """
+        key = "miniapp_public"
+        default_data = {
+            "singleTenant": {
+                "enabled": False,
+                "allowedUserIds": [],
+            },
+            "superadmins": [],
+            "payments": {
+                "enabled": {
+                    "telegramStars": True,
+                    "ton": True,
+                    "yookassa": False,
+                    "stripe": False,  # Новый дефолт
+                },
+                "telegramStars": {
+                    "priceStarsLite": 100,
+                    "priceStarsPro": 300,
+                    "priceStarsEnterprise": 999,
+                },
+                "ton": {
+                    "network": "testnet",
+                    "walletAddress": "",
+                    "apiBaseUrl": "https://testnet.toncenter.com/api/v2",
+                    "apiKey": "",
+                    "checkDelaySeconds": 5,
+                    "confirmationsRequired": 1,
+                    "pricePerPeriodLite": 0.5,
+                    "pricePerPeriodPro": 2.0,
+                    "pricePerPeriodEnterprise": 5.0,
+                },
+                "yookassa": {
+                    "shopId": "",
+                    "secretKey": "",
+                    "returnUrl": "",
+                    "testMode": True,
+                    "priceRubLite": 199,
+                    "priceRubPro": 499,
+                    "priceRubEnterprise": 1999,
+                },
+                "stripe": {  # Новый блок с дефолтами
+                    "secretKey": "",
+                    "publishableKey": "",
+                    "webhookSecret": "",
+                    "currency": "usd",
+                    "priceUsdLite": 4.99,
+                    "priceUsdPro": 9.99,
+                    "priceUsdEnterprise": 29.99,
+                },
+            },
+            "instanceDefaults": {
+                "antifloodMaxUserMessagesPerMinute": 20,
+                "workerMaxFileMb": 10,
+                "maxInstancesPerUser": 3,
+            },
+        }
+
+        # Получаем текущие данные
+        current = await self.get_platform_setting(key, default=default_data)
+
+        # Миграция: добавляем отсутствующие поля (рекурсивно мержим дефолты)
+        def merge_dict(target: dict, source: dict) -> dict:
+            for k, v in source.items():
+                if k not in target:
+                    target[k] = v
+                elif isinstance(v, dict) and isinstance(target[k], dict):
+                    merge_dict(target[k], v)
+            return target
+
+        updated = merge_dict(current, default_data)
+
+        # Если изменилось — сохраняем
+        if updated != current:
+            await self.set_platform_setting(key, updated)
+            logger.info(f"Applied migration for {key}: added/updated Stripe defaults")
+
+    async def _create_miniapp_tables(self, conn) -> None:
+        await conn.execute(
             """
             CREATE TABLE IF NOT EXISTS users (
                 user_id    BIGINT PRIMARY KEY,
@@ -768,7 +1153,7 @@ class MasterDatabase:
         )
 
         # instance_members
-        cur.execute(
+        await conn.execute(
             """
             CREATE TABLE IF NOT EXISTS instance_members (
                 instance_id TEXT NOT NULL,
@@ -783,27 +1168,28 @@ class MasterDatabase:
             )
             """
         )
-        cur.execute(
+        await conn.execute(
             """
-            CREATE INDEX IF NOT EXISTS idx_instance_members_user
-            ON instance_members(user_id)
+            CREATE INDEX IF NOT EXISTS idx_instance_members_instance
+            ON instance_members(instance_id)
             """
         )
 
-        # instance_meta
-        cur.execute(
+        # instance_meta (для openchat_enabled, auto_close_hours, etc)
+        await conn.execute(
             """
             CREATE TABLE IF NOT EXISTS instance_meta (
-                instance_id                 TEXT PRIMARY KEY,
-                openchat_username           TEXT,
-                general_panel_chat_id       BIGINT,
-                auto_close_hours            INTEGER,
-                auto_reply_greeting         TEXT,
-                auto_reply_default_answer   TEXT,
-                branding_bot_name           TEXT,
-                openchat_enabled            BOOLEAN,
-                language                    TEXT,
-                updated_at                  TIMESTAMPTZ DEFAULT NOW(),
+                instance_id               TEXT PRIMARY KEY,
+                openchat_username         TEXT,
+                general_panel_chat_id     BIGINT,
+                auto_close_hours          INTEGER DEFAULT 12,
+                auto_reply_greeting       TEXT,
+                auto_reply_default_answer TEXT,
+                branding_bot_name         TEXT,
+                openchat_enabled          BOOLEAN NOT NULL DEFAULT FALSE,
+                language                  TEXT,
+                created_at                TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at                TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 CONSTRAINT fk_meta_instance
                     FOREIGN KEY (instance_id)
                     REFERENCES bot_instances(instance_id)
@@ -812,42 +1198,13 @@ class MasterDatabase:
             """
         )
 
-        # instance_ticket_stats
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS instance_ticket_stats (
-                instance_id               TEXT NOT NULL,
-                date                      DATE NOT NULL,
-                new                       INTEGER DEFAULT 0,
-                inprogress                INTEGER DEFAULT 0,
-                answered                  INTEGER DEFAULT 0,
-                closed                    INTEGER DEFAULT 0,
-                spam                      INTEGER DEFAULT 0,
-                avg_first_response_sec    REAL DEFAULT 0,
-                unique_users              INTEGER DEFAULT 0,
-                updated_at                TIMESTAMPTZ DEFAULT NOW(),
-                PRIMARY KEY (instance_id, date),
-                CONSTRAINT fk_ticket_stats_instance
-                    FOREIGN KEY (instance_id)
-                    REFERENCES bot_instances(instance_id)
-                    ON DELETE CASCADE
-            )
-            """
-        )
-
-    def _create_worker_tables(self, cur) -> None:
-        """
-        Worker-часть, перенесённая из SQLite в Postgres.
-        Все таблицы содержат instance_id.
-        """
-
-        # settings (per-instance key-value)
-        cur.execute(
+        # worker_settings (key-value для worker по instance_id)
+        await conn.execute(
             """
             CREATE TABLE IF NOT EXISTS worker_settings (
                 instance_id TEXT NOT NULL,
                 key         TEXT NOT NULL,
-                value       TEXT,
+                value       TEXT NOT NULL,
                 PRIMARY KEY (instance_id, key),
                 CONSTRAINT fk_worker_settings_instance
                     FOREIGN KEY (instance_id)
@@ -857,24 +1214,37 @@ class MasterDatabase:
             """
         )
 
-        # tickets
-        cur.execute(
+        # operators (авто-добавление по активности в OpenChat)
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS operators (
+                instance_id TEXT NOT NULL,
+                user_id     BIGINT NOT NULL,
+                username    TEXT,
+                last_seen   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (instance_id, user_id),
+                CONSTRAINT fk_operators_instance
+                    FOREIGN KEY (instance_id)
+                    REFERENCES bot_instances(instance_id)
+                    ON DELETE CASCADE
+            )
+            """
+        )
+
+        # tickets (тикетная история из всех worker-DB)
+        await conn.execute(
             """
             CREATE TABLE IF NOT EXISTS tickets (
-                instance_id          TEXT        NOT NULL,
-                id                   BIGSERIAL   NOT NULL,
-                user_id              BIGINT      NOT NULL,
-                username             TEXT,
-                chat_id              BIGINT      NOT NULL,
-                status               TEXT        NOT NULL DEFAULT 'new',
-                thread_id            BIGINT,
-                created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                last_user_msg_at     TIMESTAMPTZ,
-                last_admin_reply_at  TIMESTAMPTZ,
-                closed_at            TIMESTAMPTZ,
-                assigned_username    TEXT,
-                assigned_user_id     BIGINT,
+                instance_id         TEXT NOT NULL,
+                id                  INTEGER NOT NULL,  -- ticket_id из worker-DB
+                user_id             BIGINT NOT NULL,
+                username            TEXT,
+                status              TEXT NOT NULL,
+                created_at          TIMESTAMPTZ NOT NULL,
+                last_user_msg_at    TIMESTAMPTZ,
+                last_admin_reply_at TIMESTAMPTZ,
+                thread_id           BIGINT,  -- openchat_topic_id
+                updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 PRIMARY KEY (instance_id, id),
                 CONSTRAINT fk_tickets_instance
                     FOREIGN KEY (instance_id)
@@ -884,125 +1254,36 @@ class MasterDatabase:
             """
         )
 
-        cur.execute(
+        await conn.execute(
             """
-            CREATE INDEX IF NOT EXISTS ix_tickets_status
+            CREATE INDEX IF NOT EXISTS idx_tickets_instance_created
+            ON tickets(instance_id, created_at DESC)
+            """
+        )
+        await conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_tickets_status
             ON tickets(instance_id, status)
             """
         )
-        cur.execute(
+        await conn.execute(
             """
-            CREATE INDEX IF NOT EXISTS ix_tickets_thread
-            ON tickets(instance_id, chat_id, thread_id)
-            """
-        )
-        cur.execute(
-            """
-            CREATE INDEX IF NOT EXISTS ix_tickets_user_unique
-            ON tickets(instance_id, user_id)
+            CREATE INDEX IF NOT EXISTS idx_tickets_instance_status_msg
+            ON tickets (instance_id, status, last_user_msg_at)
             """
         )
 
-        # messages
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS messages (
-                instance_id  TEXT        NOT NULL,
-                id           BIGSERIAL   NOT NULL,
-                chat_id      BIGINT      NOT NULL,
-                message_id   BIGINT      NOT NULL,
-                user_id      BIGINT,
-                direction    TEXT        NOT NULL,
-                content      TEXT,
-                created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                PRIMARY KEY (instance_id, id),
-                CONSTRAINT fk_messages_instance
-                    FOREIGN KEY (instance_id)
-                    REFERENCES bot_instances(instance_id)
-                    ON DELETE CASCADE
-            )
-            """
-        )
-
-        # user_states (worker)
-        cur.execute(
+    async def _create_worker_tables(self, conn) -> None:
+        # worker_user_states: состояния пользователей в воркере
+        await conn.execute(
             """
             CREATE TABLE IF NOT EXISTS worker_user_states (
-                instance_id  TEXT        NOT NULL,
-                user_id      BIGINT      NOT NULL,
-                state        TEXT        NOT NULL,
-                data         TEXT,
-                created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                PRIMARY KEY (instance_id, user_id),
-                CONSTRAINT fk_worker_states_instance
-                    FOREIGN KEY (instance_id)
-                    REFERENCES bot_instances(instance_id)
-                    ON DELETE CASCADE
-            )
-            """
-        )
-
-        # admin_reply_map_v2
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS admin_reply_map_v2 (
-                instance_id      TEXT        NOT NULL,
-                chat_id          BIGINT      NOT NULL,
-                admin_message_id BIGINT      NOT NULL,
-                target_user_id   BIGINT      NOT NULL,
-                created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                PRIMARY KEY (instance_id, chat_id, admin_message_id),
-                CONSTRAINT fk_admin_reply_map_v2_instance
-                    FOREIGN KEY (instance_id)
-                    REFERENCES bot_instances(instance_id)
-                    ON DELETE CASCADE
-            )
-            """
-        )
-
-        # admin_reply_map (legacy)
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS admin_reply_map (
-                instance_id      TEXT        NOT NULL,
-                admin_message_id BIGINT      NOT NULL,
-                target_user_id   BIGINT      NOT NULL,
-                created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                PRIMARY KEY (instance_id, admin_message_id),
-                CONSTRAINT fk_admin_reply_map_instance
-                    FOREIGN KEY (instance_id)
-                    REFERENCES bot_instances(instance_id)
-                    ON DELETE CASCADE
-            )
-            """
-        )
-
-        # autoreply_log
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS autoreply_log (
                 instance_id TEXT NOT NULL,
                 user_id     BIGINT NOT NULL,
-                date        DATE   NOT NULL,
-                PRIMARY KEY (instance_id, user_id, date),
-                CONSTRAINT fk_autoreply_log_instance
-                    FOREIGN KEY (instance_id)
-                    REFERENCES bot_instances(instance_id)
-                    ON DELETE CASCADE
-            )
-            """
-        )
-
-        # blacklist
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS blacklist (
-                instance_id TEXT     NOT NULL,
-                user_id     BIGINT   NOT NULL,
-                username    TEXT,
-                added_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                state       TEXT NOT NULL,
+                data        TEXT,
                 PRIMARY KEY (instance_id, user_id),
-                CONSTRAINT fk_blacklist_instance
+                CONSTRAINT fk_worker_user_states_instance
                     FOREIGN KEY (instance_id)
                     REFERENCES bot_instances(instance_id)
                     ON DELETE CASCADE
@@ -1010,38 +1291,21 @@ class MasterDatabase:
             """
         )
 
-        # greetings
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS greetings (
-                instance_id TEXT NOT NULL,
-                id          BIGSERIAL PRIMARY KEY,
-                type        TEXT,
-                file_id     TEXT,
-                text        TEXT,
-                CONSTRAINT fk_greetings_instance
-                    FOREIGN KEY (instance_id)
-                    REFERENCES bot_instances(instance_id)
-                    ON DELETE CASCADE
-            )
-            """
-        )
-
-    def _create_billing_tables(self, cur) -> None:
+    async def _create_billing_tables(self, conn) -> None:
         """
-        Таблицы биллинга SaaS: тарифные планы и состояние биллинга инстансов.
+        SaaS-биллинг: тарифы, товары, сессии оплаты, транзакции, биллинг инстансов.
         """
-        # saas_plans: тарифные планы
-        cur.execute(
+        # saas_plans: тарифы (Demo/Lite/Pro/Enterprise)
+        await conn.execute(
             """
             CREATE TABLE IF NOT EXISTS saas_plans (
                 plan_id       SERIAL PRIMARY KEY,
                 name          TEXT NOT NULL,
-                code          TEXT NOT NULL UNIQUE, -- demo, lite, pro, enterprise
-                price_stars   INTEGER NOT NULL,    -- стоимость за период в Stars
-                period_days   INTEGER NOT NULL,    -- длина биллингового периода
-                tickets_limit INTEGER NOT NULL,    -- лимит тикетов на период
-                features_json JSONB,
+                code          TEXT NOT NULL UNIQUE,
+                price_stars   INTEGER NOT NULL,  
+                period_days   INTEGER NOT NULL,
+                tickets_limit INTEGER NOT NULL,
+                features_json JSONB DEFAULT '{}'::jsonb,
                 is_active     BOOLEAN NOT NULL DEFAULT TRUE,
                 created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -1049,26 +1313,30 @@ class MasterDatabase:
             """
         )
 
-        # instance_billing: состояние биллинга для инстанса
-        cur.execute(
+        # instance_billing: текущий тариф + статистика для инстанса
+        await conn.execute(
             """
             CREATE TABLE IF NOT EXISTS instance_billing (
-                instance_id                 TEXT PRIMARY KEY,
-                plan_id                     INTEGER NOT NULL
+                instance_id                TEXT PRIMARY KEY,
+                plan_id                    INTEGER NOT NULL
                     REFERENCES saas_plans(plan_id)
                     ON DELETE RESTRICT,
+
                 period_start               TIMESTAMPTZ NOT NULL,
                 period_end                 TIMESTAMPTZ NOT NULL,
-                tickets_used               INTEGER NOT NULL DEFAULT 0,
-                tickets_limit              INTEGER NOT NULL,
-                last_billed_at             TIMESTAMPTZ,
-                over_limit                 BOOLEAN NOT NULL DEFAULT FALSE,
                 days_left                  INTEGER NOT NULL DEFAULT 0,
                 service_paused             BOOLEAN NOT NULL DEFAULT FALSE,
-                last_expiring_notice_date  DATE,
+
+                tickets_used               INTEGER NOT NULL DEFAULT 0,
+                tickets_limit              INTEGER NOT NULL DEFAULT 0,
+                over_limit                 BOOLEAN NOT NULL DEFAULT FALSE,
+
+                last_expiring_notice_date  DATE,       
                 last_paused_notice_at      TIMESTAMPTZ,
+
                 created_at                 TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 updated_at                 TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
                 CONSTRAINT fk_instance_billing_instance
                     FOREIGN KEY (instance_id)
                     REFERENCES bot_instances(instance_id)
@@ -1077,15 +1345,15 @@ class MasterDatabase:
             """
         )
 
-        # billing_products: что именно продаём за Stars
-        cur.execute(
+        # billing_products: товары для Telegram Stars (привязаны к планам)
+        await conn.execute(
             """
             CREATE TABLE IF NOT EXISTS billing_products (
                 product_id     SERIAL PRIMARY KEY,
-                code           TEXT NOT NULL UNIQUE, 
+                code           TEXT NOT NULL UNIQUE,
                 plan_id        INTEGER NOT NULL
                     REFERENCES saas_plans(plan_id)
-                    ON DELETE RESTRICT,
+                    ON DELETE CASCADE,
                 title          TEXT NOT NULL,
                 description    TEXT,
                 amount_stars   INTEGER NOT NULL,  
@@ -1096,34 +1364,38 @@ class MasterDatabase:
             """
         )
 
-        # billing_invoices: сессии оплаты (Telegram Stars + TON)
-        cur.execute(
+        # billing_invoices: сессии оплаты (Telegram Stars + TON + YooKassa + Stripe)
+        await conn.execute(
             """
             CREATE TABLE IF NOT EXISTS billing_invoices (
                 invoice_id          BIGSERIAL PRIMARY KEY,
                 instance_id         TEXT NOT NULL,
-                user_id             BIGINT,              
+                user_id             BIGINT,
 
                 product_id          INTEGER NOT NULL
                     REFERENCES billing_products(product_id)
                     ON DELETE RESTRICT,
 
-                -- Универсальное поле для любых методов:
-                payload             TEXT NOT NULL,      
+                plan_code           TEXT,
+                periods             INTEGER NOT NULL DEFAULT 1,
 
-                -- Telegram Stars:
-                telegram_invoice_id TEXT,              
-                invoice_link        TEXT,              
+                payload             TEXT NOT NULL,
 
-                -- Суммы:
-                stars_amount        INTEGER NOT NULL,    
-                amount_minor_units  BIGINT,           
+                telegram_invoice_id TEXT,
+                invoice_link        TEXT,
+
+                stars_amount        INTEGER NOT NULL,
+                amount_minor_units  BIGINT,
 
                 currency            TEXT NOT NULL DEFAULT 'XTR',
                 payment_method      TEXT NOT NULL DEFAULT 'telegram_stars',
 
-                -- Для TON (или внешних платёжных провайдеров):
-                provider_tx_hash    TEXT,               
+                provider_tx_hash    TEXT,
+                memo                TEXT,
+
+                external_id         TEXT,
+                period_applied      BOOLEAN NOT NULL DEFAULT FALSE,
+
                 status              TEXT NOT NULL DEFAULT 'pending',
                 error_code          TEXT,
                 error_message       TEXT,
@@ -1135,39 +1407,73 @@ class MasterDatabase:
                 CONSTRAINT fk_billing_invoices_instance
                     FOREIGN KEY (instance_id)
                     REFERENCES bot_instances(instance_id)
-                    ON DELETE CASCADE
+                    ON DELETE CASCADE,
+
+                CONSTRAINT unique_provider_tx_hash UNIQUE (provider_tx_hash)
             )
+
             """
         )
 
-        # Индексы (можно расширить под TON)
-        cur.execute(
+        # Миграции для существующих баз: добавляем новые поля и constraints
+        await conn.execute("ALTER TABLE billing_invoices ADD COLUMN IF NOT EXISTS external_id TEXT;")
+        await conn.execute("ALTER TABLE billing_invoices ADD COLUMN IF NOT EXISTS plan_code TEXT;")
+        await conn.execute("ALTER TABLE billing_invoices ADD COLUMN IF NOT EXISTS period_applied BOOLEAN NOT NULL DEFAULT FALSE;")
+        await conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS unique_external_id_non_null ON billing_invoices (external_id) WHERE external_id IS NOT NULL;")  # Partial UNIQUE index для NULL-safe
+        await conn.execute("ALTER TABLE billing_invoices ADD COLUMN IF NOT EXISTS periods INTEGER NOT NULL DEFAULT 1;")
+        await conn.execute(
+            """
+            ALTER TABLE billing_invoices 
+            DROP CONSTRAINT IF EXISTS check_payment_method;
+            """
+        )
+        await conn.execute(
+            """
+            ALTER TABLE billing_invoices 
+            ADD CONSTRAINT check_payment_method 
+            CHECK (payment_method IN ('telegram_stars', 'ton', 'yookassa', 'stripe'));
+            """
+        )
+
+        # Индексы для производительности и частичной уникальности
+        await conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_billing_invoices_memo_ton
+            ON billing_invoices (memo)
+            WHERE payment_method = 'ton' AND memo IS NOT NULL;
+            """
+        )
+
+        await conn.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_billing_invoices_instance
-            ON billing_invoices(instance_id)
+            ON billing_invoices(instance_id);
             """
         )
-        cur.execute(
+
+        await conn.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_billing_invoices_status
-            ON billing_invoices(status)
+            ON billing_invoices(status);
             """
         )
-        cur.execute(
+
+        await conn.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_billing_invoices_method_status
-            ON billing_invoices(payment_method, status)
+            ON billing_invoices(payment_method, status);
             """
         )
-        cur.execute(
+
+        await conn.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_billing_invoices_provider_tx_hash
-            ON billing_invoices(provider_tx_hash)
+            ON billing_invoices(provider_tx_hash) WHERE provider_tx_hash IS NOT NULL;
             """
         )
 
         # billing_transactions: что произошло с биллингом по факту (продление, списание и т.п.)
-        cur.execute(
+        await conn.execute(
             """
             CREATE TABLE IF NOT EXISTS billing_transactions (
                 tx_id          BIGSERIAL PRIMARY KEY,
@@ -1192,7 +1498,7 @@ class MasterDatabase:
             """
         )
 
-        cur.execute(
+        await conn.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_billing_tx_instance
             ON billing_transactions(instance_id)
@@ -1203,23 +1509,20 @@ class MasterDatabase:
 
     # === Thin async wrappers for miniapp_api and worker ===
 
-    async def execute(self, sql: str, params: Optional[tuple] = None) -> None:
-        assert self.conn is not None
-        with self.conn.cursor() as cur:
-            cur.execute(sql, params or ())
-        self.conn.commit()
+    async def execute(self, sql: str, params: Optional[tuple] = None) -> asyncpg.Record:
+        assert self.pool is not None
+        async with self.pool.acquire() as conn:
+            return await conn.execute(sql, *(params or ()))
 
     async def fetchone(self, sql: str, params: Optional[tuple] = None):
-        assert self.conn is not None
-        with self.conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
-            cur.execute(sql, params or ())
-            return cur.fetchone()
+        assert self.pool is not None
+        async with self.pool.acquire() as conn:
+            return await conn.fetchrow(sql, *(params or ()))
 
     async def fetchall(self, sql: str, params: Optional[tuple] = None):
-        assert self.conn is not None
-        with self.conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
-            cur.execute(sql, params or ())
-            return cur.fetchall()
+        assert self.pool is not None
+        async with self.pool.acquire() as conn:
+            return await conn.fetch(sql, *(params or ()))
 
     # === Instance CRUD ===
 
@@ -1227,53 +1530,60 @@ class MasterDatabase:
         """
         Создаёт инстанс и сразу вешает Demo-план на 7 дней (если ещё не создан billing).
         """
-        assert self.conn is not None
-        with self.conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO bot_instances (
-                    instance_id,
-                    user_id,
-                    token_hash,
-                    bot_username,
-                    bot_name,
-                    webhook_url,
-                    webhook_path,
-                    webhook_secret,
-                    status,
-                    created_at,
-                    owner_user_id,
-                    admin_private_chat_id
+        assert self.pool is not None
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    """
+                    INSERT INTO bot_instances (
+                        instance_id,
+                        user_id,
+                        token_hash,
+                        bot_username,
+                        bot_name,
+                        webhook_url,
+                        webhook_path,
+                        webhook_secret,
+                        status,
+                        created_at,
+                        owner_user_id,
+                        admin_private_chat_id
+                    )
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                    """,
+                    *(
+                        instance.instance_id,
+                        instance.user_id,
+                        instance.token_hash,
+                        instance.bot_username,
+                        instance.bot_name,
+                        instance.webhook_url,
+                        instance.webhook_path,
+                        instance.webhook_secret,
+                        instance.status.value
+                        if hasattr(instance.status, "value")
+                        else str(instance.status),
+                        instance.created_at,
+                        instance.owner_user_id,
+                        instance.admin_private_chat_id,
+                    ),
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """,
-                (
-                    instance.instance_id,
-                    instance.user_id,
-                    instance.token_hash,
-                    instance.bot_username,
-                    instance.bot_name,
-                    instance.webhook_url,
-                    instance.webhook_path,
-                    instance.webhook_secret,
-                    instance.status.value
-                    if hasattr(instance.status, "value")
-                    else str(instance.status),
-                    instance.created_at,
-                    instance.owner_user_id,
-                    instance.admin_private_chat_id,
-                ),
-            )
 
         # после создания инстанса — инициализируем Demo-биллинг
         await self.ensure_default_billing(instance.instance_id)
-        self.conn.commit()
 
     async def delete_instance(self, instance_id: str) -> None:
-        assert self.conn is not None
-        with self.conn.cursor() as cur:
-            cur.execute("DELETE FROM bot_instances WHERE instance_id = %s", (instance_id,))
-        self.conn.commit()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                # Удаляем связанные записи
+                await conn.execute("DELETE FROM instance_settings WHERE instance_id = $1", *(instance_id,))
+                await conn.execute("DELETE FROM instance_billing WHERE instance_id = $1", *(instance_id,))
+                await conn.execute("DELETE FROM operators WHERE instance_id = $1", *(instance_id,))
+                await conn.execute("DELETE FROM tickets WHERE instance_id = $1", *(instance_id,))
+                await conn.execute("DELETE FROM blacklisted_users WHERE instance_id = $1", *(instance_id,))
+                await conn.execute("DELETE FROM rate_limits WHERE instance_id = $1", *(instance_id,))
+                # Удаляем инстанс
+                await conn.execute("DELETE FROM bot_instances WHERE instance_id = $1", *(instance_id,))
 
 
     async def update_billing_invoice_link_and_payload(
@@ -1281,14 +1591,29 @@ class MasterDatabase:
         invoice_id: int,
         payload: str,
         invoice_link: str,
+        external_id: str | None = None,
     ) -> None:
+        if external_id:
+            await self.execute(
+                """
+                UPDATE billing_invoices
+                SET payload = $1,
+                    invoice_link = $2,
+                    external_id = $3,
+                    updated_at = NOW()
+                WHERE invoice_id = $4
+                """,
+                (payload, invoice_link, external_id, invoice_id),
+            )
+            return
+
         await self.execute(
             """
             UPDATE billing_invoices
-            SET payload = %s,
-                invoice_link = %s,
+            SET payload = $1,
+                invoice_link = $2,
                 updated_at = NOW()
-            WHERE invoice_id = %s
+            WHERE invoice_id = $3
             """,
             (payload, invoice_link, invoice_id),
         )
@@ -1305,16 +1630,16 @@ class MasterDatabase:
         invoice_link: str,
         status: str = "pending",
         *,
-        payment_method: str = "telegram_stars",  # telegram_stars | ton | yookassa
-        currency: str = "XTR",                   # XTR | TON | RUB
-        amount_minor_units: int | None = None,   # для TON: nanoton, для YooKassa: kopeks
+        payment_method: str = "telegram_stars",    # telegram_stars | ton | yookassa | stripe
+        currency: str = "XTR",                     # XTR | TON | RUB | (Stripe: USD/EUR/...)
+        amount_minor_units: int | None = None,     # TON: nanoton, YooKassa: kopeks, Stripe: cents
     ) -> int:
         # product_code = billing_products.code → достаём product_id
         product_row = await self.fetchone(
             """
             SELECT product_id
             FROM billing_products
-            WHERE code = %s
+            WHERE code = $1
             LIMIT 1
             """,
             (product_code,),
@@ -1324,6 +1649,17 @@ class MasterDatabase:
 
         product_id = product_row["product_id"]
 
+        # Нормализуем periods (на всякий)
+        try:
+            periods_val = int(periods)
+        except Exception:
+            periods_val = 1
+        if periods_val <= 0:
+            periods_val = 1
+
+        # Нормализация plan_code (может быть пустым)
+        plan_code_val = str(plan_code or "").strip().lower() or None
+
         # Нормализация payment_method (на случай enum/алиасов)
         if hasattr(payment_method, "value"):
             payment_method = payment_method.value
@@ -1331,7 +1667,7 @@ class MasterDatabase:
         payment_method = str(payment_method or "").strip().lower()
 
         # алиасы, если где-то в коде встречаются другие значения
-        if payment_method in ("telegram_stars", "tg_stars", "stars"):
+        if payment_method in ("telegram_stars", "tg_stars", "stars", "telegramstars", "telegram-stars"):
             payment_method = "telegram_stars"
 
         # Нормализация под метод
@@ -1349,7 +1685,7 @@ class MasterDatabase:
 
         elif payment_method == "yookassa":
             # Для YooKassa сохраняем сумму в минимальных единицах (копейки) в amount_minor_units
-            currency = currency or "RUB"
+            currency = (currency or "RUB").strip().upper()
             if currency != "RUB":
                 # чтобы не разъехались ожидания в остальном коде
                 raise ValueError(f"YooKassa invoice requires currency=RUB, got {currency}")
@@ -1357,6 +1693,18 @@ class MasterDatabase:
             stars_amount_val = 0  # stars_amount NOT NULL
             if amount_minor_units is None or int(amount_minor_units) <= 0:
                 raise ValueError("YooKassa invoice requires amount_minor_units > 0 (kopeks)")
+            amount_minor_val = int(amount_minor_units)
+
+        elif payment_method == "stripe":
+            # Stripe: тоже храним сумму в минимальных единицах (центы) в amount_minor_units.
+            # Валюту берём из аргумента currency (например USD/EUR).
+            currency = str(currency or "").strip().upper()
+            if not currency:
+                raise ValueError("Stripe invoice requires currency (e.g. USD)")
+
+            stars_amount_val = 0  # stars_amount NOT NULL
+            if amount_minor_units is None or int(amount_minor_units) <= 0:
+                raise ValueError("Stripe invoice requires amount_minor_units > 0 (cents)")
             amount_minor_val = int(amount_minor_units)
 
         else:
@@ -1368,6 +1716,8 @@ class MasterDatabase:
                 instance_id,
                 user_id,
                 product_id,
+                plan_code,
+                periods,
                 payload,
                 telegram_invoice_id,
                 invoice_link,
@@ -1377,13 +1727,15 @@ class MasterDatabase:
                 payment_method,
                 status
             )
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
             RETURNING invoice_id
             """,
             (
                 instance_id,
                 user_id,
                 product_id,
+                plan_code_val,
+                periods_val,
                 payload,
                 None,
                 invoice_link,
@@ -1397,115 +1749,150 @@ class MasterDatabase:
         return row["invoice_id"]
 
 
+    async def update_billing_invoice_status(self, invoice_id: int, status: str) -> None:
+        """
+        Обновляет статус инвойса в billing_invoices.
+        Аналогично логике для TON/YooKassa.
+        """
+        await self.execute(
+            """
+            UPDATE billing_invoices
+            SET status = $1,
+                updated_at = NOW()
+            WHERE invoice_id = $2
+            """,
+            (status, invoice_id),
+        )
+        logger.info(f"Updated invoice {invoice_id} status to {status}")
+
+    async def update_billing_invoice_status_by_external(self, external_id: str, status: str) -> None:
+        """
+        Обновляет статус инвойса по external_id (для webhook Stripe).
+        """
+        await self.execute(
+            """
+            UPDATE billing_invoices
+            SET status = $1,
+                updated_at = NOW()
+            WHERE external_id = $2
+            """,
+            (status, external_id),
+        )
+        logger.info(f"Updated invoice by external_id {external_id} status to {status}")
+
+    async def apply_invoice_to_billing(self, invoice_id: int) -> None:
+        """
+        Применяет оплаченный инвойс к instance_billing: продлевает период, сбрасывает счётчики.
+        (Аналогично для Stars/TON/YooKassa; адаптируйте под вашу логику, если метод уже есть под другим именем).
+        """
+        now = datetime.now(timezone.utc)
+        invoice = await self.fetchone(
+            "SELECT * FROM billing_invoices WHERE invoice_id = $1",
+            (invoice_id,)
+        )
+        if not invoice or invoice['status'] != 'succeeded':
+            logger.warning(f"Cannot apply invoice {invoice_id}: invalid status")
+            return
+
+        instance_id = invoice['instance_id']
+        periods = invoice['periods']
+        plan_code = invoice['plan_code']
+
+        # Получаем текущий биллинг
+        billing = await self.fetchone(
+            "SELECT * FROM instance_billing WHERE instance_id = $1",
+            (instance_id,)
+        )
+        if not billing:
+            logger.error(f"No billing for instance {instance_id}")
+            return
+
+        # Получаем план для period_days и tickets_limit
+        plan = await self.fetchone(
+            "SELECT period_days, tickets_limit FROM saas_plans WHERE code = $1",
+            (plan_code,)
+        )
+        if not plan:
+            logger.error(f"Plan {plan_code} not found")
+            return
+
+        # Вычисляем новый period_end (продлеваем от текущего конца или now)
+        current_end = billing['period_end'] if billing['period_end'] > now else now
+        new_end = current_end + timedelta(days=plan['period_days'] * periods)
+
+        await self.execute(
+            """
+            UPDATE instance_billing
+            SET plan_id = (SELECT plan_id FROM saas_plans WHERE code = $1),
+                period_end = $2,
+                tickets_used = 0,
+                tickets_limit = $3,
+                over_limit = FALSE,
+                service_paused = FALSE,
+                updated_at = NOW()
+            WHERE instance_id = $4
+            """,
+            (plan_code, new_end, plan['tickets_limit'], instance_id),
+        )
+
+        # Обновляем инвойс как applied
+        await self.execute(
+            """
+            UPDATE billing_invoices
+            SET period_applied = TRUE,
+                updated_at = NOW()
+            WHERE invoice_id = $1
+            """,
+            (invoice_id,)
+        )
+        logger.info(f"Applied invoice {invoice_id} to instance {instance_id}")
+
     async def get_instance(self, instance_id: str) -> Optional[BotInstance]:
-        assert self.conn is not None
-        with self.conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
-            cur.execute("SELECT * FROM bot_instances WHERE instance_id = %s", (instance_id,))
-            row = cur.fetchone()
+        row = await self.fetchone("SELECT * FROM bot_instances WHERE instance_id = $1", (instance_id,))
         if not row:
             return None
         return self.row_to_instance(row)
 
     async def get_instance_by_token_hash(self, token_hash: str) -> Optional[BotInstance]:
-        assert self.conn is not None
-        with self.conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
-            cur.execute("SELECT * FROM bot_instances WHERE token_hash = %s", (token_hash,))
-            row = cur.fetchone()
+        row = await self.fetchone("SELECT * FROM bot_instances WHERE token_hash = $1", (token_hash,))
         if not row:
             return None
         return self.row_to_instance(row)
 
     async def get_user_instances(self, user_id: int) -> List[BotInstance]:
-        assert self.conn is not None
-        with self.conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
-            cur.execute(
-                "SELECT * FROM bot_instances WHERE user_id = %s ORDER BY created_at DESC",
-                (user_id,),
-            )
-            rows = cur.fetchall()
+        rows = await self.fetchall(
+            "SELECT * FROM bot_instances WHERE user_id = $1 ORDER BY created_at DESC",
+            (user_id,)
+        )
         return [self.row_to_instance(r) for r in rows]
 
     async def get_user_instances_with_meta(
         self, user_id: int
     ) -> List[Dict[str, Any]]:
-        assert self.conn is not None
-        with self.conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
-            cur.execute(
-                """
-                SELECT
-                    bi.instance_id   AS instance_id,
-                    bi.bot_username  AS bot_username,
-                    bi.bot_name      AS bot_name,
-                    bi.created_at    AS created_at,
-                    bi.owner_user_id AS owner_user_id,
-                    bi.admin_private_chat_id AS admin_private_chat_id,
-                    bi.user_id       AS owner_id
-                FROM bot_instances bi
-                WHERE bi.user_id = %s OR bi.owner_user_id = %s
-                ORDER BY bi.created_at DESC
-                """,
-                (user_id, user_id),
-            )
-            rows = cur.fetchall()
+        rows = await self.fetchall(
+            """
+            SELECT
+                bi.instance_id   AS instance_id,
+                bi.bot_username  AS bot_username,
+                bi.bot_name      AS bot_name,
+                bi.created_at    AS created_at,
+                bi.owner_user_id AS owner_user_id,
+                bi.admin_private_chat_id AS admin_private_chat_id,
+                bi.user_id       AS owner_id
+            FROM bot_instances bi
+            WHERE bi.user_id = $1 OR bi.owner_user_id = $1
+            ORDER BY bi.created_at DESC
+            """,
+            (user_id,)
+        )
 
         result: List[Dict[str, Any]] = []
         for row in rows:
             inst = dict(row)
             inst["role"] = "owner"
-            with self.conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
-                cur.execute(
-                    """
-                    SELECT openchat_username,
-                        general_panel_chat_id,
-                        auto_close_hours,
-                        auto_reply_greeting,
-                        auto_reply_default_answer,
-                        branding_bot_name,
-                        openchat_enabled,
-                        language
-                    FROM instance_meta
-                    WHERE instance_id = %s
-                    """,
-                    (inst["instance_id"],),
-                )
-                meta = cur.fetchone()
-            if meta:
-                inst.update(dict(meta))
-            result.append(inst)
-
-        return result
-
-    async def get_instance_with_meta_by_id(self, instance_id: str) -> Optional[Dict[str, Any]]:
-        assert self.conn is not None
-        with self.conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
-            cur.execute(
+            meta = await self.fetchone(
                 """
-                SELECT
-                    bi.instance_id,
-                    bi.bot_username,
-                    bi.bot_name,
-                    bi.created_at,
-                    bi.owner_user_id,
-                    bi.admin_private_chat_id,
-                    bi.user_id AS owner_id
-                FROM bot_instances bi
-                WHERE bi.instance_id = %s
-                LIMIT 1
-                """,
-                (instance_id,),
-            )
-            row = cur.fetchone()
-
-        if not row:
-            return None
-
-        inst = dict(row)
-
-        with self.conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
-            cur.execute(
-                """
-                SELECT
-                    openchat_username,
+                SELECT openchat_username,
                     general_panel_chat_id,
                     auto_close_hours,
                     auto_reply_greeting,
@@ -1514,11 +1901,55 @@ class MasterDatabase:
                     openchat_enabled,
                     language
                 FROM instance_meta
-                WHERE instance_id = %s
+                WHERE instance_id = $1
                 """,
-                (inst["instance_id"],),
+                (inst["instance_id"],)
             )
-            meta = cur.fetchone()
+            if meta:
+                inst.update(dict(meta))
+            result.append(inst)
+
+        return result
+
+    async def get_instance_with_meta_by_id(self, instance_id: str) -> Optional[Dict[str, Any]]:
+        row = await self.fetchone(
+            """
+            SELECT
+                bi.instance_id,
+                bi.bot_username,
+                bi.bot_name,
+                bi.created_at,
+                bi.owner_user_id,
+                bi.admin_private_chat_id,
+                bi.user_id AS owner_id
+            FROM bot_instances bi
+            WHERE bi.instance_id = $1
+            LIMIT 1
+            """,
+            (instance_id,)
+        )
+
+        if not row:
+            return None
+
+        inst = dict(row)
+
+        meta = await self.fetchone(
+            """
+            SELECT
+                openchat_username,
+                general_panel_chat_id,
+                auto_close_hours,
+                auto_reply_greeting,
+                auto_reply_default_answer,
+                branding_bot_name,
+                openchat_enabled,
+                language
+            FROM instance_meta
+            WHERE instance_id = $1
+            """,
+            (inst["instance_id"],)
+        )
 
         if meta:
             inst.update(dict(meta))
@@ -1528,17 +1959,14 @@ class MasterDatabase:
 
 
     async def get_all_active_instances(self) -> List[BotInstance]:
-        assert self.conn is not None
-        with self.conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
-            cur.execute(
-                """
-                SELECT * FROM bot_instances
-                 WHERE status IN (%s, %s)
-                 ORDER BY created_at
-                """,
-                (InstanceStatus.RUNNING.value, InstanceStatus.STARTING.value),
-            )
-            rows = cur.fetchall()
+        rows = await self.fetchall(
+            """
+            SELECT * FROM bot_instances
+             WHERE status IN ($1, $2)
+             ORDER BY created_at
+            """,
+            (InstanceStatus.RUNNING.value, InstanceStatus.STARTING.value)
+        )
         return [self.row_to_instance(r) for r in rows]
 
     async def update_instance_status(
@@ -1547,54 +1975,45 @@ class MasterDatabase:
         status: InstanceStatus,
         error_message: Optional[str] = None,
     ) -> None:
-        assert self.conn is not None
-        with self.conn.cursor() as cur:
-            cur.execute(
-                """
-                UPDATE bot_instances
-                   SET status = %s, updatedat = %s, error_message = %s
-                 WHERE instance_id = %s
-                """,
-                (
-                    status.value if hasattr(status, "value") else str(status),
-                    datetime.now(timezone.utc),
-                    error_message,
-                    instance_id,
-                ),
-            )
-        self.conn.commit()
+        await self.execute(
+            """
+            UPDATE bot_instances
+               SET status = $1, updated_at = $2, error_message = $3
+             WHERE instance_id = $4
+            """,
+            (
+                status.value if hasattr(status, "value") else str(status),
+                datetime.now(timezone.utc),
+                error_message,
+                instance_id,
+            ),
+        )
 
     # === Token storage ===
 
     async def store_encrypted_token(self, instance_id: str, token: str) -> None:
-        assert self.conn is not None
         assert self.cipher is not None
         encrypted = self.cipher.encrypt(token.encode("utf-8"))
-        with self.conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO encrypted_tokens (instance_id, encrypted_token)
-                VALUES (%s, %s)
-                ON CONFLICT (instance_id)
-                DO UPDATE SET encrypted_token = EXCLUDED.encrypted_token
-                """,
-                (instance_id, psycopg2.Binary(encrypted)),
-            )
-        self.conn.commit()
+        await self.execute(
+            """
+            INSERT INTO encrypted_tokens (instance_id, encrypted_token)
+            VALUES ($1, $2)
+            ON CONFLICT (instance_id)
+            DO UPDATE SET encrypted_token = EXCLUDED.encrypted_token
+            """,
+            (instance_id, encrypted),
+        )
 
     async def get_decrypted_token(self, instance_id: str) -> Optional[str]:
-        assert self.conn is not None
         assert self.cipher is not None
-        with self.conn.cursor() as cur:
-            cur.execute(
-                "SELECT encrypted_token FROM encrypted_tokens WHERE instance_id = %s",
-                (instance_id,),
-            )
-            row = cur.fetchone()
+        row = await self.fetchone(
+            "SELECT encrypted_token FROM encrypted_tokens WHERE instance_id = $1",
+            (instance_id,)
+        )
         if not row:
             return None
         try:
-            return self.cipher.decrypt(bytes(row[0])).decode("utf-8")
+            return self.cipher.decrypt(bytes(row["encrypted_token"])).decode("utf-8")
         except Exception as e:
             logger.error(f"Failed to decrypt token for {instance_id}: {e}")
             return None
@@ -1602,36 +2021,27 @@ class MasterDatabase:
     # === User state helpers (для master UI) ===
 
     async def set_user_state(self, user_id: int, state: str, data: Optional[str] = None) -> None:
-        assert self.conn is not None
-        with self.conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO user_states (user_id, state, data)
-                VALUES (%s, %s, %s)
-                ON CONFLICT (user_id)
-                DO UPDATE SET state = EXCLUDED.state, data = EXCLUDED.data
-                """,
-                (user_id, state, data),
-            )
-        self.conn.commit()
+        await self.execute(
+            """
+            INSERT INTO user_states (user_id, state, data)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (user_id)
+            DO UPDATE SET state = EXCLUDED.state, data = EXCLUDED.data
+            """,
+            (user_id, state, data),
+        )
         logger.info("set_user_state: user_id=%s, state=%s", user_id, state)
 
     async def get_user_state(self, user_id: int) -> Optional[str]:
-        assert self.conn is not None
-        with self.conn.cursor() as cur:
-            cur.execute(
-                "SELECT state FROM user_states WHERE user_id = %s",
-                (user_id,),
-            )
-            row = cur.fetchone()
-        logger.info("get_user_state: user_id=%s, state=%s", user_id, row[0] if row else None)
-        return row[0] if row else None
+        row = await self.fetchone(
+            "SELECT state FROM user_states WHERE user_id = $1",
+            (user_id,)
+        )
+        logger.info("get_user_state: user_id=%s, state=%s", user_id, row["state"] if row else None)
+        return row["state"] if row else None
 
     async def clear_user_state(self, user_id: int) -> None:
-        assert self.conn is not None
-        with self.conn.cursor() as cur:
-            cur.execute("DELETE FROM user_states WHERE user_id = %s", (user_id,))
-        self.conn.commit()
+        await self.execute("DELETE FROM user_states WHERE user_id = $1", (user_id,))
 
     # === Worker helpers ===
 
@@ -1642,18 +2052,15 @@ class MasterDatabase:
         state: str,
         data: Optional[str] = None,
     ) -> None:
-        assert self.conn is not None
-        with self.conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO worker_user_states (instance_id, user_id, state, data)
-                VALUES (%s, %s, %s, %s)
-                ON CONFLICT (instance_id, user_id)
-                DO UPDATE SET state = EXCLUDED.state, data = EXCLUDED.data
-                """,
-                (instance_id, user_id, state, data),
-            )
-        self.conn.commit()
+        await self.execute(
+            """
+            INSERT INTO worker_user_states (instance_id, user_id, state, data)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (instance_id, user_id)
+            DO UPDATE SET state = EXCLUDED.state, data = EXCLUDED.data
+            """,
+            (instance_id, user_id, state, data),
+        )
 
     # === Billing helpers ===
 
@@ -1665,17 +2072,14 @@ class MasterDatabase:
         - tickets_used / tickets_limit / over_limit
         - last_expiring_notice_date / last_paused_notice_at
         """
-        assert self.conn is not None
-        with self.conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
-            cur.execute(
-                """
-                SELECT *
-                FROM instance_billing
-                WHERE instance_id = %s
-                """,
-                (instance_id,),
-            )
-            row = cur.fetchone()
+        row = await self.fetchone(
+            """
+            SELECT *
+            FROM instance_billing
+            WHERE instance_id = $1
+            """,
+            (instance_id,)
+        )
         return dict(row) if row else None
 
 
@@ -1694,10 +2098,10 @@ class MasterDatabase:
                 price_stars,
                 features_json
             FROM saas_plans
-            WHERE plan_id = %s
+            WHERE plan_id = $1
             LIMIT 1
             """,
-            (plan_id,),
+            (plan_id,)
         )
         return dict(row) if row else None
 
@@ -1711,65 +2115,64 @@ class MasterDatabase:
         ok = False -> тикет создавать нельзя, error_reason:
                       'no_billing', 'expired', 'limit_reached'.
         """
-        assert self.conn is not None
         now = datetime.now(timezone.utc)
 
-        with self.conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
-            cur.execute(
-                """
-                SELECT *
-                FROM instance_billing
-                WHERE instance_id = %s
-                FOR UPDATE
-                """,
-                (instance_id,),
-            )
-            row = cur.fetchone()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    """
+                    SELECT *
+                    FROM instance_billing
+                    WHERE instance_id = $1
+                    FOR UPDATE
+                    """,
+                    instance_id
+                )
 
-            if not row:
-                # Нет записи биллинга — считаем это ошибкой конфигурации.
-                return False, "no_billing"
+                if not row:
+                    # Нет записи биллинга — считаем это ошибкой конфигурации.
+                    return False, "no_billing"
 
-            period_end = row["period_end"]
-            tickets_used = row["tickets_used"]
-            tickets_limit = row["tickets_limit"]
+                period_end = row["period_end"]
+                tickets_used = row["tickets_used"]
+                tickets_limit = row["tickets_limit"]
 
-            if now > period_end:
-                cur.execute(
+                if now > period_end:
+                    await conn.execute(
+                        """
+                        UPDATE instance_billing
+                           SET over_limit = TRUE,
+                               updated_at = $1
+                         WHERE instance_id = $2
+                        """,
+                        now,
+                        instance_id
+                    )
+                    return False, "expired"
+
+                if tickets_used >= tickets_limit:
+                    await conn.execute(
+                        """
+                        UPDATE instance_billing
+                           SET over_limit = TRUE,
+                               updated_at = $1
+                         WHERE instance_id = $2
+                        """,
+                        now,
+                        instance_id
+                    )
+                    return False, "limit_reached"
+
+                await conn.execute(
                     """
                     UPDATE instance_billing
-                       SET over_limit = TRUE,
-                           updated_at = %s
-                     WHERE instance_id = %s
+                       SET tickets_used = tickets_used + 1,
+                           updated_at   = $1
+                     WHERE instance_id = $2
                     """,
-                    (now, instance_id),
+                    now,
+                    instance_id
                 )
-                self.conn.commit()
-                return False, "expired"
-
-            if tickets_used >= tickets_limit:
-                cur.execute(
-                    """
-                    UPDATE instance_billing
-                       SET over_limit = TRUE,
-                           updated_at = %s
-                     WHERE instance_id = %s
-                    """,
-                    (now, instance_id),
-                )
-                self.conn.commit()
-                return False, "limit_reached"
-
-            cur.execute(
-                """
-                UPDATE instance_billing
-                   SET tickets_used = tickets_used + 1,
-                       updated_at   = %s
-                 WHERE instance_id = %s
-                """,
-                (now, instance_id),
-            )
-        self.conn.commit()
         return True, None
 
     async def ensure_default_plans(self) -> None:
@@ -1779,84 +2182,123 @@ class MasterDatabase:
         Demo: 7 дней, 0 Stars, небольшой лимит тикетов.
         Остальные: 30 дней, разные лимиты и цены.
         """
-        assert self.conn is not None
-        with self.conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
-            # --- планы ---
-            cur.execute("SELECT code FROM saas_plans")
-            existing = {row["code"] for row in cur.fetchall()}
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                # --- планы ---
+                rows = await conn.fetch("SELECT code FROM saas_plans")
+                existing = {row["code"] for row in rows}
 
-            plans_to_insert = []
+                plans_to_insert = []
 
-            if "demo" not in existing:
-                plans_to_insert.append(
-                    ("Demo", "demo", 0, 7, 30, {"can_openchat": False, "branding": False})
-                )
-            if "lite" not in existing:
-                plans_to_insert.append(
-                    ("Lite", "lite", 300, 30, 200, {"can_openchat": True, "branding": False})
-                )
-            if "pro" not in existing:
-                plans_to_insert.append(
-                    ("Pro", "pro", 800, 30, 1000, {"can_openchat": True, "branding": True})
-                )
-            if "enterprise" not in existing:
-                plans_to_insert.append(
-                    ("Enterprise", "enterprise", 2500, 30, 100000, {"can_openchat": True, "branding": True})
-                )
-
-            for name, code, price_stars, period_days, tickets_limit, features_json in plans_to_insert:
-                cur.execute(
-                    """
-                    INSERT INTO saas_plans (name, code, price_stars, period_days, tickets_limit, features_json)
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                    """,
-                    (name, code, price_stars, period_days, tickets_limit,
-                     psycopg2.extras.Json(features_json)),
-                )
-
-            # --- товары под планы (кроме demo) ---
-            # читаем актуальные планы
-            cur.execute(
-                "SELECT plan_id, code, name, price_stars, period_days FROM saas_plans"
-            )
-            plans = cur.fetchall()
-
-            # уже существующие продукты
-            try:
-                cur.execute("SELECT code FROM billing_products")
-                existing_products = {row["code"] for row in cur.fetchall()}
-            except psycopg2.errors.UndefinedTable:
-                # если миграция ещё не прогнана и таблицы нет
-                self.conn.rollback()
-                return
-
-            products_to_insert = []
-            for row in plans:
-                plan_code = row["code"]
-                if plan_code == "demo":
-                    continue  # demo не продаём как товар
-                product_code = f"plan_{plan_code}_{row['period_days']}d"
-                if product_code in existing_products:
-                    continue
-
-                products_to_insert.append(
-                    (
-                        product_code,
-                        row["plan_id"],
-                        row["name"],
-                        f"{row['name']} – {row['period_days']} дней доступа",
-                        row["price_stars"],
+                if "demo" not in existing:
+                    plans_to_insert.append(
+                        ("Demo", "demo", 0, 7, 30, {"can_openchat": False, "branding": False})
                     )
+                if "lite" not in existing:
+                    plans_to_insert.append(
+                        ("Lite", "lite", 300, 30, 200, {"can_openchat": True, "branding": False})
+                    )
+                if "pro" not in existing:
+                    plans_to_insert.append(
+                        ("Pro", "pro", 800, 30, 1000, {"can_openchat": True, "branding": True})
+                    )
+                if "enterprise" not in existing:
+                    plans_to_insert.append(
+                        ("Enterprise", "enterprise", 2500, 30, 100000, {"can_openchat": True, "branding": True})
+                    )
+
+                for name, code, price_stars, period_days, tickets_limit, features_json in plans_to_insert:
+                    features_json_str = json.dumps(features_json)
+                    await conn.execute(
+                        """
+                        INSERT INTO saas_plans (name, code, price_stars, period_days, tickets_limit, features_json)
+                        VALUES ($1, $2, $3, $4, $5, $6)
+                        """,
+                        (name, code, price_stars, period_days, tickets_limit, features_json_str),
+                    )
+
+                # --- товары под планы (кроме demo) ---
+                # читаем актуальные планы
+                plans = await conn.fetch(
+                    "SELECT plan_id, code, name, price_stars, period_days FROM saas_plans"
                 )
 
-            for code, plan_id, title, description, amount_stars in products_to_insert:
-                cur.execute(
-                    """
-                    INSERT INTO billing_products (code, plan_id, title, description, amount_stars)
-                    VALUES (%s, %s, %s, %s, %s)
-                    """,
-                    (code, plan_id, title, description, amount_stars),
-                )
+                # уже существующие продукты
+                try:
+                    rows = await conn.fetch("SELECT code FROM billing_products")
+                    existing_products = {row["code"] for row in rows}
+                except asyncpg.UndefinedTableError:
+                    # если миграция ещё не прогнана и таблицы нет
+                    return
+
+                products_to_insert = []
+                for row in plans:
+                    plan_code = row["code"]
+                    if plan_code == "demo":
+                        continue  # demo не продаём как товар
+                    product_code = f"plan_{plan_code}_{row['period_days']}d"
+                    if product_code in existing_products:
+                        continue
+
+                    products_to_insert.append(
+                        (
+                            product_code,
+                            row["plan_id"],
+                            row["name"],
+                            f"{row['name']} – {row['period_days']} дней доступа",
+                            row["price_stars"],
+                        )
+                    )
+
+                for code, plan_id, title, description, amount_stars in products_to_insert:
+                    await conn.execute(
+                        """
+                        INSERT INTO billing_products (code, plan_id, title, description, amount_stars)
+                        VALUES ($1, $2, $3, $4, $5)
+                        """,
+                        (code, plan_id, title, description, amount_stars),
+                    )
+
+    async def update_saas_plan_price_stars(self, plancode: str, price_stars: int) -> None:
+        code = (plancode or "").strip().lower()
+        if code not in ("lite", "pro", "enterprise", "demo"):
+            raise ValueError(f"Unsupported plancode for Stars price update: {plancode}")
+
+        try:
+            price = int(price_stars)
+        except Exception:
+            raise ValueError(f"Invalid price_stars: {price_stars}")
+
+        if price < 0:
+            raise ValueError("price_stars must be >= 0")
+
+        await self.execute(
+            """
+            UPDATE saas_plans
+            SET price_stars = $1,
+                updated_at = NOW()
+            WHERE code = $2
+            """,
+            (price, code),
+        )
+
+    async def sync_billing_product_amount_from_plan(self, plancode: str) -> None:
+        code = (plancode or "").strip().lower()
+        if code not in ("lite", "pro", "enterprise", "demo"):
+            raise ValueError(f"Unsupported plancode for billing product sync: {plancode}")
+
+        await self.execute(
+            """
+            UPDATE billing_products AS bp
+            SET amount_stars = sp.price_stars,
+                updated_at = NOW()
+            FROM saas_plans AS sp
+            WHERE bp.plan_id = sp.plan_id
+                AND sp.code = $1
+                AND bp.is_active = TRUE
+            """,
+            (code,),
+        )
 
 
     async def ensure_default_billing(self, instance_id: str) -> None:
@@ -1864,62 +2306,61 @@ class MasterDatabase:
         Гарантирует, что для инстанса есть запись instance_billing.
         По умолчанию выдаёт Demo-план на 7 дней с его лимитами.
         """
-        assert self.conn is not None
         now = datetime.now(timezone.utc)
 
-        with self.conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
-            # уже есть биллинг — ничего не делаем
-            cur.execute(
-                "SELECT 1 FROM instance_billing WHERE instance_id = %s",
-                (instance_id,),
-            )
-            if cur.fetchone():
-                return
-
-            # ищем demo-план
-            cur.execute(
-                "SELECT plan_id, period_days, tickets_limit FROM saas_plans WHERE code = %s",
-                ("demo",),
-            )
-            row = cur.fetchone()
-            if not row:
-                logger.error("ensure_default_billing: demo plan not found, instance_id=%s", instance_id)
-                return
-
-            plan_id = row["plan_id"]
-            period_days = row["period_days"]
-            tickets_limit = row["tickets_limit"]
-
-            period_start = now
-            period_end = now + timedelta(days=period_days)
-
-            cur.execute(
-                """
-                INSERT INTO instance_billing (
-                    instance_id,
-                    plan_id,
-                    period_start,
-                    period_end,
-                    tickets_used,
-                    tickets_limit,
-                    over_limit,
-                    last_expiring_notice_date,
-                    last_paused_notice_at,
-                    created_at,
-                    updated_at
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                # уже есть биллинг — ничего не делаем
+                row = await conn.fetchrow(
+                    "SELECT 1 FROM instance_billing WHERE instance_id = $1",
+                    *(instance_id,)
                 )
-                VALUES (%s, %s, %s, %s, 0, %s, FALSE, NULL, NULL, %s, %s)
-                """,
-                (
-                    instance_id,
-                    plan_id,
-                    period_start,
-                    period_end,
-                    tickets_limit,
-                    now,
-                    now,
-                ),
-            )
+                if row:
+                    return
+
+                # ищем demo-план
+                row = await conn.fetchrow(
+                    "SELECT plan_id, period_days, tickets_limit FROM saas_plans WHERE code = $1",
+                    *("demo",)
+                )
+                if not row:
+                    logger.error("ensure_default_billing: demo plan not found, instance_id=%s", instance_id)
+                    return
+
+                plan_id = row["plan_id"]
+                period_days = row["period_days"]
+                tickets_limit = row["tickets_limit"]
+
+                period_start = now
+                period_end = now + timedelta(days=period_days)
+
+                await conn.execute(
+                    """
+                    INSERT INTO instance_billing (
+                        instance_id,
+                        plan_id,
+                        period_start,
+                        period_end,
+                        tickets_used,
+                        tickets_limit,
+                        over_limit,
+                        last_expiring_notice_date,
+                        last_paused_notice_at,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES ($1, $2, $3, $4, 0, $5, FALSE, NULL, NULL, $6, $7)
+                    """,
+                    *(
+                        instance_id,
+                        plan_id,
+                        period_start,
+                        period_end,
+                        tickets_limit,
+                        now,
+                        now,
+                    ),
+                )
 
     # === Row mapping ===
 
@@ -1935,58 +2376,31 @@ class MasterDatabase:
             webhook_secret=row["webhook_secret"],
             status=InstanceStatus(row["status"]),
             created_at=row["created_at"],
-            updated_at=row["updatedat"],
+            updated_at=row["updated_at"],
             error_message=row["error_message"],
             owner_user_id=row.get("owner_user_id"),
             admin_private_chat_id=row.get("admin_private_chat_id"),
         )
 
     async def get_user_language(self, user_id: int) -> Optional[str]:
-        assert self.conn is not None
-        with self.conn.cursor() as cur:
-            cur.execute(
-                "SELECT language FROM user_states WHERE user_id = %s",
-                (user_id,),
-            )
-            row = cur.fetchone()
-        return row[0] if row and row[0] is not None else None
+        row = await self.fetchone(
+            "SELECT language FROM user_states WHERE user_id = $1",
+            (user_id,)
+        )
+        return row["language"] if row and row["language"] is not None else None
+
 
     async def set_user_language(self, user_id: int, lang_code: str) -> None:
         """
         Обновляет язык пользователя, не трогая state/data.
         Если записи нет — создаёт с пустым state.
         """
-        assert self.conn is not None
-        with self.conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO user_states (user_id, state, data, language)
-                VALUES (%s, COALESCE(
-                           (SELECT state FROM user_states WHERE user_id = %s),
-                           ''
-                       ),
-                        COALESCE(
-                           (SELECT data FROM user_states WHERE user_id = %s),
-                           NULL
-                       ),
-                        %s)
-                ON CONFLICT (user_id)
-                DO UPDATE SET language = EXCLUDED.language
-                """,
-                (user_id, user_id, user_id, lang_code),
-            )
-        self.conn.commit()
-
-
-class WorkerDatabase:
-    """
-    Stub-класс для обратной совместимости.
-    Вся логика перенесена в MasterDatabase/worker-таблицы Postgres.
-    Новые воркеры должны напрямую использовать MasterDatabase.
-    """
-
-    def __init__(self, dbpath: str):
-        raise RuntimeError(
-            "WorkerDatabase на SQLite больше не поддерживается. "
-            "Используй MasterDatabase и worker-таблицы в Postgres."
+        await self.execute(
+            """
+            INSERT INTO user_states (user_id, state, data, language, created_at)
+            VALUES ($1, '', NULL, $2, NOW())
+            ON CONFLICT (user_id)
+            DO UPDATE SET language = EXCLUDED.language
+            """,
+            (user_id, lang_code),
         )

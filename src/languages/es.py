@@ -306,7 +306,7 @@ TEXTS_ES = Texts(
     master_remove_confirm_cancel="❌ Cancelar",
     master_menu_billing="💳 Planes y pago",
     attachment_too_big = "El archivo es demasiado grande. Por favor, envía un archivo más pequeño.",
-    too_many_messages="Demasiados mensajes. Espera un momento y vuelve a intentarlo.",
+    too_many_messages="⚠️ Demasiados mensajes. Espera un momento y vuelve a intentarlo.",
     billing_plans_title="Elige un plan para tu cuenta:",
     billing_plan_line="• <b>{plan_name}</b>: {price_stars} ⭐ / {period_days} días, límite de {tickets_limit} tickets",
     menu_rating = "Valoración al cerrar",
@@ -326,6 +326,9 @@ TEXTS_ES = Texts(
     master_current_plan_no_date = "Plan actual: {plan_name}, quedan {days_left} días.",
     master_current_plan_paused = "El plan {plan_name} está en pausa (hasta {date}). Renueva tu suscripción para continuar.",
     billing_unknown_plan_name = "Plan desconocido",
-
+    ticket_taken_self = "✅ El ticket ha sido asignado a ti",
+    ticket_no_assignees = "No hay operadores disponibles para asignar",
+    first_message_forwarded = "✅ Mensaje enviado al soporte. ¡Te responderemos pronto!",
+    session_flood_message = "⏳ Tus mensajes han sido entregados. ¡Esperando respuesta del operador!",
 )
 

@@ -64,6 +64,8 @@ venv/
 data/instances
 docker/
 site/
+docs/
+.requirements.hash
 mkdocs.yml
 11
 deploy_git.sh

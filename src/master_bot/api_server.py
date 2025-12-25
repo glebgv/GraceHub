@@ -22,7 +22,7 @@ sys.path.insert(0, str(SRC_DIR))
 import uvicorn  # noqa: E402
 
 from shared.database import MasterDatabase, get_master_dsn  # noqa: E402
-from master_bot.main import MasterBot  # noqa: E402
+from master_bot.main import MasterBot  #
 from master_bot.miniapp_api import create_miniapp_app  # noqa: E402
 
 logging.basicConfig(

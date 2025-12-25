@@ -41,7 +41,6 @@ def setup_logging() -> None:
     """
     Логируем в отдельный файл на инстанс, либо в общий logs/worker.log.
     """
-    # Пытаемся использовать instance_id для имени файла
     instance_id = (
         getattr(settings, "WORKER_INSTANCE_ID", None)
         or os.getenv("WORKER_INSTANCE_ID", "unknown")
@@ -53,10 +52,8 @@ def setup_logging() -> None:
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
     logging.basicConfig(
-        level=getattr(
-            logging, getattr(settings, "LOG_LEVEL", "INFO").upper(), logging.INFO
-        ),
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        level=getattr(logging, getattr(settings, "LOG_LEVEL", "INFO").upper(), logging.INFO),
+        format="%(asctime)s [pid=%(process)d] - %(name)s - %(levelname)s - %(message)s",
         handlers=[
             logging.FileHandler(log_path, encoding="utf-8"),
             logging.StreamHandler(),
@@ -77,6 +74,50 @@ class AdminStates(StatesGroup):
     wait_blacklist_search = State()
 
 
+class PlatformInstanceDefaultsCache:
+    def __init__(self, db: MasterDatabase, ttl_seconds: int = 15):
+        self.db = db
+        self.ttl_seconds = ttl_seconds
+        self._cached_at: datetime | None = None
+        self._cached_value: tuple[int, int] | None = None
+        self.ticket_keyboard_anchor: Dict[int, Dict[str, Any]] = {}
+
+    async def get(self) -> tuple[int, int]:
+        now = datetime.now(timezone.utc)
+
+        if self._cached_at and self._cached_value:
+            age = (now - self._cached_at).total_seconds()
+            if age < self.ttl_seconds:
+                return self._cached_value
+
+        # ВАЖНО: тут используй реальный метод твоей MasterDatabase.
+        # нужно привести к одному правильному имени.
+        try:
+            data = await self.db.get_platform_setting("miniapp_public", default={})
+        except AttributeError:
+            data = await self.db.get_platform_setting("miniapp_public", default={})
+
+        instance_defaults = (data or {}).get("instanceDefaults") or {}
+
+        # Совместимость:
+        # - старые/ожидаемые воркером имена: antiflood_limit_per_min / max_file_mb
+        # - реальные в БД (по твоему platform_settings.value): antifloodMaxUserMessagesPerMinute / workerMaxFileMb
+        antiflood = int(
+            instance_defaults.get("antifloodMaxUserMessagesPerMinute")
+            or instance_defaults.get("antiflood_limit_per_min")
+            or 0
+        )
+        max_file_mb = int(
+            instance_defaults.get("workerMaxFileMb")
+            or instance_defaults.get("max_file_mb")
+            or 10
+        )
+
+        self._cached_at = now
+        self._cached_value = (antiflood, max_file_mb)
+        return self._cached_value
+
+
 class GraceHubWorker:
     """
     Отдельный воркер для одного инстанса бота.
@@ -92,12 +133,10 @@ class GraceHubWorker:
         "spam": "⬛️",
     }
 
-    # допустимые статусы тикетов
     ALLOWED_TICKET_STATUSES = {"new", "inprogress", "answered", "escalated", "closed", "spam"}
 
-    # верхние лимиты
-    MAX_USER_TEXT = 4096     # сообщения в Telegram
-    MAX_DB_TEXT = 2000       # тексты, которые пишем в БД
+    MAX_USER_TEXT = 4096
+    MAX_DB_TEXT = 2000
 
     @staticmethod
     def _safe_trim(text: str, limit: int) -> str:
@@ -121,16 +160,92 @@ class GraceHubWorker:
         self.lang_code = "ru"
         self.texts = LANGS[self.lang_code]
 
-        self.max_file_mb: int = getattr(settings, "WORKER_MAX_FILE_MB", 50)
+        # --- глобальные дефолты из БД (SuperAdmin -> miniapp_public.instanceDefaults) ---
+        self._platform_defaults = PlatformInstanceDefaultsCache(self.db, ttl_seconds=15)
+
+        # локальные значения, которые обновляются из БД (через _refresh_limits_from_db)
+        self.antiflood_limit_per_min: int = 0
+        self.max_file_mb: int = 10
         self.max_file_bytes: int = self.max_file_mb * 1024 * 1024
+
         # Храним скользящее окно значений в минуту. Для антифлуда
         self.user_msg_timestamps: dict[int, deque[datetime]] = {}
+        self.user_session_messages: Dict[int, int] = {}
 
-        # хендлеры можно регать сразу, БД для этого не нужна
         self.register_handlers()
+        
+    async def initialize(self) -> None:
+            """
+            Асинхронная инициализация worker'а: вызов init_database и другие async-операции.
+            """
+            await self.init_database()  # Ваш существующий метод
+            logger.info(f"Worker initialized for instance {self.instance_id}")
 
-    def _is_user_flooding(self, userid: int) -> bool:
-        limit = getattr(settings, "ANTIFLOOD_MAX_USER_MESSAGES_PER_MINUTE", 0)
+
+    async def _is_attachment_too_big(self, message: Message) -> bool:
+        await self.refresh_limits_from_db()  # если у тебя так называется; у тебя есть refreshlimitsfromdb [file:4]
+        maxbytes = self.maxfilebytes
+
+        # Собираем file_id для всех поддерживаемых типов
+        file_id = None
+
+        if message.photo:
+            file_id = message.photo[-1].file_id
+            size = message.photo[-1].file_size
+            if size and size > maxbytes:
+                return True
+        elif message.document:
+            file_id = message.document.file_id
+            size = message.document.file_size
+            if size and size > maxbytes:
+                return True
+        elif message.video:
+            file_id = message.video.file_id
+            size = message.video.file_size
+            if size and size > maxbytes:
+                return True
+        elif message.audio:
+            file_id = message.audio.file_id
+            size = message.audio.file_size
+            if size and size > maxbytes:
+                return True
+        elif message.voice:
+            file_id = message.voice.file_id
+            size = message.voice.file_size
+            if size and size > maxbytes:
+                return True
+        elif message.video_note:
+            file_id = message.video_note.file_id
+            size = message.video_note.file_size
+            if size and size > maxbytes:
+                return True
+        elif message.sticker:
+            file_id = message.sticker.file_id
+            size = message.sticker.file_size
+            if size and size > maxbytes:
+                return True
+
+        # Если size нет — проверяем через get_file()
+        if file_id:
+            ok = await self.check_file_size(file_id)  # True если <= maxbytes [file:4]
+            return not ok
+
+        return False
+
+
+    async def _refresh_limits_from_db(self) -> None:
+        antiflood, max_file_mb = await self._platform_defaults.get()
+
+        self.antiflood_limit_per_min = antiflood
+
+        if max_file_mb != self.max_file_mb:
+            self.max_file_mb = max_file_mb
+            self.max_file_bytes = self.max_file_mb * 1024 * 1024
+
+    async def _is_user_flooding(self, userid: int) -> bool:
+        await self._refresh_limits_from_db()
+
+        limit = self.antiflood_limit_per_min
         if not limit or limit <= 0:
             return False
 
@@ -142,11 +257,9 @@ class GraceHubWorker:
             dq = deque()
             self.user_msg_timestamps[userid] = dq
 
-        # выкидываем старые записи
         while dq and now - dq[0] > window:
             dq.popleft()
 
-        # добавляем текущую
         dq.append(now)
 
         return len(dq) > limit
@@ -158,13 +271,13 @@ class GraceHubWorker:
         self.lang_code = code
         self.texts = LANGS[code]
 
-
     async def _check_file_size(self, file_id: str) -> bool:
+        # гарантируем, что лимит актуальный (с TTL)
+        await self._refresh_limits_from_db()
+
         tg_file = await self.bot.get_file(file_id)
         size = getattr(tg_file, "file_size", None) or 0
-        if size > self.max_file_bytes:
-            return False
-        return True
+        return size <= self.max_file_bytes
 
     async def global_error_handler(self, exception: Exception) -> bool:
         """
@@ -194,6 +307,50 @@ class GraceHubWorker:
             return True
 
         return True
+
+    async def get_operators_keyboard(
+        self,
+        ticket_id: int,
+        page: int = 0,
+        per_page: int = 10,
+    ) -> InlineKeyboardMarkup:
+        offset = page * per_page
+        rows = await self.db.fetchall(
+            """
+            SELECT user_id, username, last_seen
+            FROM operators
+            WHERE instance_id = $1
+            ORDER BY last_seen DESC
+            LIMIT $2 OFFSET $3
+            """,
+            (self.instance_id, per_page, offset),
+        )
+
+        buttons: List[List[InlineKeyboardButton]] = []
+        for r in rows:
+            uid = r["user_id"]
+            uname = r["username"] or ""
+            label = f"@{uname}" if uname else f"id{uid}"
+            buttons.append([
+                InlineKeyboardButton(
+                    text=label,
+                    callback_data=f"ticket:assign_to:{ticket_id}:{uid}",
+                )
+            ])
+
+        # Если пусто — вернём пустую клаву, выше ты это проверяешь и шлёшь ticket_no_assignees
+        if not buttons:
+            return InlineKeyboardMarkup(inline_keyboard=[])
+
+        # Отмена
+        buttons.append([
+            InlineKeyboardButton(
+                text="❌ Отмена",
+                callback_data=f"ticket:cancel_assign:{ticket_id}",
+            )
+        ])
+
+        return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
     async def init_database(self) -> None:
@@ -357,7 +514,7 @@ class GraceHubWorker:
             """
             SELECT value
             FROM worker_settings
-            WHERE instance_id = %s AND key = %s
+            WHERE instance_id = $1 AND key = $2
             """,
             (self.instance_id, key),
         )
@@ -367,7 +524,7 @@ class GraceHubWorker:
         await self.db.execute(
             """
             INSERT INTO worker_settings (instance_id, key, value)
-            VALUES (%s, %s, %s)
+            VALUES ($1, $2, $3)
             ON CONFLICT (instance_id, key)
             DO UPDATE SET value = EXCLUDED.value
             """,
@@ -506,7 +663,7 @@ class GraceHubWorker:
             """
             SELECT 1
             FROM autoreply_log
-            WHERE instance_id = %s AND user_id = %s
+            WHERE instance_id = $1 AND user_id = $2
             LIMIT 1
             """,
             (self.instance_id, user_id),
@@ -521,7 +678,7 @@ class GraceHubWorker:
         await self.db.execute(
             """
             INSERT INTO autoreply_log (instance_id, user_id, date)
-            VALUES (%s, %s, %s)
+            VALUES ($1, $2, $3)
             ON CONFLICT (instance_id, user_id, date) DO NOTHING
             """,
             (self.instance_id, user_id, now.date()),
@@ -531,7 +688,7 @@ class GraceHubWorker:
         await self.db.execute(
             """
             INSERT INTO blacklist (instance_id, user_id, username, added_at)
-            VALUES (%s, %s, %s, %s)
+            VALUES ($1, $2, $3, $4)
             ON CONFLICT (instance_id, user_id)
             DO UPDATE SET
                 username = EXCLUDED.username,
@@ -546,8 +703,8 @@ class GraceHubWorker:
                 """
                 UPDATE tickets
                    SET status     = 'spam',
-                       updated_at = %s
-                 WHERE instance_id = %s AND user_id = %s
+                       updated_at = $1
+                 WHERE instance_id = $2 AND user_id = $3
                 """,
                 (now, self.instance_id, user_id),
             )
@@ -563,7 +720,7 @@ class GraceHubWorker:
         await self.db.execute(
             """
             DELETE FROM blacklist
-            WHERE instance_id = %s AND user_id = %s
+            WHERE instance_id = $1 AND user_id = $2
             """,
             (self.instance_id, user_id),
         )
@@ -577,7 +734,7 @@ class GraceHubWorker:
             """
             SELECT user_id, username, added_at
             FROM blacklist
-            WHERE instance_id = %s
+            WHERE instance_id = $1
             ORDER BY added_at DESC
             """,
             (self.instance_id,),
@@ -801,7 +958,7 @@ class GraceHubWorker:
         await self.db.execute(
             """
             INSERT INTO admin_reply_map_v2 (instance_id, chat_id, admin_message_id, target_user_id, created_at)
-            VALUES (%s, %s, %s, %s, %s)
+            VALUES ($1, $2, $3, $4, $5)
             ON CONFLICT (instance_id, chat_id, admin_message_id)
             DO UPDATE SET target_user_id = EXCLUDED.target_user_id,
                           created_at     = EXCLUDED.created_at
@@ -819,7 +976,7 @@ class GraceHubWorker:
             """
             SELECT target_user_id
             FROM admin_reply_map_v2
-            WHERE instance_id = %s AND chat_id = %s AND admin_message_id = %s
+            WHERE instance_id = $1 AND chat_id = $2 AND admin_message_id = $3
             """,
             (self.instance_id, chat_id, admin_message_id),
         )
@@ -874,7 +1031,7 @@ class GraceHubWorker:
             """
             SELECT *
             FROM tickets
-            WHERE instance_id = %s AND id = %s
+            WHERE instance_id = $1 AND id = $2
             """,
             (self.instance_id, ticket_id),
         )
@@ -898,25 +1055,30 @@ class GraceHubWorker:
             return
 
         now = datetime.now(timezone.utc)
-        set_parts = ["status = %s", "updated_at = %s"]
+        set_parts = ["status = $1", "updated_at = $2"]
         params: List[Any] = [status, now]
+        counter = 3
 
         if assigned_username is not None:
-            set_parts.append("assigned_username = %s")
+            set_parts.append(f"assigned_username = ${counter}")
             params.append(assigned_username)
+            counter += 1
         if assigned_user_id is not None:
-            set_parts.append("assigned_user_id = %s")
+            set_parts.append(f"assigned_user_id = ${counter}")
             params.append(assigned_user_id)
+            counter += 1
         if status == "closed":
-            set_parts.append("closed_at = %s")
+            set_parts.append(f"closed_at = ${counter}")
             params.append(now)
+            counter += 1
 
-        params.extend([self.instance_id, ticket_id])
+        params.append(self.instance_id)
+        params.append(ticket_id)
 
         sql = f"""
             UPDATE tickets
             SET {", ".join(set_parts)}
-            WHERE instance_id = %s AND id = %s
+            WHERE instance_id = ${counter} AND id = ${counter + 1}
         """
         await self.db.execute(sql, tuple(params))
 
@@ -1058,8 +1220,8 @@ class GraceHubWorker:
                 e,
             )
             try:
-                sent = await self.sendsafemessage(
-                    chatid=chat_id,
+                sent = await self._send_safe_message(
+                    chat_id=chat_id,
                     text=self.texts.ticket_admin_prompt,
                     reply_markup=kb,
                 )
@@ -1183,7 +1345,7 @@ class GraceHubWorker:
                 """
                 SELECT *
                 FROM tickets
-                WHERE instance_id = %s AND chat_id = %s AND username = %s
+                WHERE instance_id = $1 AND chat_id = $2 AND username = $3
                 """,
                 (self.instance_id, chat_id, username),
             )
@@ -1192,7 +1354,7 @@ class GraceHubWorker:
                 """
                 SELECT *
                 FROM tickets
-                WHERE instance_id = %s AND chat_id = %s AND user_id = %s
+                WHERE instance_id = $1 AND chat_id = $2 AND user_id = $3
                 """,
                 (self.instance_id, chat_id, user_id),
             )
@@ -1259,7 +1421,7 @@ class GraceHubWorker:
                 created_at,
                 updated_at
             )
-            VALUES (%s, %s, %s, %s, 'new', %s, %s)
+            VALUES ($1, $2, $3, $4, 'new', $5, $6)
             RETURNING id
             """,
             (self.instance_id, user_id, username, chat_id, now, now),
@@ -1277,8 +1439,8 @@ class GraceHubWorker:
             await self.db.execute(
                 """
                 UPDATE tickets
-                   SET thread_id = %s, updated_at = %s
-                 WHERE instance_id = %s AND id = %s
+                   SET thread_id = $1, updated_at = $2
+                 WHERE instance_id = $3 AND id = $4
                 """,
                 (thread_id, now, self.instance_id, ticket_id),
             )
@@ -1302,48 +1464,6 @@ class GraceHubWorker:
 
     # ====================== НОВАЯ ЛОГИКА: КЛАВА ТОЛЬКО НА ПОСЛЕДНЕМ ======================
 
-    async def _clear_ticket_keyboards_for_user(
-        self,
-        chat_id: int,
-        user_id: int,
-        exclude_message_id: int,
-    ) -> None:
-        """
-        Убирает reply_markup у всех сообщений этого пользователя в данном OpenChat,
-        кроме exclude_message_id. Использует таблицу messages, если она есть.
-        """
-        if not self.db:
-            return
-
-        try:
-            rows = await self.db.fetchall(
-                """
-                SELECT message_id
-                FROM messages
-                WHERE instance_id = %s
-                AND chat_id = %s
-                AND user_id = %s
-                AND direction = 'user_to_openchat'
-                AND message_id <> %s
-                """,
-                (self.instance_id, chat_id, user_id, exclude_message_id),
-            )
-
-        except Exception as e:
-            logger.error(f"Failed to fetch messages for clearing keyboards: {e}")
-            return
-
-        for (mid,) in rows:
-            try:
-                await self.bot.edit_message_reply_markup(
-                    chat_id=chat_id,
-                    message_id=mid,
-                    reply_markup=None,
-                )
-            except Exception:
-                # Сообщения могли быть удалены/недоступны — игнорируем
-                continue
-
     async def store_forwarded_message(self, chat_id: int, message: Message, user_id: int) -> None:
         text_content = None
         if message.text:
@@ -1357,7 +1477,7 @@ class GraceHubWorker:
                 INSERT INTO messages (
                     instance_id, chat_id, message_id, user_id, direction, content
                 )
-                VALUES (%s, %s, %s, %s, %s, %s)
+                VALUES ($1, $2, $3, $4, $5, $6)
                 """,
                 (self.instance_id, chat_id, message.message_id, user_id, "user_to_openchat", text_content),
             )
@@ -1370,6 +1490,7 @@ class GraceHubWorker:
         Отправка входящего сообщения пользователя в привязанный OpenChat (в его топик)
         с сохранением маппинга для последующих реплеев администратора.
         """
+
         # Админа в OpenChat не форвардим
         if message.from_user and await self.is_admin(message.from_user.id):
             return
@@ -1403,7 +1524,6 @@ class GraceHubWorker:
         if ticket.get("status") == "billing_blocked":
             reason = ticket.get("billing_reason")
 
-            # Выбираем тексты для пользователя и владельцев по причине
             if reason == "limit_reached":
                 user_text = getattr(
                     self.texts,
@@ -1426,7 +1546,7 @@ class GraceHubWorker:
                     "billing_owner_demo_expired_message",
                     "⏳ Демо‑период бота закончился. Новые тикеты не создаются.",
                 )
-            else:  # 'no_billing' или иное
+            else:
                 user_text = getattr(
                     self.texts,
                     "billing_user_no_plan_message",
@@ -1438,7 +1558,7 @@ class GraceHubWorker:
                     "⚠️ Для этого бота не настроен активный тариф, обращения пользователей не доходят до системы поддержки.",
                 )
 
-            # Сообщение пользователю (обезличенное про владельцев)
+            # Сообщение пользователю
             try:
                 await self._send_safe_message(
                     chat_id=message.chat.id,
@@ -1470,20 +1590,15 @@ class GraceHubWorker:
 
         thread_id = ticket.get("thread_id")
         header = username or f"user {user_id}"
-
         now = datetime.now(timezone.utc)
-
         sent: Optional[Message] = None
 
         async def _send_into_thread(thread: int) -> Message:
             if message.text:
                 body = f"{header}:\n{message.text}"
-                return await self.bot.send_message(
-                    chat_id,
-                    body,
-                    message_thread_id=thread,
-                )
-            elif message.photo:
+                return await self.bot.send_message(chat_id, body, message_thread_id=thread)
+
+            if message.photo:
                 caption = message.caption or ""
                 cap = f"{header}:\n{caption}" if caption else header
                 return await self.bot.send_photo(
@@ -1492,7 +1607,8 @@ class GraceHubWorker:
                     caption=cap,
                     message_thread_id=thread,
                 )
-            elif message.video:
+
+            if message.video:
                 caption = message.caption or ""
                 cap = f"{header}:\n{caption}" if caption else header
                 return await self.bot.send_video(
@@ -1501,7 +1617,8 @@ class GraceHubWorker:
                     caption=cap,
                     message_thread_id=thread,
                 )
-            elif message.document:
+
+            if message.document:
                 caption = message.caption or ""
                 cap = f"{header}:\n{caption}" if caption else header
                 return await self.bot.send_document(
@@ -1510,7 +1627,8 @@ class GraceHubWorker:
                     caption=cap,
                     message_thread_id=thread,
                 )
-            elif message.audio:
+
+            if message.audio:
                 caption = message.caption or ""
                 cap = f"{header}:\n{caption}" if caption else header
                 return await self.bot.send_audio(
@@ -1519,33 +1637,64 @@ class GraceHubWorker:
                     caption=cap,
                     message_thread_id=thread,
                 )
-            elif message.voice:
+
+            if message.voice:
                 return await self.bot.send_voice(
                     chat_id,
                     message.voice.file_id,
                     caption=header,
                     message_thread_id=thread,
                 )
-            elif message.sticker:
+
+            if message.sticker:
                 return await self.bot.send_sticker(
                     chat_id,
                     message.sticker.file_id,
                     message_thread_id=thread,
                 )
-            else:
-                body = f"{header}: [{message.content_type}]"
-                return await self.bot.send_message(
-                    chat_id,
-                    body,
-                    message_thread_id=thread,
-                )
+
+            body = f"{header}: [{message.content_type}]"
+            return await self.bot.send_message(chat_id, body, message_thread_id=thread)
+
+        # Rate-limit перед отправкой в OpenChat
+        if not await self.ratelimiter.can_send(chat_id=chat_id):
+            wait_for = await self.ratelimiter.wait_for_send()
+            logger.info(f"Rate limit wait for OpenChat chat {chat_id}: {wait_for}s")
+            await asyncio.sleep(wait_for)
 
         # Пытаемся отправить в текущий thread_id
         try:
             sent = await _send_into_thread(thread_id)
         except Exception as e:
             err_text = str(e).lower()
-            if "message thread not found" in err_text or "message thread not found" in getattr(
+
+            # Flood control: Too Many Requests
+            if "too many requests" in err_text or "flood control exceeded" in err_text:
+                retry_sec = 5
+                for token in err_text.split():
+                    if token.isdigit():
+                        retry_sec = int(token)
+                        break
+
+                logger.warning(
+                    "Flood control in forward_to_openchat, sleep %s sec (chat %s, ticket %s)",
+                    retry_sec,
+                    chat_id,
+                    ticket["id"],
+                )
+                await asyncio.sleep(retry_sec)
+
+                try:
+                    sent = await _send_into_thread(thread_id)
+                except Exception as e2:
+                    logger.error(
+                        "Failed to forward to OpenChat after retry for ticket %s: %s",
+                        ticket["id"],
+                        e2,
+                    )
+                    return
+
+            elif "message thread not found" in err_text or "message thread not found" in getattr(
                 getattr(e, "message", ""), "lower", lambda: ""
             )():
                 # Топик удалён — создаём новый и обновляем тикет
@@ -1555,14 +1704,16 @@ class GraceHubWorker:
                         name=self._format_ticket_title(ticket),
                     )
                     new_thread_id = ft.message_thread_id
+
                     await self.db.execute(
                         """
                         UPDATE tickets
-                           SET thread_id = %s, updated_at = %s
-                         WHERE instance_id = %s AND id = %s
+                        SET thread_id = $1, updated_at = $2
+                        WHERE instance_id = $3 AND id = $4
                         """,
                         (new_thread_id, now, self.instance_id, ticket["id"]),
                     )
+
                     ticket["thread_id"] = new_thread_id
                     thread_id = new_thread_id
 
@@ -1570,41 +1721,65 @@ class GraceHubWorker:
                 except Exception as e2:
                     logger.error(f"Failed to recreate forum topic for ticket {ticket['id']}: {e2}")
                     return
+
             else:
                 logger.error(f"Failed to forward to OpenChat: Telegram server says - {e}")
                 return
 
-        # Сохраняем связь для корректного реплея админа клиенту
+        # Сохраняем связь для корректного реплея админа клиенту + сообщения в БД
         if sent:
-            # маппинг admin_message -> user
             await self.save_reply_mapping_v2(chat_id, sent.message_id, user_id)
 
-            # сохраняем запись в messages о сообщении пользователя в OpenChat
             await self.store_forwarded_message(
                 chat_id=chat_id,
                 message=sent,
                 user_id=user_id,
             )
 
-            # сначала убираем клавиатуру со всех предыдущих сообщений этого пользователя
-            await self._clear_ticket_keyboards_for_user(
-                chat_id=chat_id,
-                user_id=user_id,
-                exclude_message_id=sent.message_id,
-            )
+            # ------------------------------------------------------------
+            # КЛАВИАТУРА: переносим НЕ чаще чем раз в 60 минут на тикет
+            #
+            # Требование: в __init__ должен быть кеш:
+            # self.ticket_keyboard_anchor: Dict[int, Dict[str, Any]] = {}
+            # где ticket_id -> {"message_id": int, "moved_at": datetime}
+            # ------------------------------------------------------------
+            move_window = timedelta(minutes=60)
+            ticket_id = ticket["id"]
 
-            # затем вешаем компактную кнопку-меню только на последнее сообщение клиента
-            await self.put_ticket_keyboard(ticket["id"], sent.message_id, compact=True)
+            anchor = getattr(self, "ticket_keyboard_anchor", None)
+            if anchor is None:
+                # На случай если ещё не добавил в __init__
+                self.ticket_keyboard_anchor = {}
+                anchor = self.ticket_keyboard_anchor
+
+            anchor_rec = anchor.get(ticket_id)
+            should_move = False
+            if not anchor_rec:
+                should_move = True
+            else:
+                moved_at = anchor_rec.get("moved_at")
+                if not moved_at or (now - moved_at) >= move_window:
+                    should_move = True
+
+            if should_move:
+                # затем вешаем компактную кнопку-меню на "якорное" (текущее) сообщение
+                await self.put_ticket_keyboard(ticket_id, sent.message_id, compact=True)
+
+                # запоминаем якорь
+                anchor[ticket_id] = {"message_id": sent.message_id, "moved_at": now}
+            else:
+                # не переносим, чтобы не биться в editMessageReplyMarkup при флуде
+                pass
 
         # Обновляем тайминги тикета
         try:
             await self.db.execute(
                 """
                 UPDATE tickets
-                   SET last_user_msg_at = %s,
-                       updated_at       = %s
-                 WHERE instance_id = %s
-                   AND id          = %s
+                SET last_user_msg_at = $1,
+                    updated_at       = $2
+                WHERE instance_id = $3
+                AND id          = $4
                 """,
                 (now, now, self.instance_id, ticket["id"]),
             )
@@ -1734,7 +1909,7 @@ class GraceHubWorker:
                     openchat_enabled,
                     updated_at
                 )
-                VALUES (%s, NULL, NULL, %s, NOW())
+                VALUES ($1, NULL, NULL, $2, NOW())
                 ON CONFLICT (instance_id) DO UPDATE
                 SET openchat_username     = NULL,
                     general_panel_chat_id = NULL,
@@ -1824,7 +1999,7 @@ class GraceHubWorker:
                     openchat_enabled,
                     updated_at
                 )
-                VALUES (%s, %s, %s, %s, NOW())
+                VALUES ($1, $2, $3, $4, NOW())
                 ON CONFLICT (instance_id) DO UPDATE
                   SET openchat_username     = EXCLUDED.openchat_username,
                       general_panel_chat_id = EXCLUDED.general_panel_chat_id,
@@ -1901,8 +2076,8 @@ class GraceHubWorker:
                         return
                     # сообщение протухло → шлём новое
                     try:
-                        await self.sendsafemessage(
-                            chatid=cb.message.chat.id,
+                        await self._send_safe_message(
+                            chat_id=cb.message.chat.id,
                             text=self.texts.ticket_admin_prompt,
                             reply_markup=kb,
                         )
@@ -1971,52 +2146,24 @@ class GraceHubWorker:
             await cb.answer(self.texts.ticket_taken_self)
             return
 
-        # 2) "Назначить" — показать список других участников (админов) чата
+        # 2) "Назначить" — показать список операторов из БД
         if action == "assign":
-            members = await self.bot.get_chat_administrators(ticket["chat_id"])
-            rows: List[List[InlineKeyboardButton]] = []
-
-            for m in members:
-                if m.user.is_bot or m.user.id == user.id:
-                    continue
-                label = (
-                    f"@{m.user.username}"
-                    if m.user.username
-                    else m.user.full_name
-                )
-                rows.append(
-                    [
-                        InlineKeyboardButton(
-                            text=label,
-                            callback_data=f"ticket:assign_to:{ticket_id}:{m.user.id}",
-                        )
-                    ]
-                )
-            if not rows:
+            # строим клавиатуру на основе таблицы operators
+            kb = await self.get_operators_keyboard(ticket_id, page=0)
+            if not kb.inline_keyboard:
                 await cb.answer(self.texts.ticket_no_assignees, show_alert=True)
                 return
 
-            rows.append(
-                [
-                    InlineKeyboardButton(
-                        text=self.texts.ticket_cancel,
-                        callback_data=f"ticket:cancel_assign:{ticket_id}",
-                    )
-                ]
-            )
-
             try:
-                await message.edit_reply_markup(
-                    reply_markup=InlineKeyboardMarkup(inline_keyboard=rows)
-                )
+                await message.edit_reply_markup(reply_markup=kb)
             except TelegramBadRequest as e:
                 err = str(e).lower()
                 if "message is not modified" not in err:
                     try:
-                        await self.sendsafemessage(
-                            chatid=message.chat.id,
+                        await self._send_safe_message(
+                            chat_id=message.chat.id,
                             text=self.texts.ticket_admin_prompt,
-                            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+                            reply_markup=kb,
                         )
                     except Exception as e2:
                         logger.error(
@@ -2035,8 +2182,15 @@ class GraceHubWorker:
                 await cb.answer()
                 return
 
-            member = await self.bot.get_chat_member(ticket["chat_id"], assignee_id)
-            target_username = member.user.username or f"id{member.user.id}"
+            # раньше тут был get_chat_member, теперь берём только username/id для записи
+            target_username = f"id{assignee_id}"
+            try:
+                member = await self.bot.get_chat_member(ticket["chat_id"], assignee_id)
+                if member and member.user:
+                    target_username = member.user.username or f"id{member.user.id}"
+            except Exception:
+                # если не удалось получить из TG — оставляем id
+                pass
 
             current_status = ticket.get("status") or "new"
             new_status = current_status
@@ -2398,7 +2552,7 @@ class GraceHubWorker:
                 """
                 SELECT DISTINCT user_id, username, created_at
                 FROM tickets
-                WHERE instance_id = %s
+                WHERE instance_id = $1
                 ORDER BY created_at ASC
                 """,
                 (self.instance_id,),
@@ -2624,7 +2778,7 @@ class GraceHubWorker:
                 """
                 SELECT DISTINCT user_id
                 FROM tickets
-                WHERE instance_id = %s AND username = %s
+                WHERE instance_id = $1 AND username = $2
                 ORDER BY created_at DESC
                 LIMIT 1
                 """,
@@ -2725,10 +2879,25 @@ class GraceHubWorker:
             return
 
         # Антифлуд: сообщения в минуту от пользователя
-        if self._is_user_flooding(user_id):
+        if await self._is_user_flooding(user_id):
             await self._send_safe_message(
                 chat_id=message.chat.id,
                 text=self.texts.too_many_messages,
+            )
+            return
+
+        # 🔹 СЕССИОННЫЙ ФЛУД (>=3 подряд) — честно говорим, что НЕ отправили
+        user_msgs = self.user_session_messages.get(user_id, 0)
+        SESSION_FLOOD_LIMIT = 3
+        if user_msgs >= SESSION_FLOOD_LIMIT:
+            logger.warning("User %s session flood (%s msgs)", user_id, user_msgs)
+            await self._send_safe_message(
+                chat_id=message.chat.id,
+                text=(
+                    "⚠️ Слишком много сообщений подряд.\n"
+                    "Это сообщение не отправлено оператору, чтобы не засорять очередь.\n\n"
+                    "Пожалуйста, дождитесь ответа оператора."
+                ),
             )
             return
 
@@ -2737,9 +2906,8 @@ class GraceHubWorker:
             wait_for = await self.ratelimiter.wait_for_send()
             await asyncio.sleep(wait_for)
 
-        # Если это админ
+        # Если это админ — показываем админ-панель
         if await self.is_admin(user_id):
-            # Показываем админ-панель
             await self._send_safe_message(
                 chat_id=message.chat.id,
                 text=self.texts.admin_panel_title,
@@ -2747,39 +2915,86 @@ class GraceHubWorker:
             )
             return
 
-        # Валидация размеров вложений
-        too_big = False
+        # -------- Валидация размеров вложений (исправлено) --------
         max_bytes = self.max_file_bytes  # задаётся в __init__ из settings.WORKER_MAX_FILE_MB
+        too_big = False
+
+        async def _check_by_file_id(file_id: str) -> bool:
+            """
+            True => файл проходит лимит
+            False => файл больше лимита
+            """
+            try:
+                return await self.check_file_size(file_id)
+            except Exception as e:
+                # Если Telegram API временно не даёт размер — лучше НЕ блокировать,
+                # иначе возможны ложные отказы. При желании можно сделать наоборот.
+                logger.warning("check_file_size failed for file_id=%s: %s", file_id, e)
+                return True
 
         # Фото (берём максимально крупное)
         if message.photo:
             photo = message.photo[-1]
-            if photo.file_size and photo.file_size > max_bytes:
-                too_big = True
+            if photo.file_size is not None:
+                if photo.file_size > max_bytes:
+                    too_big = True
+            else:
+                ok = await _check_by_file_id(photo.file_id)
+                too_big = not ok
 
         # Документы
-        if message.document and message.document.file_size and message.document.file_size > max_bytes:
-            too_big = True
+        if not too_big and message.document:
+            if message.document.file_size is not None:
+                if message.document.file_size > max_bytes:
+                    too_big = True
+            else:
+                ok = await _check_by_file_id(message.document.file_id)
+                too_big = not ok
 
         # Видео
-        if message.video and message.video.file_size and message.video.file_size > max_bytes:
-            too_big = True
+        if not too_big and message.video:
+            if message.video.file_size is not None:
+                if message.video.file_size > max_bytes:
+                    too_big = True
+            else:
+                ok = await _check_by_file_id(message.video.file_id)
+                too_big = not ok
 
         # Аудио
-        if message.audio and message.audio.file_size and message.audio.file_size > max_bytes:
-            too_big = True
+        if not too_big and message.audio:
+            if message.audio.file_size is not None:
+                if message.audio.file_size > max_bytes:
+                    too_big = True
+            else:
+                ok = await _check_by_file_id(message.audio.file_id)
+                too_big = not ok
 
         # Голосовые
-        if message.voice and message.voice.file_size and message.voice.file_size > max_bytes:
-            too_big = True
+        if not too_big and message.voice:
+            if message.voice.file_size is not None:
+                if message.voice.file_size > max_bytes:
+                    too_big = True
+            else:
+                ok = await _check_by_file_id(message.voice.file_id)
+                too_big = not ok
 
         # Видео-заметки
-        if message.video_note and message.video_note.file_size and message.video_note.file_size > max_bytes:
-            too_big = True
+        if not too_big and message.video_note:
+            if message.video_note.file_size is not None:
+                if message.video_note.file_size > max_bytes:
+                    too_big = True
+            else:
+                ok = await _check_by_file_id(message.video_note.file_id)
+                too_big = not ok
 
         # Стикеры (если хочешь ограничивать и их)
-        if message.sticker and message.sticker.file_size and message.sticker.file_size > max_bytes:
-            too_big = True
+        if not too_big and message.sticker:
+            if message.sticker.file_size is not None:
+                if message.sticker.file_size > max_bytes:
+                    too_big = True
+            else:
+                ok = await _check_by_file_id(message.sticker.file_id)
+                too_big = not ok
 
         if too_big:
             logger.warning(
@@ -2790,9 +3005,13 @@ class GraceHubWorker:
             )
             await self._send_safe_message(
                 chat_id=message.chat.id,
-                text=self.texts.attachment_too_big,  # строка должна быть в языковых файлах
+                text=(
+                    "❌ Вложение слишком большое.\n"
+                    "Пожалуйста, отправьте файл меньшего размера."
+                ),
             )
             return
+        # ---------------------------------------------------------
 
         oc = await self.get_openchat_settings()
 
@@ -2800,21 +3019,15 @@ class GraceHubWorker:
         if oc["enabled"] and oc["chat_id"]:
             try:
                 await self.forward_to_openchat(message)
+
+                # Обновляем счётчик сессии
+                self.user_session_messages[user_id] = user_msgs + 1
+                if self.user_session_messages[user_id] > 10:
+                    self.user_session_messages[user_id] = 0
+
             except Exception as e:
-                logger.error(f"Failed to forward to OpenChat: {e}")
-            # Можно дополнительно прислать автоответ пользователю
-            if await self.get_setting("autoreply_enabled") == "True":
-                text = await self.get_setting("autoreply_text") or ""
-                if text:
-                    await self._send_safe_message(
-                        chat_id=message.chat.id,
-                        text=text,
-                    )
-            else:
-                await self._send_safe_message(
-                    chat_id=message.chat.id,
-                    text=self.texts.message_forwarded_to_support,
-                )
+                logger.error("Failed to forward to OpenChat: %s", e)
+
             return
 
         # Если OpenChat не настроен — информируем пользователя
@@ -2825,7 +3038,6 @@ class GraceHubWorker:
 
 
     # ====================== OPENCHAT: СОБЩЕНИЯ И РЕПЛАИ ======================
-
     async def handle_openchat_message(self, message: Message) -> None:
         """
         Обработка сообщений в чате OpenChat (супергруппа с темами).
@@ -2843,54 +3055,138 @@ class GraceHubWorker:
         if message.from_user and message.from_user.is_bot:
             return
 
-        # Валидация размеров вложений от админов/операторов в OpenChat
-        too_big = False
+        # 🔹 Трекинг оператора по активности в OpenChat
+        if message.from_user:
+            await self.db.track_operator_activity(
+                self.instance_id,
+                message.from_user.id,
+                message.from_user.username or "",
+            )
+
+        # -------- Валидация размеров вложений от админов/операторов в OpenChat (исправлено) --------
         max_bytes = self.max_file_bytes  # задаётся в __init__ из settings.WORKER_MAX_FILE_MB
+        too_big = False
+
+        async def _check_by_file_id(file_id: str) -> bool:
+            """
+            True => файл проходит лимит
+            False => файл больше лимита
+            """
+            try:
+                return await self.check_file_size(file_id)
+            except Exception as e:
+                # При сбоях Telegram API лучше не блокировать (иначе будут ложные отказы).
+                logger.warning("check_file_size failed for file_id=%s: %s", file_id, e)
+                return True
 
         # Фото
         if message.photo:
             photo = message.photo[-1]
-            if photo.file_size and photo.file_size > max_bytes:
-                too_big = True
+            if photo.file_size is not None:
+                if photo.file_size > max_bytes:
+                    too_big = True
+            else:
+                ok = await _check_by_file_id(photo.file_id)
+                too_big = not ok
 
         # Документы
-        if message.document and message.document.file_size and message.document.file_size > max_bytes:
-            too_big = True
+        if not too_big and message.document:
+            if message.document.file_size is not None:
+                if message.document.file_size > max_bytes:
+                    too_big = True
+            else:
+                ok = await _check_by_file_id(message.document.file_id)
+                too_big = not ok
 
         # Видео
-        if message.video and message.video.file_size and message.video.file_size > max_bytes:
-            too_big = True
+        if not too_big and message.video:
+            if message.video.file_size is not None:
+                if message.video.file_size > max_bytes:
+                    too_big = True
+            else:
+                ok = await _check_by_file_id(message.video.file_id)
+                too_big = not ok
 
         # Аудио
-        if message.audio and message.audio.file_size and message.audio.file_size > max_bytes:
-            too_big = True
+        if not too_big and message.audio:
+            if message.audio.file_size is not None:
+                if message.audio.file_size > max_bytes:
+                    too_big = True
+            else:
+                ok = await _check_by_file_id(message.audio.file_id)
+                too_big = not ok
 
         # Голосовые
-        if message.voice and message.voice.file_size and message.voice.file_size > max_bytes:
-            too_big = True
+        if not too_big and message.voice:
+            if message.voice.file_size is not None:
+                if message.voice.file_size > max_bytes:
+                    too_big = True
+            else:
+                ok = await _check_by_file_id(message.voice.file_id)
+                too_big = not ok
 
         # Видео-заметки
-        if message.video_note and message.video_note.file_size and message.video_note.file_size > max_bytes:
-            too_big = True
+        if not too_big and message.video_note:
+            if message.video_note.file_size is not None:
+                if message.video_note.file_size > max_bytes:
+                    too_big = True
+            else:
+                ok = await _check_by_file_id(message.video_note.file_id)
+                too_big = not ok
 
         # Стикеры (если тоже ограничиваем)
-        if message.sticker and message.sticker.file_size and message.sticker.file_size > max_bytes:
-            too_big = True
+        if not too_big and message.sticker:
+            if message.sticker.file_size is not None:
+                if message.sticker.file_size > max_bytes:
+                    too_big = True
+            else:
+                ok = await _check_by_file_id(message.sticker.file_id)
+                too_big = not ok
 
         if too_big:
+            operator_id = message.from_user.id if message.from_user else None
             logger.warning(
                 "Attachment too large from openchat user %s in chat %s (limit %s bytes)",
-                message.from_user.id if message.from_user else None,
+                operator_id,
                 message.chat.id,
                 max_bytes,
             )
-            # В OpenChat обычно отвечаем только оператору, без текста пользователю
-            # Можно отправить сервисное сообщение в этот же топик
-            await self._send_safe_message(
-                chat_id=message.chat.id,
-                text=self.texts.attachment_too_big,
-            )
+
+            # 1) Определяем целевого пользователя по reply_to_message (маппинг admin_message -> user)
+            target_user_id = None
+            try:
+                target_user_id = await self.get_target_user_by_admin_message(
+                    chat_id=message.chat.id,
+                    admin_message_id=message.reply_to_message.message_id,
+                )
+            except Exception as e:
+                logger.error("Failed to resolve target user for big attachment: %s", e)
+
+            # 2) Пишем пользователю в ЛС
+            if target_user_id:
+                try:
+                    await self._send_safe_message(
+                        chat_id=target_user_id,
+                        text=(
+                            "❌ Файл слишком большой и не может быть доставлен в поддержку.\n"
+                            "Пожалуйста, отправьте файл меньшего размера."
+                        ),
+                    )
+                except Exception as e:
+                    logger.error("Failed to notify user %s about big attachment: %s", target_user_id, e)
+
+            # 3) (Опционально) сообщаем в топик, чтобы оператор видел причину
+            try:
+                await self._send_safe_message(
+                    chat_id=message.chat.id,
+                    text="⚠️ Вложение слишком большое и не было доставлено пользователю.",
+                    message_thread_id=getattr(message, "message_thread_id", None),
+                )
+            except Exception as e:
+                logger.error("Failed to notify openchat topic about big attachment: %s", e)
+
             return
+        # ------------------------------------------------------------------------------------------
 
         await self.handle_openchat_reply(message, message.reply_to_message, oc)
 
@@ -2990,10 +3286,10 @@ class GraceHubWorker:
             await self.db.execute(
                 """
                 UPDATE tickets
-                   SET last_admin_reply_at = %s,
-                       updated_at          = %s
-                 WHERE instance_id = %s
-                   AND id          = %s
+                   SET last_admin_reply_at = $1,
+                       updated_at          = $2
+                 WHERE instance_id = $3
+                   AND id          = $4
                 """,
                 (now, now, self.instance_id, ticket["id"]),
             )
@@ -3004,38 +3300,10 @@ class GraceHubWorker:
             logger.error(f"Failed to update ticket after admin reply: {e}")
 
 
-    # ====================== АВТО-ЗАКРЫТИЕ ТИКЕТОВ ======================
-
-    async def auto_close_tickets_loop(self) -> None:
-        hours = int(getattr(settings, "AUTOCLOSE_HOURS", 24))
-        while not self.shutdown_event.is_set():
-            try:
-                cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
-                rows = await self.db.fetchall(
-                    """
-                    SELECT id
-                    FROM tickets
-                    WHERE instance_id = %s
-                      AND status IN ('inprogress', 'answered')
-                      AND last_admin_reply_at IS NOT NULL
-                      AND (
-                          last_user_msg_at IS NULL
-                          OR last_user_msg_at < %s
-                      )
-                    """,
-                    (self.instance_id, cutoff),
-                )
-                if rows:
-                    for ticket_id, in rows:
-                        await self.set_ticket_status(ticket_id, "closed")
-                    logger.info(f"Auto-closed {len(rows)} tickets")
-            except Exception as e:
-                logger.error(f"Auto-close error: {e}")
-            await asyncio.sleep(3600)
-
-
     # ====================== РЕГИСТРАЦИЯ ХЭНДЛЕРОВ ======================
     def register_handlers(self) -> None:
+        logger.info(f"Registering handlers for worker instance {self.instance_id}")
+
         # Сервиска про изменение темы
         self.dp.message.register(
             self.handle_forum_service_message,
@@ -3060,11 +3328,14 @@ class GraceHubWorker:
             CommandStart(),
             F.chat.type == ChatType.PRIVATE,
         )
+        logger.debug("Registered /start handler for private chats")
+
         self.dp.message.register(
             self.cmd_admin,
             Command("admin"),
             F.chat.type == ChatType.PRIVATE,
         )
+
         self.dp.message.register(
             self.cmd_openchat_off,
             Command("openchat_off"),
@@ -3125,8 +3396,11 @@ class GraceHubWorker:
             self.handle_private_message,
             F.chat.type == ChatType.PRIVATE,
         )
+        logger.debug("Registered general private message handler")
+
         # Общий для ошибок
         self.dp.errors.register(self.global_error_handler)
+        logger.info(f"All handlers registered successfully for worker {self.instance_id}")
 
     # ====================== ЗАПУСК / ИНТЕГРАЦИЯ ======================
 
@@ -3135,56 +3409,16 @@ class GraceHubWorker:
         Доп. метод, если вдруг захочется кормить воркер апдейтами вручную.
         В polling-режиме, по сути, не нужен, но оставлен для совместимости.
         """
-        await self.dp.feed_update(self.bot, update)
-
-    async def run(self) -> None:
-        """
-        Старт воркера: инициализация БД, запуск автозакрытия и polling.
-        """
-        await self.init_database()
-
-        logger.info(f"Worker started for instance {self.instance_id}")
-
-        asyncio.create_task(self.auto_close_tickets_loop())
+        logger.info(f"Worker {self.instance_id} received update id={update.update_id}")
+        if update.message:
+            logger.info(f"Message from user {update.message.from_user.id} ({update.message.from_user.username or 'no username'}): {update.message.text or '[non-text message]'}")
+        elif update.callback_query:
+            logger.info(f"Callback query from user {update.callback_query.from_user.id}: data={update.callback_query.data}")
+        else:
+            logger.info(f"Other update type: {update}")
 
         try:
-            await self.bot.delete_webhook(drop_pending_updates=True)
+            await self.dp.feed_update(self.bot, update)
+            logger.info(f"Update {update.update_id} successfully fed to dispatcher for instance {self.instance_id}")
         except Exception as e:
-            logger.warning(f"Failed to delete webhook: {e}")
-
-        try:
-            await self.dp.start_polling(self.bot)
-        finally:
-            self.shutdown_event.set()
-            await self.bot.session.close()
-            if self.db:
-                self.db.close()
-
-
-async def main() -> None:
-    setup_logging()
-
-    instance_id = getattr(settings, "WORKER_INSTANCE_ID", None) or os.getenv("WORKERINSTANCEID")
-    token = getattr(settings, "WORKER_TOKEN", None) or os.getenv("WORKERTOKEN")
-
-    if not instance_id or not token:
-        logger.error("WORKER_INSTANCE_ID and WORKER_TOKEN must be set")
-        return
-
-    db = MasterDatabase()
-    # ВАЖНО: инициализируем соединение и схемы
-    await db.init()
-
-    worker = GraceHubWorker(instance_id=instance_id, token=token, db=db)
-
-    try:
-        await worker.run()
-    except asyncio.CancelledError:
-        logger.info("Worker cancelled, shutting down...")
-    except Exception as e:
-        logger.exception(f"Worker crashed: {e}")
-
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
+            logger.error(f"Error feeding update {update.update_id} to dispatcher for instance {self.instance_id}: {e}", exc_info=True)

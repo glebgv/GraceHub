@@ -60,8 +60,36 @@ class DummyMiniAppDB(DummyDB):
     Фейковая реализация методов MiniAppDB, которые используются в create_miniapp_app.
     """
 
+    def __init__(self):
+        # В miniapp_api.py эти настройки читаются через:
+        # await db.get_platform_setting("miniapp_public", default=None)
+        # затем парсятся singleTenant/superadmins и флаги payments.enabled.* [file:21]
+        self._platform_settings = {
+            "miniapp_public": {
+                # Чтобы /api/auth/telegram не начал отбрасывать пользователя по allowlist [file:21]
+                "singleTenant": {
+                    "enabled": False,
+                    "allowedUserIds": [],
+                },
+                # Чтобы парсер superadmins не падал и просто вернул пустой set [file:21]
+                "superadmins": [],
+                # Чтобы /api/instances/{id}/billing/create_invoice прошёл assert_payment_method_enabled [file:21]
+                "payments": {
+                    "enabled": {
+                        "telegramStars": True,
+                        "ton": False,
+                        "yookassa": False,
+                        "stripe": False,
+                    }
+                },
+            }
+        }
+
+    async def get_platform_setting(self, key: str, default=None):
+        return self._platform_settings.get(key, default)
+
     async def check_access(self, instance_id: str, user_id: int, required_role=None) -> bool:
-        # Для smoke-теста — считаем, что доступ есть (конкретная роль/инстанс уже проверяется реальной логикой). [file:4]
+        # Для smoke-теста — считаем, что доступ есть (конкретная роль/инстанс уже проверяется реальной логикой). [file:21]
         return True
 
     async def get_billing_product_by_plan_code(self, plan_code: str):

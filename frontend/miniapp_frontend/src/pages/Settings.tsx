@@ -1,8 +1,9 @@
+// src/pages/Settings.tsx
 import React, { useEffect, useState } from 'react';
-import { apiClient } from '../api/client';
-import { useTranslation } from 'react-i18next';
 
-type LangCode = 'ru' | 'en' | 'es' | 'hi' | 'zh';
+import { apiClient } from '../api/client';
+
+import { useTranslation } from 'react-i18next';
 
 interface SettingsProps {
   instanceId: string;
@@ -16,14 +17,13 @@ const Settings: React.FC<SettingsProps> = ({ instanceId }) => {
   const [success, setSuccess] = useState<string | null>(null);
 
   const [autoCloseHours, setAutoCloseHours] = useState(12);
+
   const [greeting, setGreeting] = useState('');
   const [defaultAnswer, setDefaultAnswer] = useState('');
 
   const [autoReplyEnabled, setAutoReplyEnabled] = useState(false);
   const [openChatEnabled, setOpenChatEnabled] = useState(false);
   const [privacyEnabled, setPrivacyEnabled] = useState(false);
-
-  const [language, setLanguage] = useState<LangCode>('ru');
 
   const [dirty, setDirty] = useState(false);
 
@@ -40,20 +40,20 @@ const Settings: React.FC<SettingsProps> = ({ instanceId }) => {
         if (isCancelled) return;
 
         setAutoCloseHours(data.autoclose_hours ?? 12);
+
         setGreeting(data.autoreply?.greeting ?? '');
         setDefaultAnswer(data.autoreply?.defaultanswer ?? '');
+
         setAutoReplyEnabled(!!data.autoreply?.enabled);
         setOpenChatEnabled(!!data.openchatenabled);
         setPrivacyEnabled(!!data.privacymodeenabled);
 
-        const lang: LangCode = (data.language as LangCode) || 'ru';
-        setLanguage(lang);
-        // язык переключается централизованно в App, здесь не трогаем i18n
-
+        // язык больше не редактируем на этой странице
         setDirty(false);
       } catch (err: any) {
         if (isCancelled) return;
         setError(err.message);
+        // eslint-disable-next-line no-console
         console.error('Ошибка загрузки настроек:', err);
       } finally {
         if (isCancelled) return;
@@ -68,14 +68,9 @@ const Settings: React.FC<SettingsProps> = ({ instanceId }) => {
     };
   }, [instanceId]);
 
-  const handleLanguageSelect = (lang: LangCode) => {
-    setLanguage(lang);
-    // не меняем i18n напрямую, дождёмся сохранения и повторной загрузки настроек в App
-    setDirty(true);
-  };
-
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
+
     try {
       setError(null);
       setSuccess(null);
@@ -89,7 +84,7 @@ const Settings: React.FC<SettingsProps> = ({ instanceId }) => {
         },
         openchatenabled: openChatEnabled,
         privacymodeenabled: privacyEnabled,
-        language: language,
+        // language intentionally removed (moved to InstancesList)
       });
 
       setSuccess(t('settings.save_success'));
@@ -104,15 +99,15 @@ const Settings: React.FC<SettingsProps> = ({ instanceId }) => {
     return (
       <div style={{ padding: '12px' }}>
         <div className="card" style={{ textAlign: 'center' }}>
-          <div className="loading-spinner" style={{ margin: '0 auto' }}></div>
-          <p>{t('settings.loading')}</p>
+          <div className="loading-spinner" style={{ margin: '0 auto' }} />
+          <div style={{ paddingTop: 8 }}>{t('settings.loading')}</div>
         </div>
       </div>
     );
   }
 
   return (
-    <div style={{ padding: '12px', paddingBottom: '72px' }}>
+    <div style={{ padding: '12px', paddingBottom: 72 }}>
       <form onSubmit={handleSave}>
         <div className="card">
           <h2 style={{ margin: 0 }}>⚙️ {t('settings.title')}</h2>
@@ -167,12 +162,12 @@ const Settings: React.FC<SettingsProps> = ({ instanceId }) => {
         )}
 
         {/* Приветствие */}
-        <div className="card" style={{ marginTop: '12px' }}>
-          <h3 style={{ margin: '0 0 12px 0', fontSize: '14px' }}>
-            👋 {t('settings.greeting_title')}
-          </h3>
+        <div className="card" style={{ marginTop: 12 }}>
+          <h3 style={{ margin: '0 0 12px 0', fontSize: 14 }}>👋 {t('settings.greeting_title')}</h3>
+
           <div className="form-group">
             <label className="form-label">{t('settings.greeting_label')}</label>
+
             <textarea
               className="form-textarea"
               value={greeting}
@@ -194,21 +189,17 @@ const Settings: React.FC<SettingsProps> = ({ instanceId }) => {
         </div>
 
         {/* Автоответ */}
-        <div className="card" style={{ marginTop: '12px' }}>
-          <h3 style={{ margin: '0 0 12px 0', fontSize: '14px' }}>
-            💬 {t('settings.autoreply_title')}
-          </h3>
+        <div className="card" style={{ marginTop: 12 }}>
+          <h3 style={{ margin: '0 0 12px 0', fontSize: 14 }}>💬 {t('settings.autoreply_title')}</h3>
+
           <div
             className="form-group"
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-            }}
+            style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
           >
             <label className="form-label" style={{ marginBottom: 0 }}>
               {t('settings.autoreply_enabled_label')}
             </label>
+
             <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <input
                 type="checkbox"
@@ -218,17 +209,13 @@ const Settings: React.FC<SettingsProps> = ({ instanceId }) => {
                   setDirty(true);
                 }}
               />
-              <span>
-                {autoReplyEnabled
-                  ? t('settings.toggle_on')
-                  : t('settings.toggle_off')}
-              </span>
+              <span>{autoReplyEnabled ? t('settings.toggle_on') : t('settings.toggle_off')}</span>
             </label>
           </div>
-          <div className="form-group" style={{ marginTop: '8px' }}>
-            <label className="form-label">
-              {t('settings.autoreply_default_label')}
-            </label>
+
+          <div className="form-group" style={{ marginTop: 8 }}>
+            <label className="form-label">{t('settings.autoreply_default_label')}</label>
+
             <textarea
               className="form-textarea"
               value={defaultAnswer}
@@ -250,19 +237,17 @@ const Settings: React.FC<SettingsProps> = ({ instanceId }) => {
         </div>
 
         {/* Автоматическое закрытие */}
-        <div className="card" style={{ marginTop: '12px' }}>
-          <h3 style={{ margin: '0 0 12px 0', fontSize: '14px' }}>
-            ⏰ {t('settings.autoclose_title')}
-          </h3>
+        <div className="card" style={{ marginTop: 12 }}>
+          <h3 style={{ margin: '0 0 12px 0', fontSize: 14 }}>⏰ {t('settings.autoclose_title')}</h3>
+
           <div className="form-group">
-            <label className="form-label">
-              {t('settings.autoclose_label')}
-            </label>
+            <label className="form-label">{t('settings.autoclose_label')}</label>
+
             <input
               className="form-input"
               type="number"
-              min="1"
-              max="168"
+              min={1}
+              max={168}
               value={autoCloseHours}
               onChange={(e) => {
                 const v = parseInt(e.target.value, 10);
@@ -270,10 +255,11 @@ const Settings: React.FC<SettingsProps> = ({ instanceId }) => {
                 setDirty(true);
               }}
             />
+
             <small
               style={{
                 color: 'var(--tg-color-text-secondary)',
-                marginTop: '4px',
+                marginTop: 4,
                 display: 'block',
               }}
             >
@@ -283,31 +269,22 @@ const Settings: React.FC<SettingsProps> = ({ instanceId }) => {
         </div>
 
         {/* Privacy Mode */}
-        <div className="card" style={{ marginTop: '12px' }}>
-          <h3 style={{ margin: '0 0 12px 0', fontSize: '14px' }}>
-            🔒 {t('settings.privacy_title')}
-          </h3>
+        <div className="card" style={{ marginTop: 12 }}>
+          <h3 style={{ margin: '0 0 12px 0', fontSize: 14 }}>🔒 {t('settings.privacy_title')}</h3>
+
           <div
             className="form-group"
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-            }}
+            style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
           >
             <div>
-              <label className="form-label" style={{ marginBottom: '4px' }}>
+              <label className="form-label" style={{ marginBottom: 4 }}>
                 {t('settings.privacy_label')}
               </label>
-              <small
-                style={{
-                  color: 'var(--tg-color-text-secondary)',
-                  display: 'block',
-                }}
-              >
+              <small style={{ color: 'var(--tg-color-text-secondary)', display: 'block' }}>
                 {t('settings.privacy_hint')}
               </small>
             </div>
+
             <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <input
                 type="checkbox"
@@ -317,45 +294,42 @@ const Settings: React.FC<SettingsProps> = ({ instanceId }) => {
                   setDirty(true);
                 }}
               />
-              <span>
-                {privacyEnabled
-                  ? t('settings.toggle_on')
-                  : t('settings.toggle_off')}
-              </span>
+              <span>{privacyEnabled ? t('settings.toggle_on') : t('settings.toggle_off')}</span>
             </label>
           </div>
         </div>
 
-        {/* Язык интерфейса */}
-        <div className="card" style={{ marginTop: '12px' }}>
-          <h3 style={{ margin: '0 0 12px 0', fontSize: '14px' }}>
-            🌐 {t('settings.language_title')}
-          </h3>
-          <div className="form-group">
-            <label className="form-label">
-              {t('settings.language_label')}
+        {/* Open Chat */}
+        <div className="card" style={{ marginTop: 12 }}>
+          <h3 style={{ margin: '0 0 12px 0', fontSize: 14 }}>💬 Open Chat</h3>
+
+          <div
+            className="form-group"
+            style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
+          >
+            <label className="form-label" style={{ marginBottom: 0 }}>
+              Open Chat
             </label>
-            <select
-              className="form-select"
-              value={language}
-              onChange={(e) => handleLanguageSelect(e.target.value as LangCode)}
-            >
-              <option value="ru">{t('settings.language_ru')}</option>
-              <option value="en">{t('settings.language_en')}</option>
-              <option value="es">{t('settings.language_es')}</option>
-              <option value="hi">{t('settings.language_hi')}</option>
-              <option value="zh">{t('settings.language_zh')}</option>
-            </select>
-            <small
-              style={{
-                color: 'var(--tg-color-text-secondary)',
-                marginTop: '4px',
-                display: 'block',
-              }}
-            >
-              {t('settings.language_hint')}
-            </small>
+
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <input
+                type="checkbox"
+                checked={openChatEnabled}
+                onChange={(e) => {
+                  setOpenChatEnabled(e.target.checked);
+                  setDirty(true);
+                }}
+              />
+              <span>{openChatEnabled ? t('settings.toggle_on') : t('settings.toggle_off')}</span>
+            </label>
           </div>
+        </div>
+
+        {/* обычная кнопка сохранения (если не нужна липкая) */}
+        <div className="card" style={{ marginTop: 12 }}>
+          <button type="submit" className="btn btn-primary btn-block">
+            {t('settings.save')}
+          </button>
         </div>
       </form>
     </div>

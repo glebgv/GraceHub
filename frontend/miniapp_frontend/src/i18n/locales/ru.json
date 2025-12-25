@@ -3,11 +3,11 @@
     "loading_app": "Загрузка",
     "title": "GraceHub Platform",
     "masterBot": "Master Bot",
-    "footerBrand": "Работает на GraceHub 1.1a",
+    "footerBrand": "Работает на GraceHub 0.1.0a",
     "loading": "Загрузка приложения...",
-    "error_open_from_telegram": "Откройте mini app через Telegram",
+    "open_from_telegram": "Ошибка: Откройте mini app через Telegram или попробуйте позже",
     "error_owner_only": "Эта панель доступна только владельцу бота. Откройте мини‑аппу из аккаунта администратора.",
-    "error_hint_open_from_bot": "Откройте mini app непосредственно из Telegram (@bot_name → кнопка menu)",
+    "open_from_telegram_hint": "Откройте mini app непосредственно из Telegram",
     "first_launch_prompt": "Вставьте токен бота из @BotFather:",
     "first_launch_create_error_fallback": "Не удалось создать бота. Проверьте токен и права доступа.",
     "footer_text": "для вашей поддержки",
@@ -19,7 +19,7 @@
     "nav_tickets": "Тикеты",
     "nav_operators": "Операторы",
     "nav_settings": "Настройки",
-    "tariff_private_mode": "Личный режим",
+    "tariff_private_mode": "Личный",
     "tariff_label": "Тариф"
   },
   "bindHelp": {
@@ -101,7 +101,8 @@
     "payment_success_title": "Оплата успешна",
     "payment_success_body": "Тариф {{name}} на {{months}} мес. успешно оплачен.",
     "payment_success_ok": "Ок",
-    "payment_failed": "Не удалось подтвердить оплату. Попробуйте ещё раз."
+    "payment_failed": "Не удалось подтвердить оплату. Попробуйте ещё раз.",
+    "payments_disabled_by_admin": "Методы оплаты отключены Суперадминистратором."
   },
   "firstLaunch": {
     "welcome": "Добро пожаловать в платформу управления ботами GraceHub!",
@@ -201,12 +202,43 @@
     "language_en": "Английский",
     "language_es": "Испанский",
     "language_hi": "Хинди",
-    "language_zh": "Китайский (Мандарин)",
+    "language_zh": "Китайский",
     "toggle_on": "Включен",
-    "toggle_off": "Выключен"
+    "toggle_off": "Выключен",
+    "restart_required_title": "Требуется перезапуск",
+    "restart_required_text": "Язык был изменён. Чтобы изменения применились везде, перезапустите приложение.",
+    "restart_now": "Перезапустить сейчас",
+    "restart_later": "Позже",
+    "restart_hint": "Если не перезапускать, часть интерфейса может остаться на старом языке."
   },
   "common": {
     "cancel": "Отмена",
     "saving": "Сохранение..."
+  },
+  "superAdmin": {
+    "firstLaunch_offer_block_hint": "Включает блокирующее окно на FirstLaunch до принятия оферты пользователем.",
+    "single_tenant_allowlist_hint": "Это allowlist пользователей, которым разрешён доступ к панели в single-tenant режиме.",
+    "antiflood_limit_hint": "Лимит сообщений в минуту (рекомендуется до 30)",
+    "attachments_limit_mb_hint": "Лимит вложений (mb)",
+    "bots_limit_hint": "Лимит подключаемых ботов",
+    "single_tenant_payments_disabled_hint": "В режиме single-tenant платёжные шлюзы отключены. Предполагается, что это установка для личного использования.",
+    "saved_title": "Сохранено",
+    "saved_text": "Настройки сохранены.",
+    "add_superadmin_title": "Добавить superadmin",
+    "telegram_user_id_placeholder_example": "Например: 123456789",
+    "confirm_delete_superadmin_title": "Удалить суперадмина",
+    "confirm_delete_owner_title": "Удалить owner ID",
+    "confirm_title": "Подтверждение",
+    "confirm_delete_superadmin_text": "Удалить суперадмина {{id}}?",
+    "confirm_delete_owner_text": "Удалить owner ID {{id}}?",
+    "confirm_delete_text": "Удалить?",
+    "delete": "Удалить",
+    "cancel": "Отмена",
+    "add_owner_title": "Добавить owner ID",
+    "owner_user_id_placeholder": "Введите user_id"
+  },
+  "instances": {
+    "select_instance_title": "Выберите инстанс",
+    "available_count": "{{count}} доступных"
   }
 }
