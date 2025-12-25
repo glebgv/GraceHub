@@ -1291,7 +1291,8 @@ class MasterBot:
             f"{texts.master_instance_actions_label}"
         )
 
-        miniapp_url = self._build_miniapp_url(instance, user_id)
+        # miniapp_url можно вообще не вычислять, раз кнопка панели не нужна
+        # miniapp_url = self._build_miniapp_url(instance, user_id)
 
         if instance.status == InstanceStatus.RUNNING:
             toggle_text = texts.master_instance_pause_button
@@ -1316,26 +1317,17 @@ class MasterBot:
                     callback_data=f"remove_confirm_{instance_id}",
                 )
             ],
+            [
+                InlineKeyboardButton(
+                    text=texts.master_instance_back_button,
+                    callback_data="list_bots",
+                )
+            ],
         ]
 
-        if miniapp_url and callback.message.chat.type == ChatType.PRIVATE:
-            keyboard_rows.insert(
-                1,
-                [
-                    InlineKeyboardButton(
-                        text=texts.master_instance_panel_button,
-                        web_app=WebAppInfo(url=miniapp_url),
-                    )
-                ],
-            )
-
-        keyboard_rows.append(
-            [InlineKeyboardButton(text=texts.master_instance_back_button, callback_data="list_bots")]
-        )
-
         keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
-
         await callback.message.edit_text(text, reply_markup=keyboard)
+
 
     async def handle_pause_instance(self, callback: CallbackQuery):
         """Приостановка инстанса"""
@@ -1515,9 +1507,7 @@ class MasterBot:
             await test_bot.session.close()
 
             # Check if bot already exists
-            existing = await self.db.get_instance_by_token_hash(
-                self.security.hash_token(token)
-            )
+            existing = await self.db.get_instance_by_token_hash(self.security.hash_token(token))
             if existing:
                 # 1-е сообщение — ошибка
                 await message.answer(texts.master_token_already_exists)
@@ -1559,12 +1549,9 @@ class MasterBot:
 
             await worker.bot.get_me()  # Health check
             logger.info(f"Bot.get_me() successful for new instance {instance.instance_id}")
-
             # === КОНЕЦ ДОБАВЛЕНИЯ ===
 
             await self.db.clear_user_state(user_id)
-
-            miniapp_url = self._build_miniapp_url(instance, user_id)
 
             text_lines = [
                 f"{texts.master_bot_added_title}\n",
@@ -1574,13 +1561,6 @@ class MasterBot:
                 f"{texts.master_bot_added_webhook_label}: <code>{instance.webhook_url}</code>\n\n",
                 texts.master_bot_added_status_starting,
             ]
-
-            if miniapp_url:
-                text_lines.append(
-                    "\n\n"
-                    f"{texts.master_bot_added_panel_hint}\n"
-                    f"<code>{miniapp_url}</code>"
-                )
 
             text_resp = "".join(text_lines)
 
@@ -1599,35 +1579,14 @@ class MasterBot:
                 ],
             ]
 
-            # Инлайн-кнопка открытия мини‑аппы сразу после добавления (только в приват)
-            if miniapp_url and message.chat.type == ChatType.PRIVATE:
-                keyboard_rows.insert(
-                    1,
-                    [
-                        InlineKeyboardButton(
-                            text=texts.master_bot_open_panel_button,
-                            web_app=WebAppInfo(url=miniapp_url),
-                        )
-                    ],
-                )
-
             keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
-
             await message.answer(text_resp, reply_markup=keyboard)
-
-            # Дополнительно шлём персональную ссылку в приват
-            await self._send_personal_miniapp_link(
-                instance=instance,
-                admin_user_id=user_id,
-                admin_chat_id=message.chat.id if message.chat.type == ChatType.PRIVATE else None,
-            )
 
         except Exception as e:
             logger.error(f"Error processing token: {e}")
-            await message.answer(
-                texts.master_token_generic_error.format(error=str(e))
-            )
+            await message.answer(texts.master_token_generic_error.format(error=str(e)))
             await self.db.clear_user_state(user_id)
+
 
     async def check_worker_token_health(self, instance_id: str, auto_remove_webhook: bool = False) -> tuple[bool, str]:
         """
@@ -1833,17 +1792,6 @@ class MasterBot:
                     callback_data=f"instance_{instance.instance_id}",
                 )
             ]
-
-            # web_app‑кнопка только в приватных чатах
-            if message.chat.type == ChatType.PRIVATE:
-                miniapp_url = self._build_miniapp_url(instance, user_id)
-                if miniapp_url:
-                    row.append(
-                        InlineKeyboardButton(
-                            text=texts.master_list_bots_panel_button,
-                            web_app=WebAppInfo(url=miniapp_url),
-                        )
-                    )
 
             keyboard_buttons.append(row)
 
