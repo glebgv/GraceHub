@@ -11,7 +11,7 @@ interface InstancesListProps {
   instances: Instance[];
   onSelect: (inst: Instance) => void;
 
-  // Открыть UI добавления бота (модалка/экран) — как у тебя было
+  // Открыть UI добавления бота (модалка/экран)
   onAddBotClick?: () => void;
 
   onOpenSuperAdmin?: () => void;
@@ -44,7 +44,6 @@ const InstancesList: React.FC<InstancesListProps> = ({
   onAddBotClick,
   onOpenSuperAdmin,
   onDeleteInstance,
-
   limitMessage,
   onGoHome,
   onDismissLimitMessage,
@@ -83,7 +82,7 @@ const InstancesList: React.FC<InstancesListProps> = ({
     }
     try {
       setDeleting(true);
-      await onDeleteInstance(instanceToDelete); // здесь пока заглушка/колбэк в App
+      await onDeleteInstance(instanceToDelete);
     } finally {
       setDeleting(false);
       setInstanceToDelete(null);
@@ -102,7 +101,6 @@ const InstancesList: React.FC<InstancesListProps> = ({
             Здесь будут боты, к которым у вас есть доступ.
           </p>
 
-          {/* Правая группа кнопок даже когда нет инстансов */}
           <div style={{ marginTop: 12, display: 'flex', gap: 8, justifyContent: 'center' }}>
             {onOpenSuperAdmin && (
               <button type="button" onClick={onOpenSuperAdmin} className="btn btn--secondary">
@@ -130,7 +128,12 @@ const InstancesList: React.FC<InstancesListProps> = ({
             <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 360 }}>
               <div className="modal-header">
                 <h2 className="modal-title">Ограничение</h2>
-                <button className="modal-close" onClick={closeLimitModal} type="button" aria-label="Close">
+                <button
+                  className="modal-close"
+                  onClick={closeLimitModal}
+                  type="button"
+                  aria-label="Close"
+                >
                   ✕
                 </button>
               </div>
@@ -152,47 +155,21 @@ const InstancesList: React.FC<InstancesListProps> = ({
   }
 
   return (
-    <div style={{ padding: '12px' }}>
-      <div
-        style={{
-          marginBottom: '16px',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          gap: 8,
-        }}
-      >
-        <div>
-          <h2 style={{ margin: 0 }}>Выберите инстанс</h2>
-          <p
-            style={{
-              margin: '4px 0 0 0',
-              fontSize: '12px',
-              color: 'var(--tg-color-text-secondary)',
-            }}
-          >
-            {instances.length} доступных
-          </p>
+    <div className="instances-page">
+      <div className="instances-top">
+        <div className="instances-title">
+          <h2 className="instances-h2">Выберите инстанс</h2>
+          <div className="instances-subtitle">{instances.length} доступных</div>
         </div>
 
-        {/* правая группа кнопок */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div className="instances-actions">
           {onOpenSuperAdmin && (
             <button
               type="button"
               onClick={onOpenSuperAdmin}
-              className="btn btn--secondary"
-              style={{
-                padding: '4px 10px',
-                fontSize: 14,
-                borderRadius: 999,
-                display: 'flex',
-                alignItems: 'center',
-                gap: 6,
-                whiteSpace: 'nowrap',
-              }}
+              className="btn btn--secondary instances-pill"
             >
-              <span>🛡</span>
+              <span aria-hidden>🛡</span>
               <span>Admin</span>
             </button>
           )}
@@ -201,51 +178,37 @@ const InstancesList: React.FC<InstancesListProps> = ({
             <button
               type="button"
               onClick={onAddBotClick}
-              className="btn btn--primary"
+              className="btn btn--primary instances-pill"
               disabled={addBotDisabled}
-              style={{
-                padding: '4px 10px',
-                fontSize: 14,
-                borderRadius: 999,
-                display: 'flex',
-                alignItems: 'center',
-                gap: 4,
-                whiteSpace: 'nowrap',
-                opacity: addBotDisabled ? 0.7 : 1,
-              }}
               title={addBotDisabled ? 'Сейчас действие недоступно' : 'Добавить бота'}
+              style={{ opacity: addBotDisabled ? 0.7 : 1 }}
             >
-              <span>➕</span>
+              <span aria-hidden>➕</span>
               <span>Бот</span>
             </button>
           )}
         </div>
       </div>
 
-      {instances.map((inst) => (
-        <div
-          key={inst.instanceid}
-          className="card"
-          style={{ cursor: 'pointer', transition: 'all 200ms', position: 'relative' }}
-          onClick={() => onSelect(inst)}
-        >
-          <div className="list-item">
-            <div className="list-item-info">
-              <div className="list-item-title">
-                <span style={{ marginRight: '8px' }}>🤖</span>
-                {inst.botname}
+      <div className="instances-grid">
+        {instances.map((inst) => (
+          <button
+            key={inst.instanceid}
+            type="button"
+            className="card instance-card"
+            onClick={() => onSelect(inst)}
+          >
+            <div className="instance-left">
+              <div className="instance-name">
+                <span className="instance-emoji" aria-hidden>
+                  🤖
+                </span>
+                <span className="instance-name-text">{inst.botname}</span>
               </div>
-              <div className="list-item-subtitle">@{inst.botusername}</div>
+              <div className="instance-username">@{inst.botusername}</div>
             </div>
 
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-              }}
-              onClick={(e) => e.stopPropagation()} // чтобы клик по корзине не выбирал инстанс
-            >
+            <div className="instance-right" onClick={(e) => e.stopPropagation()}>
               <span className="instance-badge">{inst.role}</span>
 
               {onDeleteInstance && (
@@ -254,25 +217,17 @@ const InstancesList: React.FC<InstancesListProps> = ({
                   aria-label="Удалить бота"
                   title="Удалить бота"
                   onClick={() => setInstanceToDelete(inst)}
-                  className="btn btn--outline btn--sm"
+                  className="btn btn--outline btn--sm instance-trash"
                   disabled={deleting}
-                  style={{
-                    padding: '4px 8px',
-                    borderRadius: 999,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    fontSize: 14,
-                    opacity: deleting ? 0.7 : 1,
-                  }}
+                  style={{ opacity: deleting ? 0.7 : 1 }}
                 >
                   🗑
                 </button>
               )}
             </div>
-          </div>
-        </div>
-      ))}
+          </button>
+        ))}
+      </div>
 
       {/* Модальное окно подтверждения удаления */}
       {instanceToDelete && (
@@ -294,13 +249,7 @@ const InstancesList: React.FC<InstancesListProps> = ({
             <div className="modal-body">
               <p style={{ marginBottom: 12 }}>Вы действительно хотите удалить инстанс:</p>
               <p style={{ fontWeight: 600, marginBottom: 4 }}>{instanceToDelete.botname}</p>
-              <p
-                style={{
-                  marginTop: 0,
-                  fontSize: 13,
-                  color: 'var(--tg-color-text-secondary)',
-                }}
-              >
+              <p style={{ marginTop: 0, fontSize: 13, color: 'var(--tg-color-text-secondary)' }}>
                 @{instanceToDelete.botusername}
               </p>
 
@@ -333,7 +282,12 @@ const InstancesList: React.FC<InstancesListProps> = ({
           <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 360 }}>
             <div className="modal-header">
               <h2 className="modal-title">Ограничение</h2>
-              <button className="modal-close" onClick={closeLimitModal} type="button" aria-label="Close">
+              <button
+                className="modal-close"
+                onClick={closeLimitModal}
+                type="button"
+                aria-label="Close"
+              >
                 ✕
               </button>
             </div>

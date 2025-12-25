@@ -1336,3 +1336,398 @@ select.form-control {
   top: var(--space-12); /* .app-container имеет padding 12px */
   z-index: 50;
 }
+
+
+/* Header "Tariffs" button (moved from bottom nav)
+   + FIX: header layout so header-bottom never overlaps header-content (and back button) */
+.app-header {
+  position: relative;
+  height: auto;
+  overflow: visible;
+
+  display: flex;
+  flex-direction: column;
+}
+
+/* Keep header-content and header-bottom in normal flow */
+.app-header .header-content {
+  position: relative;
+
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+/* If btn-back was positioned absolutely somewhere else, this prevents overlay */
+.app-header .btn-back {
+  position: static;
+  margin-left: auto;
+  flex: 0 0 auto;
+  z-index: 0;
+}
+
+/* Button container (always below header-content) */
+.app-header .header-bottom {
+  width: 100%;
+
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(148, 163, 184, 0.25);
+
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+}
+
+.app-header .header-link {
+  appearance: none;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: rgba(15, 23, 42, 0.04);
+  color: var(--tg-theme-text-color, #0f172a);
+
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 12px;
+  border-radius: 12px;
+
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+
+  cursor: pointer;
+  user-select: none;
+
+  transition: background 160ms ease, border-color 160ms ease, transform 80ms ease;
+}
+
+.app-header .header-link:hover {
+  background: rgba(59, 130, 246, 0.08);
+  border-color: rgba(59, 130, 246, 0.35);
+}
+
+.app-header .header-link:active {
+  transform: translateY(1px);
+}
+
+.app-header .header-link.active {
+  background: rgba(59, 130, 246, 0.14);
+  border-color: rgba(59, 130, 246, 0.55);
+}
+
+.app-header .header-link:focus-visible {
+  outline: 2px solid rgba(59, 130, 246, 0.75);
+  outline-offset: 2px;
+}
+
+.app-header .header-link-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+
+  background: rgba(59, 130, 246, 0.12);
+  border: 1px solid rgba(59, 130, 246, 0.18);
+  flex: 0 0 auto;
+}
+
+.app-header .header-link-text {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.1px;
+}
+
+
+
+/* === InstancesList header row: tariff left, button right === */
+.app-header .header-row {
+  display: flex;
+  align-items: stretch;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+}
+
+/* left column grows */
+.app-header .header-row .header-left {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* right column does NOT wrap to next line */
+.app-header .header-row .header-right {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: stretch;
+}
+
+/* keep tariff-card compact and not forcing wrap */
+.app-header .header-row .tariff-card {
+  width: 100%;
+}
+
+/* IMPORTANT: stop the button from being full-width */
+.app-header .header-row .header-link {
+  width: auto !important;
+  min-width: 140px;
+  height: auto;
+  white-space: nowrap;
+  align-self: stretch;
+}
+
+/* optional: if header-link-icon + text should be centered vertically */
+.app-header .header-row .header-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+
+/* ===== InstancesList layout ===== */
+.instances-page {
+  padding: 12px;
+}
+
+.instances-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.instances-h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.instances-subtitle {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--tg-color-text-secondary);
+}
+
+.instances-actions {
+  display: flex;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.instances-pill {
+  padding: 6px 12px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+/* cards grid */
+.instances-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+
+@media (min-width: 520px) {
+  .instances-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+/* instance card */
+.instance-card {
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+
+  /* if your .card already has padding, remove this */
+  padding: 12px;
+  border: none; /* because it's a button now */
+  background: var(--tg-color-bg-secondary, rgba(255,255,255,0.04));
+}
+
+.instance-card:active {
+  transform: scale(0.99);
+}
+
+.instance-left {
+  min-width: 0;
+}
+
+.instance-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+
+.instance-name-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.instance-username {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--tg-color-text-secondary);
+}
+
+.instance-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.instance-trash {
+  border-radius: 999px;
+  padding: 4px 8px;
+}
+
+
+
+
+/* ================================
+   Subtle gradients (graphite/silver + blue-gray)
+   Add to the VERY END of App.css
+   ================================ */
+
+:root{
+  /* subtle graphite/silver overlays */
+  --gh-silver-1: rgba(255, 255, 255, 0.10);
+  --gh-silver-2: rgba(255, 255, 255, 0.06);
+  --gh-silver-3: rgba(255, 255, 255, 0.03);
+
+  /* blue-gray accents based on your primary */
+  --gh-blue-soft: rgba(var(--color-teal-500-rgb), 0.16);
+  --gh-blue-mid: rgba(var(--color-teal-500-rgb), 0.22);
+  --gh-blue-strong: rgba(var(--color-teal-500-rgb), 0.34);
+
+  /* slate-ish accent (works in both schemes) */
+  --gh-slate-soft: rgba(var(--color-slate-500-rgb), 0.22);
+
+  --gh-card-border: rgba(148, 163, 184, 0.22);
+  --gh-card-border-strong: rgba(148, 163, 184, 0.32);
+}
+
+/* 1) Make all cards slightly more "premium" (very subtle) */
+.card{
+  border-color: var(--gh-card-border);
+  box-shadow:
+    0 1px 0 rgba(255,255,255,0.06) inset,
+    var(--shadow-sm);
+}
+
+.card:hover{
+  border-color: var(--gh-card-border-strong);
+  box-shadow:
+    0 1px 0 rgba(255,255,255,0.08) inset,
+    var(--shadow-md);
+}
+
+/* 2) Instances cards: graphite/silver base + blue-gray highlight line */
+.instance-card{
+  position: relative;
+  overflow: hidden;
+
+  /* keep your "button card" look, but add depth */
+  background:
+    linear-gradient(180deg, var(--gh-silver-2), var(--gh-silver-3)),
+    radial-gradient(110% 140% at 15% 0%, var(--gh-slate-soft), transparent 60%),
+    radial-gradient(110% 140% at 90% 20%, var(--gh-blue-soft), transparent 60%);
+
+  border: 1px solid var(--gh-card-border);
+  border-radius: var(--radius-lg);
+
+  transition:
+    transform var(--duration-fast) var(--ease-standard),
+    box-shadow var(--duration-normal) var(--ease-standard),
+    border-color var(--duration-fast) var(--ease-standard);
+}
+
+.instance-card::after{
+  content: "";
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  top: 10px;
+  height: 2px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--gh-slate-soft), var(--gh-blue-mid), transparent);
+  opacity: 0.65;
+  pointer-events: none;
+}
+
+.instance-card:hover{
+  border-color: var(--gh-card-border-strong);
+  box-shadow:
+    0 14px 30px rgba(0,0,0,0.10),
+    0 1px 0 rgba(255,255,255,0.08) inset;
+  transform: translateY(-1px);
+}
+
+.instance-card:hover::after{
+  opacity: 0.95;
+  background: linear-gradient(90deg, var(--gh-slate-soft), var(--gh-blue-strong), transparent);
+}
+
+/* 3) Tariff card: slightly different "silver" panel with blue-gray edge */
+.tariff-card{
+  position: relative;
+  overflow: hidden;
+
+  border: 1px solid var(--gh-card-border);
+  border-radius: 12px;
+
+  background:
+    linear-gradient(180deg, var(--gh-silver-2), var(--gh-silver-3)),
+    radial-gradient(120% 160% at 20% 0%, var(--gh-blue-soft), transparent 60%);
+}
+
+.tariff-card::before{
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(135deg, rgba(255,255,255,0.10), transparent 45%, rgba(255,255,255,0.06));
+  opacity: 0.55;
+}
+
+/* 4) Role badge: from flat primary to compact silver pill with blue-gray outline */
+.instance-badge{
+  border-radius: 999px;
+  border: 1px solid rgba(var(--color-teal-500-rgb), 0.28);
+  background: linear-gradient(180deg, rgba(var(--color-teal-500-rgb), 0.20), rgba(255,255,255,0.06));
+  color: var(--color-text);
+}
+
+/* 5) Instances action pills: add gentle gradient on secondary pill */
+.instances-pill.btn--secondary{
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.03)),
+    var(--color-secondary);
+  border: 1px solid var(--gh-card-border);
+}
+
+/* 6) Header link (Tariffs button): a bit more “metal” */
+.app-header .header-link{
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.10), rgba(255,255,255,0.04)),
+    rgba(15, 23, 42, 0.04);
+  border-color: var(--gh-card-border);
+}
+
+.app-header .header-link:hover{
+  background:
+    linear-gradient(180deg, rgba(var(--color-teal-500-rgb), 0.14), rgba(255,255,255,0.05)),
+    rgba(15, 23, 42, 0.04);
+  border-color: rgba(var(--color-teal-500-rgb), 0.35);
+}
