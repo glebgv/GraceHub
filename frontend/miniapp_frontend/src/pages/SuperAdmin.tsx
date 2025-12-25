@@ -1,4 +1,9 @@
 // src/pages/SuperAdmin.tsx
+//
+// NEW (FirstLaunch offer gating):
+// - Добавлен блок настроек "Offer (FirstLaunch)" -> miniapp_public.offer.enabled + miniapp_public.offer.url
+// - URL валидируется как https://
+// - В save() проходит через нормализацию mergeDefaults/normalizeIds, как и остальная форма
 
 import React, { useEffect, useMemo, useState } from 'react';
 
@@ -62,6 +67,11 @@ const defaultSettings: MiniappPublicSettings = {
       priceUsdEnterprise: 29.99,
     },
   },
+  // NEW: Offer gating (FirstLaunch)
+  offer: {
+    enabled: false,
+    url: '',
+  },
   instanceDefaults: {
     antifloodMaxUserMessagesPerMinute: 20,
     workerMaxFileMb: 10,
@@ -94,6 +104,8 @@ function mergeDefaults(value: any): MiniappPublicSettings {
       : v?.singleTenant?.ownerTelegramId === null || v?.singleTenant?.ownerTelegramId === undefined
         ? []
         : normalizeIds([v.singleTenant.ownerTelegramId]);
+
+  const offer = v?.offer || {};
 
   return {
     singleTenant: {
@@ -180,6 +192,11 @@ function mergeDefaults(value: any): MiniappPublicSettings {
           defaultSettings.payments.stripe.priceUsdEnterprise,
         ),
       },
+    },
+    // NEW: offer config
+    offer: {
+      enabled: !!offer?.enabled,
+      url: String(offer?.url ?? ''),
     },
     instanceDefaults: {
       antifloodMaxUserMessagesPerMinute: safeNumber(
@@ -447,14 +464,13 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
   const [addSuperadminValue, setAddSuperadminValue] = useState('');
 
   const [paymentErrors, setPaymentErrors] = useState<Record<string, string>>({});
+  const [offerErrors, setOfferErrors] = useState<Record<string, string>>({});
 
   // Confirm delete modal (shared for owners + superadmins)
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
-  const [pendingDelete, setPendingDelete] = useState<
-    | null
-    | { kind: 'superadmin'; id: number }
-    | { kind: 'owner'; id: number }
-  >(null);
+  const [pendingDelete, setPendingDelete] = useState<null | { kind: 'superadmin'; id: number } | { kind: 'owner'; id: number }>(
+    null,
+  );
 
   const isSuperadmin = useMemo(() => {
     const roles = me?.roles || [];
@@ -503,7 +519,7 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
       }
     };
 
-    load();
+    void load();
 
     return () => {
       cancelled = true;
@@ -547,6 +563,19 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
     return errs;
   };
 
+  const validateOffer = (v: MiniappPublicSettings): Record<string, string> => {
+    const errs: Record<string, string> = {};
+    const enabled = !!v.offer?.enabled;
+    const url = String(v.offer?.url ?? '').trim();
+
+    if (enabled) {
+      if (!url) errs.offer_url = 'URL оферты обязателен.';
+      else if (!isHttpsUrl(url)) errs.offer_url = 'URL оферты должен начинаться с https://';
+    }
+
+    return errs;
+  };
+
   const save = async () => {
     setSaving(true);
     try {
@@ -555,6 +584,10 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
         singleTenant: {
           ...form.singleTenant,
           allowedUserIds: normalizeIds(form.singleTenant.allowedUserIds),
+        },
+        offer: {
+          enabled: !!form.offer?.enabled,
+          url: String(form.offer?.url ?? ''),
         },
         instanceDefaults: {
           ...form.instanceDefaults,
@@ -576,11 +609,19 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
           : form.payments,
       };
 
-      const errs = validatePayments(normalized);
-      setPaymentErrors(errs);
+      const payErrs = validatePayments(normalized);
+      setPaymentErrors(payErrs);
 
-      if (Object.keys(errs).some((k) => !!errs[k])) {
-        setError('Исправь ошибки в настройках Payments.');
+      const offErrs = validateOffer(normalized);
+      setOfferErrors(offErrs);
+
+      const hasErrors = [...Object.keys(payErrs), ...Object.keys(offErrs)].some((k) => {
+        const v = (payErrs as any)[k] ?? (offErrs as any)[k];
+        return !!v;
+      });
+
+      if (hasErrors) {
+        setError('Исправь ошибки в настройках (Payments / Offer).');
         return;
       }
 
@@ -844,6 +885,69 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
           </div>
         )}
 
+        {/* Offer (FirstLaunch) */}
+        <div className="card" style={{ marginTop: 12 }}>
+          <h3 style={{ margin: '0 0 12px 0', fontSize: 14 }}>Offer (FirstLaunch)</h3>
+
+          <div className="form-group" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <label className="form-label" style={{ marginBottom: 0 }}>
+              Require offer acceptance
+            </label>
+            <MiniSwitch
+              checked={!!form.offer?.enabled}
+              disabled={saving}
+              ariaLabel="Toggle offer gating"
+              onChange={(checked) => {
+                setForm((p) => ({
+                  ...p,
+                  offer: {
+                    enabled: checked,
+                    url: String(p.offer?.url ?? ''),
+                  },
+                }));
+                setOfferErrors((prev) => ({ ...prev, offer_url: '' }));
+              }}
+            />
+          </div>
+
+          {form.offer?.enabled && (
+            <div style={{ marginTop: 8 }}>
+              <div className="form-group">
+                <label className="form-label">Offer URL (https)</label>
+                <input
+                  className="form-input"
+                  value={form.offer?.url ?? ''}
+                  placeholder="https://your-domain/offer"
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setForm((p) => ({
+                      ...p,
+                      offer: { enabled: !!p.offer?.enabled, url: v },
+                    }));
+                    setOfferErrors((prev) => ({ ...prev, offer_url: '' }));
+                  }}
+                  onBlur={() => {
+                    const v = String(form.offer?.url ?? '').trim();
+                    setOfferErrors((prev) => ({
+                      ...prev,
+                      offer_url: !v ? 'URL оферты обязателен.' : isHttpsUrl(v) ? '' : 'URL оферты должен начинаться с https://',
+                    }));
+                  }}
+                />
+                {offerErrors.offer_url ? (
+                  <small style={{ color: 'var(--tg-color-text-secondary)', display: 'block', marginTop: 4 }}>
+                    {offerErrors.offer_url}
+                  </small>
+                ) : null}
+              </div>
+
+              <div style={{ opacity: 0.7, marginTop: 6, fontSize: 12 }}>
+                Включает блокирующее окно на FirstLaunch до принятия оферты пользователем.
+              </div>
+            </div>
+          )}
+        </div>
+
         {/* Single-tenant */}
         <div className="card" style={{ marginTop: 12 }}>
           <h3 style={{ margin: '0 0 12px 0', fontSize: 14 }}>Single-tenant</h3>
@@ -1039,8 +1143,7 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
                 lineHeight: 1.35,
               }}
             >
-              В режиме single-tenant платёжные шлюзы отключены. Предполагается, что это установка для личного
-              использования.
+              В режиме single-tenant платёжные шлюзы отключены. Предполагается, что это установка для личного использования.
             </div>
           ) : (
             <>
@@ -1114,7 +1217,10 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
                           ...p,
                           payments: {
                             ...p.payments,
-                            telegramStars: { ...p.payments.telegramStars, priceStarsEnterprise: Number(e.target.value) },
+                            telegramStars: {
+                              ...p.payments.telegramStars,
+                              priceStarsEnterprise: Number(e.target.value),
+                            },
                           },
                         }))
                       }
@@ -1197,7 +1303,10 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
                       placeholder="0QC3VqDed0SODLgoelsv0oV3iBjUOKJuQjXdWhDENohmtW"
                       onChange={(e) => {
                         const v = e.target.value;
-                        setForm((p) => ({ ...p, payments: { ...p.payments, ton: { ...p.payments.ton, walletAddress: v } } }));
+                        setForm((p) => ({
+                          ...p,
+                          payments: { ...p.payments, ton: { ...p.payments.ton, walletAddress: v } },
+                        }));
                         setPaymentErrors((prev) => ({ ...prev, ton_wallet: '' }));
                       }}
                       onBlur={() => {
@@ -1223,7 +1332,10 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
                       placeholder="https://testnet.toncenter.com/api/v2"
                       onChange={(e) => {
                         const v = e.target.value;
-                        setForm((p) => ({ ...p, payments: { ...p.payments, ton: { ...p.payments.ton, apiBaseUrl: v } } }));
+                        setForm((p) => ({
+                          ...p,
+                          payments: { ...p.payments, ton: { ...p.payments.ton, apiBaseUrl: v } },
+                        }));
                         setPaymentErrors((prev) => ({ ...prev, ton_api: '' }));
                       }}
                       onBlur={() => {
@@ -1249,7 +1361,10 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
                       className="form-input"
                       value={form.payments.ton.apiKey}
                       onChange={(e) =>
-                        setForm((p) => ({ ...p, payments: { ...p.payments, ton: { ...p.payments.ton, apiKey: e.target.value } } }))
+                        setForm((p) => ({
+                          ...p,
+                          payments: { ...p.payments, ton: { ...p.payments.ton, apiKey: e.target.value } },
+                        }))
                       }
                     />
                   </div>
@@ -1420,7 +1535,10 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
                       placeholder="https://..."
                       onChange={(e) => {
                         const v = e.target.value;
-                        setForm((p) => ({ ...p, payments: { ...p.payments, yookassa: { ...p.payments.yookassa, returnUrl: v } } }));
+                        setForm((p) => ({
+                          ...p,
+                          payments: { ...p.payments, yookassa: { ...p.payments.yookassa, returnUrl: v } },
+                        }));
                         setPaymentErrors((prev) => ({ ...prev, yk_return: '' }));
                       }}
                       onBlur={() => {
@@ -1447,7 +1565,10 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
                       onChange={(e) =>
                         setForm((p) => ({
                           ...p,
-                          payments: { ...p.payments, yookassa: { ...p.payments.yookassa, priceRubLite: Number(e.target.value) } },
+                          payments: {
+                            ...p.payments,
+                            yookassa: { ...p.payments.yookassa, priceRubLite: Number(e.target.value) },
+                          },
                         }))
                       }
                     />
@@ -1462,7 +1583,10 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
                       onChange={(e) =>
                         setForm((p) => ({
                           ...p,
-                          payments: { ...p.payments, yookassa: { ...p.payments.yookassa, priceRubPro: Number(e.target.value) } },
+                          payments: {
+                            ...p.payments,
+                            yookassa: { ...p.payments.yookassa, priceRubPro: Number(e.target.value) },
+                          },
                         }))
                       }
                     />
@@ -1537,7 +1661,10 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
                       onChange={(e) =>
                         setForm((p) => ({
                           ...p,
-                          payments: { ...p.payments, stripe: { ...p.payments.stripe, publishableKey: e.target.value } },
+                          payments: {
+                            ...p.payments,
+                            stripe: { ...p.payments.stripe, publishableKey: e.target.value },
+                          },
                         }))
                       }
                     />

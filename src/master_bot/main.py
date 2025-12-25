@@ -26,7 +26,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     Update,
-    PreCheckoutQuery,
+    PreCheckoutQuery
 )
 from aiogram.enums import ParseMode, ChatType
 from aiogram.client.default import DefaultBotProperties
@@ -585,6 +585,29 @@ class MasterBot:
                 logger.error(f"Global auto-close error: {e}")
             await asyncio.sleep(interval)
 
+    async def handle_offer_accept(self, callback: CallbackQuery):
+        user_id = callback.from_user.id
+        st = await self.db.get_offer_settings()
+        url = str(st.get("url") or "").strip()
+
+        # source: "bot" чтобы отличать от miniapp ("miniapp" например)
+        await self.db.upsert_user_offer(user_id, url, True, source="bot")
+
+        await callback.answer("Принято.")
+        # возвращаем в старт/меню (минимально)
+        await self.cmd_start(callback.message, user_id=user_id)
+
+    async def handle_offer_decline(self, callback: CallbackQuery):
+        user_id = callback.from_user.id
+        st = await self.db.get_offer_settings()
+        url = str(st.get("url") or "").strip()
+
+        await self.db.upsert_user_offer(user_id, url, False, source="bot")
+
+        await callback.answer("Отменено.", show_alert=True)
+        await callback.message.answer("Без принятия оферты использование сервиса невозможно.")
+
+
     async def process_bot_token_from_miniapp(
         self,
         token: str,
@@ -685,6 +708,9 @@ class MasterBot:
     def setup_handlers(self):
         """Setup command and callback handlers"""
         self.dp.message(Command("start"))(self.cmd_start)
+        self.dp.callback_query(F.data == "offer_accept")(self.handle_offer_accept)
+        self.dp.callback_query(F.data == "offer_decline")(self.handle_offer_decline)
+
         self.dp.message(Command("add_bot"))(self.cmd_add_bot_entry)
         self.dp.message(Command("list_bots"))(self.cmd_list_bots_entry)
         self.dp.message(Command("remove_bot"))(self.cmd_remove_bot)
@@ -768,6 +794,44 @@ class MasterBot:
 
         await callback.answer()
 
+    async def ensure_offer_accepted(self, userid: int, message_or_cb) -> bool:
+        st = await self.db.get_offer_settings()
+        enabled = bool(st.get("enabled"))
+        url = str(st.get("url") or "").strip()
+
+        if not enabled:
+            return True
+
+        # если в настройках включили, но URL пустой — лучше fail-open, чтобы не ломать бота
+        if not url:
+            return True
+
+        ok = await self.db.has_accepted_offer(userid, url)
+        if ok:
+            return True
+
+        text = (
+            "Перед использованием сервиса необходимо ознакомиться с публичной офертой и принять её условия.\n\n"
+            f"{url}"
+        )
+
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="✅ Согласен", callback_data="offer_accept"),
+                    InlineKeyboardButton(text="❌ Отмена", callback_data="offer_decline"),
+                ]
+            ]
+        )
+
+        if hasattr(message_or_cb, "message"):  # CallbackQuery
+            await message_or_cb.message.answer(text, reply_markup=kb, disable_web_page_preview=True)
+            await message_or_cb.answer()
+        else:  # Message
+            await message_or_cb.answer(text, reply_markup=kb, disable_web_page_preview=True)
+
+        return False
+
     async def cmd_start(self, message: Message, user_id: int | None = None):
         """Handle /start command"""
         if user_id is None:
@@ -778,6 +842,37 @@ class MasterBot:
             texts = await self.t(user_id)
             await message.answer(texts.master_owner_only)
             return
+
+        # --- Offer gate (публичная оферта) ---
+        # Блокируем вход в основные действия до принятия оферты.
+        offer_settings = await self.db.get_offer_settings()
+        offer_enabled = bool(offer_settings.get("enabled"))
+        offer_url = str(offer_settings.get("url") or "").strip()
+
+        if offer_enabled and offer_url:
+            accepted = await self.db.has_accepted_offer(user_id, offer_url)
+            if not accepted:
+                offer_text = (
+                    "Перед использованием сервиса необходимо ознакомиться с публичной офертой и принять её условия.\n\n"
+                    f"{offer_url}"
+                )
+
+                keyboard = InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [
+                            InlineKeyboardButton(text="✅ Согласен", callback_data="offer_accept"),
+                            InlineKeyboardButton(text="❌ Отмена", callback_data="offer_decline"),
+                        ]
+                    ]
+                )
+
+                await message.answer(
+                    offer_text,
+                    reply_markup=keyboard,
+                    disable_web_page_preview=True,
+                )
+                return
+        # --- end Offer gate ---
 
         # проверка выбранного языка
         user_lang = await self.db.get_user_language(user_id)
@@ -904,7 +999,38 @@ class MasterBot:
             await message.answer("Access denied in single-tenant mode.")
             return
 
+        # --- Offer gate (публичная оферта) ---
+        offer_settings = await self.db.get_offer_settings()
+        offer_enabled = bool(offer_settings.get("enabled"))
+        offer_url = str(offer_settings.get("url") or "").strip()
+
+        if offer_enabled and offer_url:
+            accepted = await self.db.has_accepted_offer(user_id, offer_url)
+            if not accepted:
+                offer_text = (
+                    "Перед использованием сервиса необходимо ознакомиться с публичной офертой и принять её условия.\n\n"
+                    f"{offer_url}"
+                )
+
+                keyboard = InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [
+                            InlineKeyboardButton(text="✅ Согласен", callback_data="offer_accept"),
+                            InlineKeyboardButton(text="❌ Отмена", callback_data="offer_decline"),
+                        ]
+                    ]
+                )
+
+                await message.answer(
+                    offer_text,
+                    reply_markup=keyboard,
+                    disable_web_page_preview=True,
+                )
+                return
+        # --- end Offer gate ---
+
         await self.cmd_add_bot(message, user_id=user_id)
+
 
     async def cmd_add_bot(self, message: Message, user_id: int):
         """Handle add bot command (общая логика)"""
@@ -1082,6 +1208,36 @@ class MasterBot:
         if not await self._is_master_allowed_user(user_id):
             return
 
+        # --- Offer gate (публичная оферта) ---
+        offer_settings = await self.db.get_offer_settings()
+        offer_enabled = bool(offer_settings.get("enabled"))
+        offer_url = str(offer_settings.get("url") or "").strip()
+
+        if offer_enabled and offer_url:
+            accepted = await self.db.has_accepted_offer(user_id, offer_url)
+            if not accepted:
+                offer_text = (
+                    "Перед использованием сервиса необходимо ознакомиться с публичной офертой и принять её условия.\n\n"
+                    f"{offer_url}"
+                )
+
+                keyboard = InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [
+                            InlineKeyboardButton(text="✅ Согласен", callback_data="offer_accept"),
+                            InlineKeyboardButton(text="❌ Отмена", callback_data="offer_decline"),
+                        ]
+                    ]
+                )
+
+                await message.answer(
+                    offer_text,
+                    reply_markup=keyboard,
+                    disable_web_page_preview=True,
+                )
+                return
+        # --- end Offer gate ---
+
         instances = await self.db.get_user_instances(user_id)
         texts = await self.t(user_id)
 
@@ -1116,6 +1272,7 @@ class MasterBot:
 
         keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
         await message.answer(text, reply_markup=keyboard)
+
 
     async def handle_instance_callback(self, callback: CallbackQuery, instance_id: str):
         """Обработка колбэка для управления инстансом"""
@@ -1601,7 +1758,38 @@ class MasterBot:
             await message.answer("Access denied in single-tenant mode.")
             return
 
+        # --- Offer gate (публичная оферта) ---
+        offer_settings = await self.db.get_offer_settings()
+        offer_enabled = bool(offer_settings.get("enabled"))
+        offer_url = str(offer_settings.get("url") or "").strip()
+
+        if offer_enabled and offer_url:
+            accepted = await self.db.has_accepted_offer(user_id, offer_url)
+            if not accepted:
+                offer_text = (
+                    "Перед использованием сервиса необходимо ознакомиться с публичной офертой и принять её условия.\n\n"
+                    f"{offer_url}"
+                )
+
+                keyboard = InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [
+                            InlineKeyboardButton(text="✅ Согласен", callback_data="offer_accept"),
+                            InlineKeyboardButton(text="❌ Отмена", callback_data="offer_decline"),
+                        ]
+                    ]
+                )
+
+                await message.answer(
+                    offer_text,
+                    reply_markup=keyboard,
+                    disable_web_page_preview=True,
+                )
+                return
+        # --- end Offer gate ---
+
         await self.cmd_list_bots(message, user_id=user_id)
+
 
     async def cmd_list_bots(self, message: Message, user_id: int):
         """List user's bots"""

@@ -87,6 +87,87 @@ class MasterDatabase:
         )
         return int(row["cnt"]) if row else 0
 
+    async def get_offer_settings(self) -> Dict[str, Any]:
+        raw = await self.get_platform_setting("miniapp_public", default=None)
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except Exception:
+                raw = None
+
+        raw = raw if isinstance(raw, dict) else {}
+        offer = raw.get("offer") or {}
+        if not isinstance(offer, dict):
+            offer = {}
+
+        enabled = bool(offer.get("enabled", False))
+        url = str(offer.get("url", "") or "").strip()
+        return {"enabled": enabled, "url": url}
+
+
+    async def get_user_offer_status(self, user_id: int) -> Dict[str, Any]:
+        row = await self.fetchone(
+            """
+            SELECT user_id, offer_url, accepted, accepted_at
+            FROM user_offer_acceptance
+            WHERE user_id = $1
+            """,
+            (user_id,),
+        )
+
+        return (
+            dict(row)
+            if row
+            else {"user_id": user_id, "offer_url": None, "accepted": False, "accepted_at": None}
+        )
+
+
+    async def upsert_user_offer(
+        self,
+        user_id: int,
+        offer_url: str,
+        accepted: bool,
+        source: str,
+    ) -> None:
+        await self.execute(
+            """
+            INSERT INTO user_offer_acceptance (
+            user_id, offer_url, accepted, accepted_at, source, updated_at
+            )
+            VALUES (
+            $1,
+            $2,
+            $3,
+            CASE WHEN $3 THEN NOW() ELSE NULL END,
+            $4,
+            NOW()
+            )
+            ON CONFLICT (user_id)
+            DO UPDATE SET
+            offer_url = EXCLUDED.offer_url,
+            accepted = EXCLUDED.accepted,
+            accepted_at = CASE WHEN EXCLUDED.accepted THEN NOW() ELSE NULL END,
+            source = EXCLUDED.source,
+            updated_at = NOW()
+            """,
+            (user_id, offer_url, accepted, source),
+        )
+
+
+    async def has_accepted_offer(self, user_id: int, offer_url: str) -> bool:
+        if not offer_url:
+            return True
+
+        row = await self.fetchone(
+            """
+            SELECT accepted
+            FROM user_offer_acceptance
+            WHERE user_id = $1 AND offer_url = $2
+            """,
+            (user_id, offer_url),
+        )
+        return bool(row and row["accepted"])
+
     async def get_max_instances_per_user(self) -> int:
         raw = await self.get_platform_setting("miniapp_public", default=None)
         if isinstance(raw, str):
@@ -875,6 +956,19 @@ class MasterDatabase:
                         last_request  TIMESTAMPTZ NOT NULL,
                         request_count INTEGER DEFAULT 1,
                         PRIMARY KEY (instance_id, chat_id)
+                    )
+                    """
+                )
+
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS user_offer_acceptance (
+                        user_id BIGINT PRIMARY KEY,
+                        offer_url TEXT NOT NULL,
+                        accepted BOOLEAN NOT NULL DEFAULT FALSE,
+                        accepted_at TIMESTAMPTZ,
+                        source TEXT, -- 'bot' | 'miniapp'
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                     )
                     """
                 )
@@ -2295,6 +2389,7 @@ class MasterDatabase:
         )
         return row["language"] if row and row["language"] is not None else None
 
+
     async def set_user_language(self, user_id: int, lang_code: str) -> None:
         """
         Обновляет язык пользователя, не трогая state/data.
@@ -2302,16 +2397,8 @@ class MasterDatabase:
         """
         await self.execute(
             """
-            INSERT INTO user_states (user_id, state, data, language)
-            VALUES ($1, COALESCE(
-                       (SELECT state FROM user_states WHERE user_id = $1),
-                       ''
-                   ),
-                    COALESCE(
-                       (SELECT data FROM user_states WHERE user_id = $1),
-                       NULL
-                   ),
-                    $2)
+            INSERT INTO user_states (user_id, state, data, language, created_at)
+            VALUES ($1, '', NULL, $2, NOW())
             ON CONFLICT (user_id)
             DO UPDATE SET language = EXCLUDED.language
             """,

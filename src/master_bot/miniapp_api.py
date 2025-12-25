@@ -295,6 +295,20 @@ class SuperadminsResponse(BaseModel):
     ids: List[int] = Field(default_factory=list)
 
 
+class OfferSettingsOut(BaseModel):
+    enabled: bool = False
+    url: str = ""
+
+class OfferStatusOut(BaseModel):
+    enabled: bool = False
+    url: str = ""
+    accepted: bool = True  # если оферта выключена — считаем accepted=True
+    acceptedAt: Optional[str] = None
+
+class OfferDecisionIn(BaseModel):
+    accepted: bool
+
+
 # ========================================================================
 # Telegram Validation
 # ========================================================================
@@ -1293,7 +1307,7 @@ async def get_single_tenant_config(db) -> SingleTenantConfig:
 
 
 async def _parse_superadmin_ids() -> set[int]:
-    # miniapp_db создаётся в create_miniapp_app и содержит masterdb в miniappdb.db [file:56]
+    # miniapp_db создаётся в create_miniapp_app и содержит master_db в miniappdb.db [file:56]
     if miniapp_db is None or getattr(miniapp_db, "db", None) is None:
         return set()
 
@@ -2385,6 +2399,39 @@ def create_miniapp_app(
         )
 
 
+    @app.get("/api/offer/settings", response_model=OfferSettingsOut)
+    async def get_offer_settings():
+        s = await master_db.get_offer_settings()
+        return OfferSettingsOut(enabled=s["enabled"], url=s["url"])
+
+    @app.get("/api/offer/status", response_model=OfferStatusOut)
+    async def get_offer_status(current_user: Dict[str, Any] = Depends(get_current_user)):
+        uid = int(current_user.get("user_id") or 0)
+        s = await master_db.get_offer_settings()
+        if not s["enabled"] or not s["url"]:
+            return OfferStatusOut(enabled=False, url="", accepted=True, acceptedAt=None)
+
+        accepted = await master_db.has_accepted_offer(uid, s["url"])
+        row = await master_db.get_user_offer_status(uid)
+        acceptedat = row.get("acceptedat")
+        return OfferStatusOut(
+            enabled=True,
+            url=s["url"],
+            accepted=accepted,
+            acceptedAt=acceptedat.isoformat() if acceptedat else None,
+        )
+
+
+    @app.post("/api/offer/decision")
+    async def post_offer_decision(payload: OfferDecisionIn, current_user: Dict[str, Any] = Depends(get_current_user)):
+        uid = int(current_user.get("user_id") or 0)
+        s = await master_db.get_offer_settings()
+        if not s["enabled"] or not s["url"]:
+            return {"status": "ignored"}  # оферта выключена
+
+        await master_db.upsert_user_offer(uid, s["url"], bool(payload.accepted), source="miniapp")
+        return {"status": "ok", "accepted": bool(payload.accepted)}
+
     @app.post("/api/invoices/stripe/{invoice_id}/cancel", response_model=StripeInvoiceCancelResponse)
     async def cancel_stripe_invoice(
         invoice_id: int,
@@ -2463,7 +2510,7 @@ def create_miniapp_app(
     @app.get("/api/platform/superadmins", response_model=SuperadminsResponse)
     async def get_platform_superadmins(currentuser: Dict[str, Any] = Depends(get_current_user)):
         await require_superadmin(currentuser)  # твой superadmin-guard
-        raw = await masterdb.get_platform_setting("miniapp_public", default={})
+        raw = await master_db.get_platform_setting("miniapp_public", default={})
         if not isinstance(raw, dict):
             raw = {}
         ids = normalize_ids(raw.get("superadmins"))
@@ -2473,13 +2520,13 @@ def create_miniapp_app(
     async def set_platform_superadmins(payload: SuperadminsUpsert, currentuser: Dict[str, Any] = Depends(get_current_user)):
         await require_superadmin(currentuser)
 
-        raw = await masterdb.get_platform_setting("miniapp_public", default={})
+        raw = await master_db.get_platform_setting("miniapp_public", default={})
         if not isinstance(raw, dict):
             raw = {}
 
         raw["superadmins"] = normalize_ids(payload.ids)
 
-        await masterdb.setplatformsetting("miniapp_public", raw)
+        await master_db.setplatformsetting("miniapp_public", raw)
         return SuperadminsResponse(ids=raw["superadmins"])
 
     @app.post("/api/platform/single-tenant", response_model=SingleTenantConfig)

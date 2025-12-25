@@ -11,6 +11,10 @@
  *
  * FIX (важно): добавлен Stripe в MiniappPublicSettings.payments.enabled и нормализацию,
  * иначе enabled.stripe вырезался при сохранении из SuperAdmin.
+ *
+ * NEW (оферта):
+ * - Добавлено поле MiniappPublicSettings.offer (enabled + url)
+ * - Добавлены методы getOfferStatus / postOfferDecision для FirstLaunch-геийтинга
  */
 
 export interface AuthRequest {
@@ -115,6 +119,19 @@ export interface StripeInvoiceStatusResponse {
   period_applied: boolean;
 }
 
+// --- Offer (публичная оферта) ---
+
+export interface OfferStatusResponse {
+  enabled: boolean;
+  url: string;
+  accepted: boolean;
+  acceptedAt?: string | null;
+}
+
+export interface OfferDecisionRequest {
+  accepted: boolean;
+}
+
 // --- Platform settings (platform_settings table) ---
 
 // GET /api/platform/settings -> { key: "miniapp_public", value: {...} }
@@ -204,6 +221,12 @@ export interface MiniappPublicSettings {
     };
   };
 
+  // NEW: публичная оферта (платформенная настройка)
+  offer?: {
+    enabled: boolean;
+    url: string;
+  };
+
   instanceDefaults: {
     antifloodMaxUserMessagesPerMinute: number;
     workerMaxFileMb: number;
@@ -249,6 +272,7 @@ function safeNumber(v: any, fallback: number) {
  * - гарантирует наличие singleTenant.allowedUserIds
  * - мигрирует старое singleTenant.ownerTelegramId -> allowedUserIds
  * - гарантирует наличие payments.* секций и enabled-флагов
+ * - NEW: гарантирует offer.enabled/url
  */
 function normalizeMiniappPublicSettings(raw: any): MiniappPublicSettings {
   const v = raw || {};
@@ -258,6 +282,7 @@ function normalizeMiniappPublicSettings(raw: any): MiniappPublicSettings {
   const ton = p?.ton || {};
   const yk = p?.yookassa || {};
   const sp = p?.stripe || {};
+  const offer = v?.offer || {};
 
   let allowed = normalizeIds(st?.allowedUserIds);
   if (allowed.length === 0 && st?.ownerTelegramId !== null && st?.ownerTelegramId !== undefined) {
@@ -326,6 +351,10 @@ function normalizeMiniappPublicSettings(raw: any): MiniappPublicSettings {
         priceUsdPro: safeNumber(sp?.priceUsdPro, defaultUsdPro),
         priceUsdEnterprise: safeNumber(sp?.priceUsdEnterprise, defaultUsdEnt),
       },
+    },
+    offer: {
+      enabled: !!offer?.enabled,
+      url: String(offer?.url ?? ''),
     },
     instanceDefaults: {
       antifloodMaxUserMessagesPerMinute: safeNumber(
@@ -465,6 +494,16 @@ class ApiClient {
 
   async getMe() {
     return this.request('GET', '/api/me');
+  }
+
+  // === Offer (публичная оферта) ===
+  async getOfferStatus(): Promise<OfferStatusResponse> {
+    return this.request<OfferStatusResponse>('GET', '/api/offer/status');
+  }
+
+  async postOfferDecision(accepted: boolean): Promise<{ status: string; accepted?: boolean }> {
+    const payload: OfferDecisionRequest = { accepted: !!accepted };
+    return this.request('POST', '/api/offer/decision', payload);
   }
 
   // === Instances ===
