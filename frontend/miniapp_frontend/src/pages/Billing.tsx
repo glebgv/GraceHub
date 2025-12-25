@@ -116,6 +116,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
     stripe: boolean; // Новый
   }>({ telegramStars: true, ton: true, yookassa: true, stripe: true });
   const [paymentsLoading, setPaymentsLoading] = useState(true);
+  const [paymentPrices, setPaymentPrices] = useState<any>(null);
 
   const [selectedPlan, setSelectedPlan] = useState<SaasPlanDTO | null>(null);
   const [selectedPeriod, setSelectedPeriod] = useState<PeriodOption | null>(periodOptions[0]);
@@ -226,6 +227,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
           yookassa: !!s?.payments?.enabled?.yookassa,
           stripe: !!s?.payments?.enabled?.stripe, // Новый
         });
+        setPaymentPrices(s.payments);
       } catch (e: any) {
         // Fail-open to avoid breaking billing if settings are temporarily unavailable
         // (server-side still should validate method availability)
@@ -248,7 +250,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
   const paymentMethods: Array<{ value: PaymentMethod; label: string }> = useMemo(() => {
     const out: Array<{ value: PaymentMethod; label: string }> = [];
 
-    if (paymentsEnabled.telegramStars) out.push({ value: 'telegram_stars', label: t('billing.payment_method_stars') });
+    if (paymentsEnabled.telegramStars) out.push({ value: 'telegramstars', label: t('billing.payment_method_stars') });
     if (paymentsEnabled.ton) out.push({ value: 'ton', label: t('billing.payment_method_ton') });
     if (paymentsEnabled.yookassa) out.push({ value: 'yookassa', label: t('billing.payment_method_yookassa') });
     if (paymentsEnabled.stripe) out.push({ value: 'stripe', label: t('billing.payment_method_stripe') });
@@ -651,7 +653,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
       });
 
       // Stars
-      if (paymentMethod === 'telegram_stars') {
+      if (paymentMethod === 'telegramstars') {
         const tg = (window as any).Telegram?.WebApp;
 
         if (tg?.openInvoice) {
@@ -1152,8 +1154,8 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
                   <div style={{ marginTop: 4, fontSize: 13 }}>
                     {(() => {
                       const enabled = paymentMethods.map((m) => m.value); // already filtered by paymentsEnabled [file:4]
-                      const hasStars = enabled.includes('telegram_stars');
-                      const hasOther = enabled.some((v) => v !== 'telegram_stars');
+                      const hasStars = enabled.includes('telegramstars');
+                      const hasOther = enabled.some((v) => v !== 'telegramstars');
 
                       if (hasStars && !hasOther) {
                         return (
@@ -1188,7 +1190,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
                           lineHeight: 1,
                         }}
                       >
-                        {m.value === 'telegram_stars' ? '⭐ ' : ''}
+                        {m.value === 'telegramstars' ? '⭐ ' : ''}
                         {m.label}
                       </span>
                     ))}
@@ -1395,15 +1397,39 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
                 </div>
 
                 <div style={{ fontSize: 16, fontWeight: 600 }}>
-                  {paymentMethod === 'telegram_stars'
-                    ? `${selectedPlan.priceStars * selectedPeriod.multiplier} ⭐`
-                    : paymentMethod === 'ton'
-                      ? t('billing.ton_price_after_invoice')
-                      : paymentMethod === 'yookassa'
-                        ? t('billing.yk_price_after_invoice')
-                        : paymentMethod === 'stripe'
-                          ? t('billing.stripe_price_after_invoice')
-                          : '—'}
+                  {(() => {
+                    const getDisplayPrice = () => {
+                      if (!paymentMethod || !paymentPrices) return '—';
+                      const planCode = selectedPlan.planCode.toLowerCase(); // e.g., 'lite'
+                      const periods = selectedPeriod.multiplier;
+                      const methodPrices = paymentPrices[paymentMethod]; // e.g., paymentPrices.ton
+
+                      if (!methodPrices) return t('billing.price_after_invoice');
+
+                      // Map planCode to price field (capitalize first letter for Pro/Enterprise)
+                      const priceField = `price${paymentMethod === 'ton' ? 'PerPeriod' : (paymentMethod === 'yookassa' ? 'Rub' : 'Usd')}${planCode.charAt(0).toUpperCase() + planCode.slice(1)}`;
+                      const basePrice = methodPrices[priceField] || 0; // Fallback to 0 if missing
+
+                      const total = basePrice * periods;
+                      let formatted = total.toFixed(2); // Adjust decimals based on method
+
+                      // Currency-specific formatting
+                      switch (paymentMethod) {
+                        case 'telegramstars':
+                          return `${selectedPlan.priceStars * periods} ⭐`; // Existing
+                        case 'ton':
+                          return `${formatted} TON`;
+                        case 'yookassa':
+                          return `${Math.round(total)} RUB`; // RUB usually whole numbers
+                        case 'stripe':
+                          const currency = methodPrices.currency?.toUpperCase() || 'USD';
+                          return `${formatted} ${currency}`;
+                        default:
+                          return '—';
+                      }
+                    };
+                    return getDisplayPrice();
+                  })()}
                 </div>
 
                 {submitError && (
