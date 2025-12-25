@@ -13,6 +13,7 @@ import FirstLaunch from './pages/FirstLaunch';
 import { useTranslation } from 'react-i18next';
 import i18n from './i18n';
 import AddBotModal from './components/AddBotModal';
+import 'flag-icons/css/flag-icons.min.css';
 
 interface AppProps {
   instanceIdFromUrl: string | null;
