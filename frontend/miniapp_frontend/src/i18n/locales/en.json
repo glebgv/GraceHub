@@ -5,9 +5,9 @@
     "masterBot": "Master Bot",
     "footerBrand": "Powered by GraceHub 0.1.0a",
     "loading": "Loading app...",
-    "error_open_from_telegram": "Open the mini app via Telegram",
+    "open_from_telegram": "Open the mini app via Telegram",
     "error_owner_only": "This panel is available only to the bot owner. Open the mini app from the administrator account.",
-    "error_hint_open_from_bot": "Open the mini app directly from Telegram (@bot_name → menu button)",
+    "open_from_telegram_hint": "Open the mini app directly from Telegram",
     "first_launch_prompt": "Paste the bot token from @BotFather:",
     "first_launch_create_error_fallback": "Failed to create the bot. Check the token and permissions.",
     "footer_text": "for your support",
@@ -236,5 +236,9 @@
     "cancel": "Cancel",
     "add_owner_title": "Add owner ID",
     "owner_user_id_placeholder": "Enter user_id"
+  },
+  "instances": {
+    "select_instance_title": "Select an instance",
+    "available_count": "{{count}} available"
   }
 }

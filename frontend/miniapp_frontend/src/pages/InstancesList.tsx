@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 
 interface Instance {
   instanceid: string;
@@ -49,6 +50,7 @@ const InstancesList: React.FC<InstancesListProps> = ({
   onDismissLimitMessage,
 }) => {
   console.log('[InstancesList] instances prop:', instances);
+  const { t } = useTranslation();
 
   const [instanceToDelete, setInstanceToDelete] = useState<Instance | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -158,8 +160,10 @@ const InstancesList: React.FC<InstancesListProps> = ({
     <div className="instances-page">
       <div className="instances-top">
         <div className="instances-title">
-          <h2 className="instances-h2">Выберите инстанс</h2>
-          <div className="instances-subtitle">{instances.length} доступных</div>
+          <h2 className="instances-h2">{t('instances.select_instance_title')}</h2>
+          <div className="instances-subtitle">
+            {t('instances.available_count', { count: instances.length })}
+          </div>
         </div>
 
         <div className="instances-actions">

@@ -5,9 +5,9 @@
     "masterBot": "मास्टर बॉट",
     "footerBrand": "GraceHub 0.1.0a पर चलता है",
     "loading": "एप्लिकेशन लोड हो रहा है...",
-    "error_open_from_telegram": "कृपया मिनी ऐप Telegram के माध्यम से खोलें",
+    "open_from_telegram": "कृपया मिनी ऐप Telegram के माध्यम से खोलें",
     "error_owner_only": "यह पैनल केवल बॉट के मालिक के लिए उपलब्ध है। कृपया एडमिन अकाउंट से मिनी‑ऐप खोलें।",
-    "error_hint_open_from_bot": "Telegram में सीधे बॉट से मिनी ऐप खोलें (@bot_name → मेनू बटन)",
+    "open_from_telegram_hint": "Telegram में सीधे बॉट से मिनी ऐप खोलें",
     "first_launch_prompt": "@BotFather से बॉट टोकन डालें:",
     "first_launch_create_error_fallback": "बॉट नहीं बनाया जा सका। टोकन और एक्सेस अनुमति की जाँच करें।",
     "footer_text": "आपके समर्थन के लिए",
@@ -236,5 +236,9 @@
     "cancel": "रद्द करें",
     "add_owner_title": "owner ID जोड़ें",
     "owner_user_id_placeholder": "user_id दर्ज करें"
+  },
+  "instances": {
+    "select_instance_title": "एक इंस्टेंस चुनें",
+    "available_count": "{{count}} उपलब्ध"
   }
 }

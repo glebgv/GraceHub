@@ -5,9 +5,9 @@
     "masterBot": "主控机器人",
     "footerBrand": "由 GraceHub 0.1.0a 提供支持",
     "loading": "正在加载应用…",
-    "error_open_from_telegram": "请通过 Telegram 打开 mini app",
+    "open_from_telegram": "请通过 Telegram 打开 mini app",
     "error_owner_only": "此面板仅限机器人所有者使用。请使用管理员账户打开。",
-    "error_hint_open_from_bot": "请直接从 Telegram 中的机器人打开 mini app（@bot_name → 菜单按钮）",
+    "open_from_telegram_hint": "请直接从 Telegram 中的机器人打开 mini app",
     "first_launch_prompt": "请输入来自 @BotFather 的机器人令牌：",
     "first_launch_create_error_fallback": "创建机器人失败。请检查令牌和访问权限。",
     "footer_text": "感谢您的支持",
@@ -236,5 +236,9 @@
     "cancel": "取消",
     "add_owner_title": "添加 owner ID",
     "owner_user_id_placeholder": "请输入 user_id"
+  },
+  "instances": {
+    "select_instance_title": "选择一个实例",
+    "available_count": "可用：{{count}}"
   }
 }

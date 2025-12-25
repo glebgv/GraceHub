@@ -7,13 +7,34 @@ export default defineConfig(({ mode }) => {
   const envDir = path.resolve(__dirname, '../')
   const env = loadEnv(mode, envDir, '') // '' = все переменные без VITE_
 
+  const domain = env.WEBHOOK_DOMAIN || 'localhost'
+
   return {
     plugins: [react()],
     envDir,
+
+    // ВАЖНО: miniapp dev смонтирован под /app/
+    // Это заставит Vite отдавать client/assets с префиксом /app/ вместо /. [web:109]
+    base: '/app/',
+
     server: {
       host: '0.0.0.0',
       port: 5173,
-      allowedHosts: [env.WEBHOOK_DOMAIN, `www.${env.WEBHOOK_DOMAIN}`, 'localhost'],
+      strictPort: true,
+
+      // allowedHosts — чтобы Vite отвечал на запросы с Host: gracehub.ru [web:23]
+      allowedHosts: [domain, `www.${domain}`, 'localhost'],
+
+      // ВАЖНО: HMR по wss через домен/443 (nginx TLS), иначе клиент будет пытаться ходить не туда. [web:23][web:24]
+      hmr: {
+        protocol: 'wss',
+        host: domain,
+        clientPort: 443,
+
+        // Если после base всё равно будет странный путь, можно раскомментировать:
+        // path: '/app/',
+      },
+
       proxy: {
         '/api': {
           target: 'http://localhost:8001',
@@ -21,11 +42,13 @@ export default defineConfig(({ mode }) => {
         },
       },
     },
+
     define: {
       // Делаем доступными глобально везде
-      'process.env.WEBHOOK_DOMAIN': JSON.stringify(env.WEBHOOK_DOMAIN),
-      'import.meta.env.WEBHOOK_DOMAIN': JSON.stringify(env.WEBHOOK_DOMAIN),
+      'process.env.WEBHOOK_DOMAIN': JSON.stringify(domain),
+      'import.meta.env.WEBHOOK_DOMAIN': JSON.stringify(domain),
     },
+
     build: {
       outDir: 'dist',
       sourcemap: false,
