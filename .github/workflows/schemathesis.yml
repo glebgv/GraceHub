@@ -43,8 +43,10 @@ jobs:
           ENV: ci
           CI_TEST_LOGIN_SECRET: ${{ secrets.CI_TEST_LOGIN_SECRET }}
           DATABASE_URL: postgresql://gh_user:postgres@127.0.0.1:5432/gracehub
+          ENCRYPTION_KEY_FILE: ${{ github.workspace }}/.ci/master_key.key
           DEBUG: "0"
         run: |
+          mkdir -p .ci
           nohup python src/master_bot/api_server.py > api.log 2>&1 &
           echo $! > api.pid
           echo "API PID=$(cat api.pid)"
@@ -93,4 +95,5 @@ jobs:
           path: |
             api.log
             logs/masterbot.log
+            .ci/master_key.key
 
