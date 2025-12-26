@@ -9,6 +9,9 @@ on:
 jobs:
   schemathesis:
     runs-on: ubuntu-latest
+    # Если CI_TEST_LOGIN_SECRET хранится в GitHub Environment secrets,
+    # то нужно привязать job к environment (пример):
+    # environment: ci
 
     services:
       postgres:
@@ -56,16 +59,14 @@ jobs:
 
       - name: Wait for API
         run: |
-          for i in $(seq 1 60); do
-            curl -fsS http://127.0.0.1:8001/openapi.json >/dev/null && exit 0
-            sleep 1
-          done
-          echo "API did not start in time"
-          echo "---- api.log (tail) ----"
-          tail -n 300 api.log || true
-          echo "---- logs/masterbot.log (tail) ----"
-          tail -n 300 logs/masterbot.log || true
-          exit 1
+          curl -fsS \
+            --retry 60 \
+            --retry-connrefused \
+            --retry-all-errors \
+            --retry-delay 1 \
+            --retry-max-time 60 \
+            http://127.0.0.1:8001/openapi.json \
+            >/dev/null
 
       - name: Get token
         env:
@@ -77,9 +78,14 @@ jobs:
             | python -c "import sys,json; print(json.load(sys.stdin)['token'])")
           echo "API_TOKEN=$TOKEN" >> "$GITHUB_ENV"
 
-      - name: Run Schemathesis
+      - name: Run Schemathesis (auth + exclude external)
         run: |
-          schemathesis run http://127.0.0.1:8001/openapi.json
+          schemathesis run http://127.0.0.1:8001/openapi.json \
+            --header "Authorization: Bearer $API_TOKEN" \
+            --exclude-path "/api/instances" \
+            --exclude-path "/api/billing/yookassa/status" \
+            --exclude-path "/api/billing/ton/status" \
+            --exclude-path-regex "^/api/invoices/stripe/.+/cancel$"
 
       - name: Stop API
         if: always()
