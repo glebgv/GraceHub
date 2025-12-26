@@ -1,6 +1,7 @@
 name: Schemathesis
 
 on:
+  workflow_dispatch:
   pull_request:
   push:
     branches: [ main, dev ]
@@ -15,7 +16,7 @@ jobs:
         env:
           POSTGRES_DB: gracehub
           POSTGRES_USER: gh_user
-          POSTGRES_PASSWORD: ${{ secrets.PG_PASSWORD }}
+          POSTGRES_PASSWORD: postgres
         ports:
           - 5432:5432
         options: >-
@@ -26,6 +27,7 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -40,12 +42,7 @@ jobs:
         env:
           ENV: ci
           CI_TEST_LOGIN_SECRET: ${{ secrets.CI_TEST_LOGIN_SECRET }}
-
-          DATABASE_URL: postgresql://gh_user:${{ secrets.PG_PASSWORD }}@127.0.0.1:5432/gracehub
-
-          GRACEHUB_BOT_TOKEN: ${{ secrets.GRACEHUB_BOT_TOKEN }}
-          WEBHOOK_DOMAIN: ${{ secrets.WEBHOOK_DOMAIN }}
-
+          DATABASE_URL: postgresql://gh_user:postgres@127.0.0.1:5432/gracehub
           DEBUG: "0"
         run: |
           nohup python src/master_bot/api_server.py > api.log 2>&1 &
