@@ -80,8 +80,7 @@ jobs:
 
       - name: Run Schemathesis (auth + exclude external)
         run: |
-          schemathesis run http://127.0.0.1:8001/openapi.json \
-            --header "Authorization: Bearer $API_TOKEN" \
+          schemathesis --config-file "${{ github.workspace }}/tests/schemathesis.toml" run http://127.0.0.1:8001/openapi.json \
             --exclude-path "/api/instances" \
             --exclude-path "/api/billing/yookassa/status" \
             --exclude-path "/api/billing/ton/status" \

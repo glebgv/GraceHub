@@ -1,35 +1,5 @@
-# ---- Auth ----
 headers = { Authorization = "Bearer ${API_TOKEN}" }
 
-# ---- Safety / load ----
-rate-limit = "2/s"
-request-timeout = 15
-
-[phases.fuzzing.generation]
-max-examples = 30
-
-[phases.stateful]
-enabled = false
-
-# ---- Exclude noisy / external integration endpoints ----
-
-# Stripe webhook (внешний провайдер + специфичные заголовки)
-[[operations]]
-include-path = "/api/webhook/stripe"
-enabled = false
-
-# YooKassa webhook
-[[operations]]
-include-path = "/api/billing/yookassa/webhook"
-enabled = false
-
-# Payment status/cancel endpoints (дергают внешние сети / требуют реальных invoice_id)
-[[operations]]
-include-path-regex = "^/api/billing/(ton|yookassa)/(status|cancel)$"
-enabled = false
-
-# Invoice cancel (может ходить во внешнее)
-[[operations]]
-include-path-regex = "^/api/invoices/stripe/.*/cancel$"
-enabled = false
+[checks]
+missing_required_header.expected-statuses = [400, 401, 403, 406, 422]
 

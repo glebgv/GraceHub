@@ -2410,10 +2410,9 @@ def create_miniapp_app(
         },
     )
     async def get_stripe_invoice_status(
-        instance_id: InstanceId,
+        invoice_id: int = ApiPath(..., ge=1),
         current_user: Dict[str, Any] = Depends(get_current_user),
     ):
-        # DB-first (вариант A): не ходим в Stripe API, доверяем webhook'у + БД
         invoice = await miniapp_db.db.fetchone(
             """
             SELECT
@@ -2438,17 +2437,13 @@ def create_miniapp_app(
         if str(invoice.get("payment_method") or "").lower() != "stripe":
             raise HTTPException(status_code=400, detail="Not a Stripe invoice")
 
-        # Вариант A: статус возвращаем из БД (его обновляет webhook через external_id) и period_applied тоже из БД
-        # Важно: "status" в ответе теперь будет твоим внутренним (pending/succeeded/failed/cancelled),
-        # а не Stripe payment_status (paid/unpaid).
         return StripeInvoiceStatusResponse(
             invoice_id=int(invoice["invoice_id"]),
             status=str(invoice.get("status") or "pending"),
             session_id=invoice.get("external_id"),
-            payment_intent_id=None,  # без Stripe API мы его не знаем; если нужно — сохраняй в БД в webhook
+            payment_intent_id=None,
             period_applied=bool(invoice.get("period_applied", False)),
         )
-
 
     @app.get("/api/offer/settings", response_model=OfferSettingsOut)
     async def get_offer_settings():
@@ -3664,7 +3659,7 @@ def create_miniapp_app(
         },
     )
     async def delete_instance_endpoint(
-        instance_id: str,
+        instance_id: InstanceId,
         current_user: Dict[str, Any] = Depends(get_current_user),
     ):
         """
