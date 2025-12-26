@@ -18,27 +18,43 @@ logger = logging.getLogger(__name__)
 
 def get_master_dsn() -> str:
     """
-    Возвращает DSN для master-БД из settings.py или env
+    Возвращает DSN для master-БД.
+
+    Приоритет:
+    1) env DATABASE_URL (обязательно для CI)
+    2) settings.DATABASE_URL (удобно для локальной разработки)
     """
-    # 1. Импорт settings с правильным путем
-    try:
-        from . import settings
-        return settings.DATABASE_URL
-    except (ImportError, AttributeError):
-        pass
-    
-    # 2. Fallback на env переменную
+    env = (os.getenv("ENV") or "").lower()
     env_dsn = os.getenv("DATABASE_URL")
+
+    # CI guard: в CI запрещаем "молча" брать DSN из settings/.env
+    if env == "ci":
+        if not env_dsn:
+            raise RuntimeError(
+                "ENV=ci: DATABASE_URL не задан (или пустой).\n"
+                "Нужно передать DATABASE_URL через GitHub Actions env, например:\n"
+                "DATABASE_URL=postgresql://gh_user:postgres@127.0.0.1:5432/gracehub"
+            )
+        return env_dsn
+
+    # Не-CI: сначала env (если задан), чтобы можно было переопределять локально
     if env_dsn:
         return env_dsn
-    
+
+    # Фоллбек на settings
+    try:
+        from . import settings
+        dsn = getattr(settings, "DATABASE_URL", None)
+        if dsn:
+            return dsn
+    except ImportError:
+        pass
+
     raise RuntimeError(
         "DATABASE_URL не задан.\n"
         "1. Добавь в .env: DB_USER, DB_PASSWORD, DB_HOST, DB_NAME\n"
         "2. Или DATABASE_URL=postgresql://user:pass@host:port/dbname"
     )
-
-
 
 class MasterDatabase:
     """
