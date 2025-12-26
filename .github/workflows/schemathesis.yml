@@ -45,6 +45,9 @@ jobs:
           DATABASE_URL: postgresql://gh_user:postgres@127.0.0.1:5432/gracehub
           ENCRYPTION_KEY_FILE: ${{ github.workspace }}/.ci/master_key.key
           DEBUG: "0"
+          # Чтобы aiogram не падал на валидации формата токена в CI, задаём валидный dummy "<digits>:<string>"
+          MASTER_BOT_TOKEN: 123456789:ci_dummy_token
+          WEBHOOK_DOMAIN: ci.local
         run: |
           mkdir -p .ci
           nohup python src/master_bot/api_server.py > api.log 2>&1 &
