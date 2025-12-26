@@ -16,6 +16,7 @@ import time
 import os
 import secrets
 from pathlib import Path
+from typing import Annotated
 from fastapi import Path as ApiPath, Body
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -319,6 +320,19 @@ class YooKassaWebhook(BaseModel):
         id: StrictStr
 
     object: Object
+
+INSTANCE_ID_RE = r"^[A-Za-z0-9_-]{1,128}$"
+
+InstanceId = Annotated[
+    str,
+    ApiPath(
+        ...,
+        min_length=1,
+        max_length=128,
+        pattern=INSTANCE_ID_RE,
+        description="GraceHub instance id",
+    ),
+]
 
 # ========================================================================
 # Telegram Validation
@@ -1495,7 +1509,7 @@ def create_miniapp_app(
         },
     )
     async def create_billing_invoice(
-        instance_id: str,
+        instance_id: InstanceId,
         req: CreateInvoiceRequest,
         current_user: Dict[str, Any] = Depends(get_current_user),
     ):
@@ -2396,7 +2410,7 @@ def create_miniapp_app(
         },
     )
     async def get_stripe_invoice_status(
-        invoice_id: int = ApiPath(..., ge=1),
+        instance_id: InstanceId,
         current_user: Dict[str, Any] = Depends(get_current_user),
     ):
         # DB-first (вариант A): не ходим в Stripe API, доверяем webhook'у + БД
@@ -2508,6 +2522,8 @@ def create_miniapp_app(
         "/api/webhook/stripe",
         responses={
             **COMMON_BAD_REQUEST_RESPONSES,
+            422: {"description": "Validation Error"},
+            503: {"description": "Stripe webhook not configured"},
         },
     )
     async def stripe_webhook(
@@ -2523,14 +2539,16 @@ def create_miniapp_app(
             except Exception:
                 ps = None
 
+        # Было 500 → лучше 503 (в окружении сервис поднят, но конфиг не готов)
         if not isinstance(ps, dict):
-            raise HTTPException(status_code=500, detail="Platform settings not configured")
+            raise HTTPException(status_code=503, detail="Platform settings not configured")
 
         stripe_cfg = (ps.get("payments") or {}).get("stripe") or {}
         wh_secret = str(stripe_cfg.get("webhookSecret") or "").strip()
 
+        # Было 500 → нужно 503, и он уже задокументирован в responses
         if not wh_secret:
-            raise HTTPException(status_code=500, detail="Stripe webhookSecret not configured")
+            raise HTTPException(status_code=503, detail="Stripe webhook not configured")
 
         try:
             event = stripe.Webhook.construct_event(payload, stripe_signature, wh_secret)
@@ -2550,7 +2568,7 @@ def create_miniapp_app(
                 await miniapp_db.db.apply_invoice_to_billing(int(invoice_id))
 
         return {"status": "ok"}
-        
+            
     @app.get(
         "/api/platform/single-tenant",
         response_model=SingleTenantConfig,
@@ -3239,7 +3257,7 @@ def create_miniapp_app(
         },
     )
     async def get_instance_billing_endpoint(
-        instance_id: str = ApiPath(..., min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$"),
+        instance_id: InstanceId,
         current_user: Dict[str, Any] = Depends(get_current_user),
     ):
         """
@@ -3628,7 +3646,7 @@ def create_miniapp_app(
         },
     )
     async def get_instance_stats(
-        instance_id: str,
+        instance_id: InstanceId,
         current_user: Dict[str, Any] = Depends(get_current_user),
         days: int = Query(30, ge=1, le=365),
     ):
@@ -3713,7 +3731,7 @@ def create_miniapp_app(
         },
     )
     async def get_instance_settings_endpoint(
-        instance_id: str = ApiPath(..., min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$"),
+        instance_id: InstanceId,
         current_user: Dict[str, Any] = Depends(get_current_user),
     ):
         await require_instance_access(instance_id, current_user)
@@ -3788,7 +3806,7 @@ def create_miniapp_app(
         },
     )
     async def list_tickets_endpoint(
-        instance_id: str,
+        instance_id: InstanceId,
         status: Optional[str] = None,
         search: Optional[str] = None,
         limit: int = Query(20, ge=1, le=100),
@@ -3837,7 +3855,7 @@ def create_miniapp_app(
         responses={**COMMON_AUTH_RESPONSES, **COMMON_BAD_REQUEST_RESPONSES, **COMMON_NOT_FOUND_RESPONSES},
     )
     async def update_ticket_status_endpoint(
-        instance_id: str,
+        instance_id: InstanceId,
         ticket_id: int,
         payload: UpdateTicketStatusRequest,
         current_user: Dict[str, Any] = Depends(get_current_user),
@@ -3868,7 +3886,7 @@ def create_miniapp_app(
         },
     )
     async def get_operators(
-        instance_id: str,
+        instance_id: InstanceId,
         current_user: Dict[str, Any] = Depends(get_current_user),
     ):
         await require_instance_access(instance_id, current_user)
@@ -3881,7 +3899,7 @@ def create_miniapp_app(
         responses={**COMMON_AUTH_RESPONSES, **COMMON_BAD_REQUEST_RESPONSES, **COMMON_NOT_FOUND_RESPONSES},
     )
     async def add_operator(
-        instance_id: str,
+        instance_id: InstanceId,
         req: AddOperatorRequest,
         current_user: Dict[str, Any] = Depends(get_current_user),
     ):
@@ -3912,7 +3930,7 @@ def create_miniapp_app(
     )
     async def remove_operator(
         user_id: int,
-        instance_id: str = ApiPath(..., min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$"),
+        instance_id: InstanceId,
         current_user: Dict[str, Any] = Depends(get_current_user),
     ):
         await require_instance_access(instance_id, current_user, required_role="owner")
