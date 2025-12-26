@@ -78,18 +78,15 @@ jobs:
             | python -c "import sys,json; print(json.load(sys.stdin)['token'])")
           echo "API_TOKEN=$TOKEN" >> "$GITHUB_ENV"
 
-      - name: Run Schemathesis (auth + exclude external)
+      - name: Run Schemathesis (auth + excludes in toml)
         run: |
-          schemathesis --config-file "${{ github.workspace }}/tests/schemathesis.toml" run http://127.0.0.1:8001/openapi.json \
-            --exclude-path "/api/instances" \
-            --exclude-path "/api/billing/yookassa/status" \
-            --exclude-path "/api/billing/ton/status" \
-            --exclude-path-regex "^/api/invoices/stripe/.+/cancel$"
+          schemathesis --config-file "${{ github.workspace }}/tests/schemathesis.toml" run \
+            http://127.0.0.1:8001/openapi.json
 
       - name: Stop API
         if: always()
         run: |
-          kill $(cat api.pid) || true
+          kill "$(cat api.pid)" || true
           echo "---- api.log (tail) ----"
           tail -n 300 api.log || true
           echo "---- logs/masterbot.log (tail) ----"

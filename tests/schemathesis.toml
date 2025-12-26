@@ -3,3 +3,26 @@ headers = { Authorization = "Bearer ${API_TOKEN}" }
 [checks]
 missing_required_header.expected-statuses = [400, 401, 403, 406, 422]
 
+# Отключаем конкретные операции по exact path
+[[operations]]
+include-path = "/api/instances"
+enabled = false
+
+[[operations]]
+include-path = "/api/billing/yookassa/status"
+enabled = false
+
+[[operations]]
+include-path = "/api/webhook/stripe"
+enabled = false
+
+[[operations]]
+include-path = "/api/billing/ton/status"
+enabled = false
+
+# Отключаем по exact "operation name" (метод + путь)
+# (это замена вашему --exclude-path-regex "^/api/invoices/stripe/.+/cancel$")
+[[operations]]
+include-name = "POST /api/invoices/stripe/{invoice_id}/cancel"
+enabled = false
+
