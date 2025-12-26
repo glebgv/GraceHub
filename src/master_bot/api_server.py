@@ -53,7 +53,9 @@ if CI_MODE:
 MASTER_BOT_TOKEN = os.getenv("GRACEHUB_BOT_TOKEN") or os.getenv("MASTER_BOT_TOKEN")
 if not MASTER_BOT_TOKEN:
     if CI_MODE:
-        MASTER_BOT_TOKEN = "ci-dummy-token"
+        # Важно: aiogram валидирует формат токена при создании Bot(token=...),
+        # поэтому dummy-токен должен выглядеть как "<digits>:<string>".
+        MASTER_BOT_TOKEN = "123456789:ci_dummy_token"
         logger.warning("CI mode: using dummy MASTER_BOT_TOKEN")
     else:
         logger.error("❌ MASTER_BOT_TOKEN не найден в .env")
