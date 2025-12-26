@@ -47,6 +47,7 @@ jobs:
         run: |
           nohup python src/master_bot/api_server.py > api.log 2>&1 &
           echo $! > api.pid
+          echo "API PID=$(cat api.pid)"
 
       - name: Wait for API
         run: |
@@ -55,7 +56,10 @@ jobs:
             sleep 1
           done
           echo "API did not start in time"
-          tail -n 200 api.log || true
+          echo "---- api.log (tail) ----"
+          tail -n 300 api.log || true
+          echo "---- logs/masterbot.log (tail) ----"
+          tail -n 300 logs/masterbot.log || true
           exit 1
 
       - name: Get token
@@ -76,5 +80,17 @@ jobs:
         if: always()
         run: |
           kill $(cat api.pid) || true
-          tail -n 200 api.log || true
+          echo "---- api.log (tail) ----"
+          tail -n 300 api.log || true
+          echo "---- logs/masterbot.log (tail) ----"
+          tail -n 300 logs/masterbot.log || true
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-logs
+          path: |
+            api.log
+            logs/masterbot.log
 
