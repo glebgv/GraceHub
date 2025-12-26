@@ -2410,7 +2410,7 @@ def create_miniapp_app(
         },
     )
     async def get_stripe_invoice_status(
-        invoice_id: int = Query(..., ge=1, le=9223372036854775807),
+        invoice_id: int = ApiPath(..., ge=1, le=9223372036854775807),
         current_user: Dict[str, Any] = Depends(get_current_user),
     ):
         invoice = await miniapp_db.db.fetchone(
