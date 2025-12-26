@@ -12,9 +12,18 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-# Важно: по умолчанию python-dotenv не перезаписывает уже заданные переменные окружения,
-# поэтому значения из GitHub Actions env останутся приоритетными. [web:967]
-load_dotenv()
+# Сначала читаем ENV, чтобы в CI не грузить .env вообще
+ENV = (os.getenv("ENV") or "").lower()
+CI_MODE = ENV == "ci"
+
+if not CI_MODE:
+    # В dev/local удобно подхватывать .env.
+    # В CI это лучше отключить, чтобы .env из репозитория не подменял DATABASE_URL и другие переменные.
+    load_dotenv()
+else:
+    # Явно логируем причину, чтобы в CI было понятно поведение
+    logging.basicConfig(level=logging.INFO)
+    logging.getLogger(__name__).warning("CI mode enabled (ENV=ci): .env loading is skipped")
 
 # ==== Пути проекта ====
 PROJECT_ROOT = Path(__file__).resolve().parents[2]  # /root/gracehub
@@ -33,12 +42,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-ENV = (os.getenv("ENV") or "").lower()
 DEBUG = bool(int(os.getenv("DEBUG", "0")))
 
 # --- CI mode defaults ---
 # В CI не хотим тащить реальные Telegram секреты и не хотим сетевые зависимости.
-CI_MODE = ENV == "ci"
 if CI_MODE:
     logger.warning("CI mode enabled (ENV=ci): Telegram token & webhook domain are not required")
 
@@ -46,8 +53,6 @@ if CI_MODE:
 MASTER_BOT_TOKEN = os.getenv("GRACEHUB_BOT_TOKEN") or os.getenv("MASTER_BOT_TOKEN")
 if not MASTER_BOT_TOKEN:
     if CI_MODE:
-        # Заглушка: должна быть приемлема, если MasterBot / TelegramAuthValidator
-        # не делает сетевых вызовов на старте.
         MASTER_BOT_TOKEN = "ci-dummy-token"
         logger.warning("CI mode: using dummy MASTER_BOT_TOKEN")
     else:
