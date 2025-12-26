@@ -1,0 +1,83 @@
+name: Schemathesis
+
+on:
+  pull_request:
+  push:
+    branches: [ main ]
+
+jobs:
+  schemathesis:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: gracehub
+          POSTGRES_USER: gh_user
+          POSTGRES_PASSWORD: ${{ secrets.PG_PASSWORD }}
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U gh_user -d gracehub"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          python -m pip install -U pip
+          pip install -r requirements.txt
+          pip install schemathesis
+
+      - name: Start API (background)
+        env:
+          ENV: ci
+          CI_TEST_LOGIN_SECRET: ${{ secrets.CI_TEST_LOGIN_SECRET }}
+
+          DATABASE_URL: postgresql://gh_user:${{ secrets.PG_PASSWORD }}@127.0.0.1:5432/gracehub
+
+          GRACEHUB_BOT_TOKEN: ${{ secrets.GRACEHUB_BOT_TOKEN }}
+          WEBHOOK_DOMAIN: ${{ secrets.WEBHOOK_DOMAIN }}
+
+          DEBUG: "0"
+        run: |
+          nohup python src/master_bot/api_server.py > api.log 2>&1 &
+          echo $! > api.pid
+
+      - name: Wait for API
+        run: |
+          for i in $(seq 1 60); do
+            curl -fsS http://127.0.0.1:8001/openapi.json >/dev/null && exit 0
+            sleep 1
+          done
+          echo "API did not start in time"
+          tail -n 200 api.log || true
+          exit 1
+
+      - name: Get token
+        env:
+          CI_TEST_LOGIN_SECRET: ${{ secrets.CI_TEST_LOGIN_SECRET }}
+        run: |
+          TOKEN=$(curl -fsS -X POST http://127.0.0.1:8001/__test__/login \
+            -H 'Content-Type: application/json' \
+            -d "{\"secret\":\"$CI_TEST_LOGIN_SECRET\"}" \
+            | python -c "import sys,json; print(json.load(sys.stdin)['token'])")
+          echo "API_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+
+      - name: Run Schemathesis
+        run: |
+          schemathesis run http://127.0.0.1:8001/openapi.json
+
+      - name: Stop API
+        if: always()
+        run: |
+          kill $(cat api.pid) || true
+          tail -n 200 api.log || true
+

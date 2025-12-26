@@ -16,6 +16,7 @@ import time
 import os
 import secrets
 from pathlib import Path
+from fastapi import Path as ApiPath, Body
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
@@ -24,15 +25,29 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictBool, StrictInt, StrictStr
 from shared import settings
 from enum import Enum
 from urllib.parse import parse_qsl, unquote, quote
 from fastapi import APIRouter
-
+from .routers.test_auth import router as test_auth_router
 from .main import MasterBot
 
 logger = logging.getLogger(__name__)
+
+# Константы под коды ответов
+COMMON_AUTH_RESPONSES = {
+    401: {"description": "Unauthorized"},
+    403: {"description": "Forbidden"},
+}
+
+COMMON_NOT_FOUND_RESPONSES = {
+    404: {"description": "Not Found"},
+}
+
+COMMON_BAD_REQUEST_RESPONSES = {
+    400: {"description": "Bad Request"},
+}
 
 # ========================================================================
 # Models & Schemas
@@ -161,16 +176,8 @@ class AddOperatorRequest(BaseModel):
 
 
 class ResolveInstanceRequest(BaseModel):
-    """
-    Запрос на определение инстанса при старте мини‑аппы.
-    Любое из полей может быть None:
-    - instance_id: явное указание инстанса
-    - admin_id: Telegram user id администратора, к которому привязан инстанс
-    """
-
-    instance_id: Optional[str] = None
-    admin_id: Optional[int] = None
-
+    instance_id: Optional[StrictStr] = None
+    admin_id: Optional[StrictInt] = None
 
 class ResolveInstanceResponse(BaseModel):
     """
@@ -189,12 +196,9 @@ class ResolveInstanceResponse(BaseModel):
     # флаг, что ссылка запрещена (панель только для владельца)
     link_forbidden: bool = False
 
-
+TELEGRAM_BOT_TOKEN_RE = r"^[0-9]{8,10}:[A-Za-z0-9_-]{35}$"
 class CreateInstanceRequest(BaseModel):
-    """Создание нового инстанса по токену бота (аналог /add_bot)."""
-
-    token: str
-
+    token: str = Field(min_length=1, pattern=TELEGRAM_BOT_TOKEN_RE)
 
 class CreateInstanceResponse(BaseModel):
     instanceid: str
@@ -306,8 +310,15 @@ class OfferStatusOut(BaseModel):
     acceptedAt: Optional[str] = None
 
 class OfferDecisionIn(BaseModel):
-    accepted: bool
+    accepted: StrictBool
 
+class YooKassaWebhook(BaseModel):
+    event: StrictStr
+
+    class Object(BaseModel):
+        id: StrictStr
+
+    object: Object
 
 # ========================================================================
 # Telegram Validation
@@ -1356,6 +1367,7 @@ manage_router = APIRouter(
     prefix="/manage",
     tags=["manage"],
     dependencies=[Depends(require_superadmin)],
+    responses={**COMMON_AUTH_RESPONSES},
 )
 
 @manage_router.get("/health")
@@ -1374,7 +1386,23 @@ def create_miniapp_app(
     global telegram_validator, session_manager, miniapp_db, master_bot
 
     app = FastAPI(title="GraceHub Mini App API", debug=debug, lifespan=lifespan)
+
+    telegram_validator = TelegramAuthValidator(bot_token)
+    session_manager = SessionManager(ttl_minutes=30)
+    miniapp_db = MiniAppDB(master_db)
+    master_bot = master_bot_instance
+
+    # 2) Публикуем в app.state (чтобы роуты могли брать через request.app.state)
+    app.state.session_manager = session_manager
+    app.state.telegram_validator = telegram_validator
+
+    # 3) Подключаем основные роуты
     app.include_router(manage_router)
+
+
+    env = os.getenv("ENV", "").lower()
+    if env in {"ci", "test"}:
+        app.include_router(test_auth_router, tags=["__test__"])
 
     app.add_middleware(
         CORSMiddleware,
@@ -1399,11 +1427,6 @@ def create_miniapp_app(
             content={"detail": exc.errors(), "body": body},
         )
 
-    telegram_validator = TelegramAuthValidator(bot_token)
-    session_manager = SessionManager(ttl_minutes=30)
-    miniapp_db = MiniAppDB(master_db)
-    master_bot = master_bot_instance
-
     # ====================================================================
     # Dependencies
     # ====================================================================
@@ -1417,13 +1440,13 @@ def create_miniapp_app(
             instance_id, current_user["user_id"], required_role
         )
         if not has_access:
-            raise HTTPException(status_code=403, detail="Нет доступа к этому инстансу")
+            raise HTTPException(status_code=403, detail="You cannot access this instance")
 
 
     async def assert_payment_method_enabled(payment_method: str) -> None:
         raw = await miniappdb.db.get_platform_setting("miniapp_public", default=None)
         if not raw:
-            raise HTTPException(status_code=400, detail="Методы оплаты отключены администратором")
+            raise HTTPException(status_code=400, detail="Payment methods have been disabled by the administrator.")
 
         if isinstance(raw, str):
             try:
@@ -1432,11 +1455,11 @@ def create_miniapp_app(
                 raw = None
 
         if not isinstance(raw, dict):
-            raise HTTPException(status_code=400, detail="Методы оплаты отключены администратором")
+            raise HTTPException(status_code=400, detail="Payment methods have been disabled by the administrator.")
 
         enabled = ((raw.get("payments") or {}).get("enabled") or {})
         if not isinstance(enabled, dict):
-            raise HTTPException(status_code=400, detail="Методы оплаты отключены администратором")
+            raise HTTPException(status_code=400, detail="Payment methods have been disabled by the administrator.")
 
         pm = payment_method
         if hasattr(pm, "value"):
@@ -1451,10 +1474,10 @@ def create_miniapp_app(
         }.get(pm)
 
         if not key:
-            raise HTTPException(status_code=400, detail="Неизвестный метод оплаты")
+            raise HTTPException(status_code=400, detail="Unknown payment method")
 
         if not bool(enabled.get(key, False)):
-            raise HTTPException(status_code=400, detail="Метод оплаты отключён администратором")
+            raise HTTPException(status_code=400, detail="Payment methods have been disabled by the administrator.")
 
 
     # ====================================================================
@@ -1464,6 +1487,12 @@ def create_miniapp_app(
     @app.post(
         "/api/instances/{instance_id}/billing/create_invoice",
         response_model=CreateInvoiceResponse,
+        responses={
+            **COMMON_AUTH_RESPONSES,         # 401/403
+            **COMMON_BAD_REQUEST_RESPONSES,  # 400
+            **COMMON_NOT_FOUND_RESPONSES,    # 404
+            409: {"description": "Conflict"},  
+        },
     )
     async def create_billing_invoice(
         instance_id: str,
@@ -2357,9 +2386,17 @@ def create_miniapp_app(
         # Если ничего не нашли — возвращаем текущий статус (pending или cancelled)
         return {"status": current_status}
         
-    @app.get("/api/invoices/stripe/{invoice_id}/status", response_model=StripeInvoiceStatusResponse)
+    @app.get(
+        "/api/invoices/stripe/{invoice_id}/status",
+        response_model=StripeInvoiceStatusResponse,
+        responses={
+            **COMMON_AUTH_RESPONSES,
+            **COMMON_NOT_FOUND_RESPONSES,
+            **COMMON_BAD_REQUEST_RESPONSES,
+        },
+    )
     async def get_stripe_invoice_status(
-        invoice_id: int,
+        invoice_id: int = ApiPath(..., ge=1),
         current_user: Dict[str, Any] = Depends(get_current_user),
     ):
         # DB-first (вариант A): не ходим в Stripe API, доверяем webhook'у + БД
@@ -2423,16 +2460,27 @@ def create_miniapp_app(
 
 
     @app.post("/api/offer/decision")
-    async def post_offer_decision(payload: OfferDecisionIn, current_user: Dict[str, Any] = Depends(get_current_user)):
+    async def post_offer_decision(
+        payload: OfferDecisionIn,
+        current_user: Dict[str, Any] = Depends(get_current_user),
+    ):
         uid = int(current_user.get("user_id") or 0)
         s = await master_db.get_offer_settings()
         if not s["enabled"] or not s["url"]:
-            return {"status": "ignored"}  # оферта выключена
+            return {"status": "ignored"}
 
-        await master_db.upsert_user_offer(uid, s["url"], bool(payload.accepted), source="miniapp")
-        return {"status": "ok", "accepted": bool(payload.accepted)}
+        await master_db.upsert_user_offer(uid, s["url"], payload.accepted, source="miniapp")
+        return {"status": "ok", "accepted": payload.accepted}
 
-    @app.post("/api/invoices/stripe/{invoice_id}/cancel", response_model=StripeInvoiceCancelResponse)
+
+    @app.post(
+        "/api/invoices/stripe/{invoice_id}/cancel",
+        response_model=StripeInvoiceCancelResponse,
+        responses={
+            **COMMON_AUTH_RESPONSES,
+            **COMMON_NOT_FOUND_RESPONSES,
+        },
+    )
     async def cancel_stripe_invoice(
         invoice_id: int,
         current_user: Dict[str, Any] = Depends(get_current_user),
@@ -2456,13 +2504,17 @@ def create_miniapp_app(
             logger.error(f"Stripe cancel error for invoice {invoice_id}: {e}")
             raise HTTPException(status_code=500, detail="Ошибка отмены сессии Stripe")
 
-    @app.post("/api/webhook/stripe")
-    async def stripe_webhook(request: Request):
+    @app.post(
+        "/api/webhook/stripe",
+        responses={
+            **COMMON_BAD_REQUEST_RESPONSES,
+        },
+    )
+    async def stripe_webhook(
+        request: Request,
+        stripe_signature: str = Header(..., alias="stripe-signature"),
+    ):
         payload = await request.body()
-        sig_header = request.headers.get("stripe-signature")
-
-        if not sig_header:
-            raise HTTPException(status_code=400, detail="Missing stripe-signature")
 
         ps = await miniapp_db.db.get_platform_setting("miniapp_public", default=None)
         if isinstance(ps, str):
@@ -2481,7 +2533,7 @@ def create_miniapp_app(
             raise HTTPException(status_code=500, detail="Stripe webhookSecret not configured")
 
         try:
-            event = stripe.Webhook.construct_event(payload, sig_header, wh_secret)
+            event = stripe.Webhook.construct_event(payload, stripe_signature, wh_secret)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid payload")
         except stripe.error.SignatureVerificationError:
@@ -2489,7 +2541,6 @@ def create_miniapp_app(
 
         if event.get("type") == "checkout.session.completed":
             session = (event.get("data") or {}).get("object") or {}
-
             external_id = session.get("id")
             metadata = session.get("metadata") or {}
             invoice_id = metadata.get("saas_invoice_id") or metadata.get("saasInvoiceId")
@@ -2499,25 +2550,53 @@ def create_miniapp_app(
                 await miniapp_db.db.apply_invoice_to_billing(int(invoice_id))
 
         return {"status": "ok"}
-
-    @app.get("/api/platform/single-tenant", response_model=SingleTenantConfig)
+        
+    @app.get(
+        "/api/platform/single-tenant",
+        response_model=SingleTenantConfig,
+        responses={
+            **COMMON_AUTH_RESPONSES,  # 401/403
+        },
+    )
     async def get_single_tenant_config_endpoint(
         current_user: Dict[str, Any] = Depends(require_superadmin),
     ):
         # Читаем ТОЛЬКО из miniapp_public.singleTenant
         return await get_single_tenant_config(master_db)
 
-    @app.get("/api/platform/superadmins", response_model=SuperadminsResponse)
-    async def get_platform_superadmins(currentuser: Dict[str, Any] = Depends(get_current_user)):
-        await require_superadmin(currentuser)  # твой superadmin-guard
+
+    @app.get(
+        "/api/platform/superadmins",
+        response_model=SuperadminsResponse,
+        responses={
+            **COMMON_AUTH_RESPONSES,  # 401/403
+        },
+    )
+    async def get_platform_superadmins(
+        currentuser: Dict[str, Any] = Depends(get_current_user),
+    ):
+        await require_superadmin(currentuser)  # superadmin-guard
+
         raw = await master_db.get_platform_setting("miniapp_public", default={})
         if not isinstance(raw, dict):
             raw = {}
+
         ids = normalize_ids(raw.get("superadmins"))
         return SuperadminsResponse(ids=ids)
 
-    @app.post("/api/platform/superadmins", response_model=SuperadminsResponse)
-    async def set_platform_superadmins(payload: SuperadminsUpsert, currentuser: Dict[str, Any] = Depends(get_current_user)):
+
+    @app.post(
+        "/api/platform/superadmins",
+        response_model=SuperadminsResponse,
+        responses={
+            **COMMON_AUTH_RESPONSES,        # 401/403
+            **COMMON_BAD_REQUEST_RESPONSES, # 400 (если вдруг добавишь валидацию/ограничения)
+        },
+    )
+    async def set_platform_superadmins(
+        payload: SuperadminsUpsert,
+        currentuser: Dict[str, Any] = Depends(get_current_user),
+    ):
         await require_superadmin(currentuser)
 
         raw = await master_db.get_platform_setting("miniapp_public", default={})
@@ -2526,10 +2605,18 @@ def create_miniapp_app(
 
         raw["superadmins"] = normalize_ids(payload.ids)
 
-        await master_db.setplatformsetting("miniapp_public", raw)
+        await master_db.set_platform_setting("miniapp_public", raw)
         return SuperadminsResponse(ids=raw["superadmins"])
 
-    @app.post("/api/platform/single-tenant", response_model=SingleTenantConfig)
+
+    @app.post(
+        "/api/platform/single-tenant",
+        response_model=SingleTenantConfig,
+        responses={
+            **COMMON_AUTH_RESPONSES,        # 401/403
+            **COMMON_BAD_REQUEST_RESPONSES, # 400 (у тебя уже есть raise HTTPException(400,...))
+        },
+    )
     async def set_single_tenant_config_endpoint(
         payload: SingleTenantConfig,
         current_user: Dict[str, Any] = Depends(require_superadmin),
@@ -2581,7 +2668,13 @@ def create_miniapp_app(
         # 7) возвращаем нормализованный конфиг
         return SingleTenantConfig(enabled=bool(payload.enabled), allowed_user_ids=allowed)
 
-    @app.post("/api/auth/telegram", response_model=AuthResponse)
+    @app.post(
+        "/api/auth/telegram",
+        response_model=AuthResponse,
+        responses={
+            **COMMON_AUTH_RESPONSES,
+        },
+    )
     async def auth_telegram(req: TelegramAuthRequest, request: Request):
         init_header = request.headers.get("X-Telegram-Init-Data")
         logger.info(
@@ -2729,16 +2822,25 @@ def create_miniapp_app(
         )
 
 
-    @app.post("/api/billing/ton/cancel", response_model=TonInvoiceCancelResponse)
+
+    @app.post(
+        "/api/billing/ton/cancel",
+        response_model=TonInvoiceCancelResponse,
+        responses={
+            **COMMON_AUTH_RESPONSES,
+            **COMMON_NOT_FOUND_RESPONSES,
+            **COMMON_BAD_REQUEST_RESPONSES,
+            409: {"description": "Conflict"},
+        },
+    )
     async def cancel_ton_invoice(
-        invoice_id: int = Query(...),
+        invoice_id: int = Query(..., ge=1),
         current_user: Dict[str, Any] = Depends(get_current_user),
     ):
         inv = await miniapp_db.db.get_billing_invoice(invoice_id)
         if not inv:
             raise HTTPException(status_code=404, detail="Invoice not found")
 
-        # доступ к инстансу
         await require_instance_access(inv["instance_id"], current_user)
 
         if inv.get("payment_method") != "ton":
@@ -2752,7 +2854,6 @@ def create_miniapp_app(
 
         await miniapp_db.db.cancel_billing_invoice(invoice_id)
         return TonInvoiceCancelResponse(invoice_id=invoice_id, status="cancelled")
-
 
 
     @app.get("/api/saas/plans", response_model=list[SaasPlanOut])
@@ -2837,22 +2938,29 @@ def create_miniapp_app(
             return resp.json()
 
 
-    @app.get("/api/billing/yookassa/status", response_model=YooKassaStatusResponse)
+    @app.get(
+        "/api/billing/yookassa/status",
+        response_model=YooKassaStatusResponse,
+        responses={
+            **COMMON_AUTH_RESPONSES,
+            **COMMON_NOT_FOUND_RESPONSES,
+            **COMMON_BAD_REQUEST_RESPONSES,
+            500: {"description": "Internal Server Error"},
+        },
+    )
     async def yookassa_invoice_status(
-        invoice_id: int,
+        invoice_id: int = Query(..., ge=1),
         current_user: Dict[str, Any] = Depends(get_current_user),
     ):
         inv = await miniapp_db.db.get_billing_invoice(invoice_id)
         if not inv:
             raise HTTPException(status_code=404, detail="Invoice not found")
 
-        # NB: поля из DB: instanceid / paymentmethod [file:284]
         await require_instance_access(inv["instance_id"], current_user)
 
         if (inv.get("payment_method") or "").lower() != "yookassa":
             raise HTTPException(status_code=400, detail="Invoice is not YooKassa")
 
-        # если уже paid — сразу отдаём
         if (inv.get("status") or "").lower() == "paid":
             return YooKassaStatusResponse(
                 invoice_id=invoice_id,
@@ -2868,7 +2976,6 @@ def create_miniapp_app(
         data = await _yookassa_get_payment(payment_id)
         st = (data.get("status") or "pending").lower()
 
-        # amount.value в ЮKassa обычно строка вида "199.00" => переводим в копейки 
         amt = data.get("amount") or {}
         currency = amt.get("currency") or "RUB"
         value_str = amt.get("value") or "0.00"
@@ -2900,15 +3007,28 @@ def create_miniapp_app(
         )
 
 
-    @app.post("/api/billing/yookassa/webhook")
-    async def yookassa_webhook(request: Request):
-        body = await request.json()
-        event = body.get("event")
-        obj = body.get("object") or {}
-        payment_id = obj.get("id")
+    @app.post(
+        "/api/billing/yookassa/webhook",
+        responses={
+            **COMMON_BAD_REQUEST_RESPONSES,
+        },
+    )
+    async def yookassa_webhook(
+        request: Request,
+        body: YooKassaWebhook = Body(...),
+    ):
+        try:
+            raw = await request.json()
+        except Exception:
+            raise HTTPException(status_code=400, detail="invalid json")
 
-        if not payment_id:
-            raise HTTPException(status_code=400, detail="missing payment id")
+        try:
+            body = YooKassaWebhook.model_validate(raw)
+        except ValidationError as e:
+            raise HTTPException(status_code=422, detail=e.errors())
+
+        event = body.event
+        payment_id = body.object.id
 
         if event not in ("payment.succeeded", "payment.canceled", "payment.waiting_for_capture"):
             return {"ok": True}
@@ -2920,7 +3040,6 @@ def create_miniapp_app(
 
         invoice_id = int(inv["invoiceid"])
 
-        # перепроверка статуса через API (рекомендованный подход) 
         data = await _yookassa_get_payment(payment_id)
         st = (data.get("status") or "pending").lower()
 
@@ -2943,14 +3062,19 @@ def create_miniapp_app(
 
         return {"ok": True, "status": st}
 
-    @app.get("/api/platform/settings")
-    async def get_platform_settings(current_user: Dict[str, Any] = Depends(get_current_user)):
+    @app.get(
+        "/api/platform/settings",
+        responses={
+            **COMMON_AUTH_RESPONSES,  # 401/403 (если в твоих константах 403 тоже есть)
+        },
+    )
+    async def get_platform_settings(
+        current_user: Dict[str, Any] = Depends(get_current_user),
+    ):
         logger.warning("HIT get_platform_settings build=2025-12-19-1239")
-        # при желании: ограничить superadmin’ом
+
         data = await master_db.get_platform_setting("miniapp_public", default={})
         return {"key": "miniapp_public", "value": data}
-
-    logger = logging.getLogger("master_bot.platform_settings")
 
 
     def _short_hash(obj: Any) -> str:
@@ -2999,7 +3123,14 @@ def create_miniapp_app(
         return {"valueType": "dict", "paymentsType": "dict", "enabledType": "dict", "enabledKeys": sorted(enabled.keys())}
 
 
-    @app.post("/api/platform/settings/{key}")
+    @app.post(
+        "/api/platform/settings/{key}",
+        responses={
+            **COMMON_AUTH_RESPONSES,        # 401/403 (get_current_user + require_superadmin)
+            **COMMON_BAD_REQUEST_RESPONSES, # 400 (miniapp_public value must be object + возможные другие проверки)
+            # 422 FastAPI добавит сам для ошибок валидации тела/параметров, если payload не проходит pydantic
+        },
+    )
     async def set_platform_settings(
         key: str,
         payload: PlatformSettingUpsert,
@@ -3099,9 +3230,16 @@ def create_miniapp_app(
 
         return {"status": "ok"}
 
-    @app.get("/api/instances/{instance_id}/billing", response_model=BillingInfo)
+    @app.get(
+        "/api/instances/{instance_id}/billing",
+        response_model=BillingInfo,
+        responses={
+            **COMMON_AUTH_RESPONSES,        # 401/403
+            **COMMON_NOT_FOUND_RESPONSES,   # 404 
+        },
+    )
     async def get_instance_billing_endpoint(
-        instance_id: str,
+        instance_id: str = ApiPath(..., min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$"),
         current_user: Dict[str, Any] = Depends(get_current_user),
     ):
         """
@@ -3150,17 +3288,23 @@ def create_miniapp_app(
             unlimited=False,
         )
 
-
-    @app.get("/api/billing/ton/status", response_model=TonInvoiceStatusResponse)
+    @app.get(
+        "/api/billing/ton/status",
+        response_model=TonInvoiceStatusResponse,
+        responses={
+            **COMMON_AUTH_RESPONSES,
+            **COMMON_NOT_FOUND_RESPONSES,
+            **COMMON_BAD_REQUEST_RESPONSES,
+        },
+    )
     async def ton_invoice_status(
-        invoice_id: int,
+        invoice_id: int = Query(..., ge=1),
         current_user: Dict[str, Any] = Depends(get_current_user),
     ):
         inv = await miniapp_db.db.get_billing_invoice(invoice_id)
         if not inv:
             raise HTTPException(status_code=404, detail="Invoice not found")
 
-        # Проверяем, что пользователь имеет доступ к инстансу из инвойса
         await require_instance_access(inv["instance_id"], current_user)
 
         if inv.get("payment_method") != "ton":
@@ -3174,7 +3318,6 @@ def create_miniapp_app(
                 period_applied=True,
             )
 
-        # pending: пробуем дернуть сеть
         res = await check_ton_payment(invoice_id)
 
         if res["status"] == "paid":
@@ -3401,7 +3544,15 @@ def create_miniapp_app(
             )
         return result
 
-    @app.post("/api/instances", response_model=CreateInstanceResponse)
+    @app.post(
+        "/api/instances",
+        response_model=CreateInstanceResponse,
+        responses={
+            **COMMON_AUTH_RESPONSES,
+            **COMMON_BAD_REQUEST_RESPONSES,
+            500: {"description": "Internal Server Error"},
+        },
+    )
     async def create_instance(
         req: CreateInstanceRequest,
         current_user: Dict[str, Any] = Depends(get_current_user),
@@ -3411,10 +3562,7 @@ def create_miniapp_app(
         - MasterBot проверяет токен, создаёт запись в БД, шифрует токен, запускает воркер.
         """
         user_id = current_user["user_id"]
-        token = req.token.strip()
-
-        if not token:
-            raise HTTPException(status_code=400, detail="Токен бота пустой")
+        token = req.token
 
         logger.info(
             "create_instance (miniapp): user_id=%s token_preview=%s",
@@ -3470,7 +3618,15 @@ def create_miniapp_app(
             role="owner",
         )
 
-    @app.get("/api/instances/{instance_id}/stats", response_model=InstanceStats)
+    @app.get(
+        "/api/instances/{instance_id}/stats",
+        response_model=InstanceStats,
+        responses={
+            **COMMON_AUTH_RESPONSES,        
+            **COMMON_NOT_FOUND_RESPONSES,  
+            **COMMON_BAD_REQUEST_RESPONSES,
+        },
+    )
     async def get_instance_stats(
         instance_id: str,
         current_user: Dict[str, Any] = Depends(get_current_user),
@@ -3482,7 +3638,13 @@ def create_miniapp_app(
         return InstanceStats(**stats)
 
 
-    @app.delete("/api/instances/{instance_id}")
+    @app.delete(
+        "/api/instances/{instance_id}",
+        responses={
+            **COMMON_AUTH_RESPONSES,
+            **COMMON_NOT_FOUND_RESPONSES,
+        },
+    )
     async def delete_instance_endpoint(
         instance_id: str,
         current_user: Dict[str, Any] = Depends(get_current_user),
@@ -3542,21 +3704,23 @@ def create_miniapp_app(
 
     # ---------- НАСТРОЙКИ ИНСТАНСА (Settings.tsx) ----------
 
-    @app.get("/api/instances/{instance_id}/settings", response_model=InstanceSettings)
+    @app.get(
+        "/api/instances/{instance_id}/settings",
+        response_model=InstanceSettings,
+        responses={
+            **COMMON_AUTH_RESPONSES,
+            **COMMON_NOT_FOUND_RESPONSES,
+        },
+    )
     async def get_instance_settings_endpoint(
-        instance_id: str,
+        instance_id: str = ApiPath(..., min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$"),
         current_user: Dict[str, Any] = Depends(get_current_user),
     ):
         await require_instance_access(instance_id, current_user)
-
         settings = await miniapp_db.get_instance_settings(instance_id)
-        # settings здесь – твой внутренний объект/словарь с:
-        # openchat_enabled, general_panel_chat_id, auto_close_hours,
-        # auto_reply, branding, privacy_mode_enabled, language, openchat_username
-
         # New: Fetch instance status from DB (e.g., running/error)
-        instance = await master_bot.db.get_instance(instance_id)  # Assuming access to master_bot
-        status = instance.status.value if instance else "unknown"  # Use InstanceStatus enum value
+        instance = await master_bot.db.get_instance(instance_id)  
+        status = instance.status.value if instance else "unknown" 
 
         logger.info(
             "Instance settings for %s: openchat_enabled=%s general_panel_chat_id=%s language=%s status=%s",
@@ -3580,12 +3744,13 @@ def create_miniapp_app(
                 openchat_username=getattr(settings, "openchat_username", None),
                 general_panel_chat_id=settings.general_panel_chat_id,
             ),
-            status=status,  # New field
+            status=status,
         )
 
     @app.post(
         "/api/instances/{instance_id}/settings",
         response_model=InstanceSettings,
+        responses={**COMMON_AUTH_RESPONSES, **COMMON_BAD_REQUEST_RESPONSES, **COMMON_NOT_FOUND_RESPONSES},
     )
     async def update_instance_settings_endpoint(
         instance_id: str,
@@ -3617,6 +3782,10 @@ def create_miniapp_app(
     @app.get(
         "/api/instances/{instance_id}/tickets",
         response_model=TicketsListResponse,
+        responses={
+            **COMMON_AUTH_RESPONSES,
+            **COMMON_NOT_FOUND_RESPONSES,
+        },
     )
     async def list_tickets_endpoint(
         instance_id: str,
@@ -3651,7 +3820,7 @@ def create_miniapp_app(
                 user_id=row["userid"],
                 username=row.get("username"),
                 status=row["status"],
-                status_emoji="",  # TODO: подставить из настроек, если нужно
+                status_emoji="", 
                 created_at=row["createdat"],
                 last_user_msg_at=row.get("lastusermsgat"),
                 last_admin_reply_at=row.get("lastadminreplyat"),
@@ -3663,7 +3832,10 @@ def create_miniapp_app(
 
         return TicketsListResponse(items=items, total=total)
 
-    @app.post("/api/instances/{instance_id}/tickets/{ticket_id}/status")
+    @app.post(
+        "/api/instances/{instance_id}/tickets/{ticket_id}/status",
+        responses={**COMMON_AUTH_RESPONSES, **COMMON_BAD_REQUEST_RESPONSES, **COMMON_NOT_FOUND_RESPONSES},
+    )
     async def update_ticket_status_endpoint(
         instance_id: str,
         ticket_id: int,
@@ -3690,6 +3862,10 @@ def create_miniapp_app(
     @app.get(
         "/api/instances/{instance_id}/operators",
         response_model=List[InstanceMember],
+        responses={
+            **COMMON_AUTH_RESPONSES,
+            **COMMON_NOT_FOUND_RESPONSES,
+        },
     )
     async def get_operators(
         instance_id: str,
@@ -3700,7 +3876,10 @@ def create_miniapp_app(
         members = await miniapp_db.get_instance_members(instance_id)
         return [InstanceMember(**m) for m in members]
 
-    @app.post("/api/instances/{instance_id}/operators")
+    @app.post(
+        "/api/instances/{instance_id}/operators",
+        responses={**COMMON_AUTH_RESPONSES, **COMMON_BAD_REQUEST_RESPONSES, **COMMON_NOT_FOUND_RESPONSES},
+    )
     async def add_operator(
         instance_id: str,
         req: AddOperatorRequest,
@@ -3725,14 +3904,18 @@ def create_miniapp_app(
         await miniapp_db.add_instance_member(instance_id, user_id, req.role)
         return {"status": "ok", "message": "Оператор добавлен"}
 
-    @app.delete("/api/instances/{instance_id}/operators/{user_id}")
+    @app.delete(
+        "/api/instances/{instance_id}/operators/{user_id}",
+        responses={
+            **COMMON_AUTH_RESPONSES,
+        },
+    )
     async def remove_operator(
-        instance_id: str,
         user_id: int,
+        instance_id: str = ApiPath(..., min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$"),
         current_user: Dict[str, Any] = Depends(get_current_user),
     ):
         await require_instance_access(instance_id, current_user, required_role="owner")
-
         await miniapp_db.remove_instance_member(instance_id, user_id)
         return {"status": "ok", "message": "Оператор удалён"}
 

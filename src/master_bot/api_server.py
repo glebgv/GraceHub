@@ -12,6 +12,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+# Важно: по умолчанию python-dotenv не перезаписывает уже заданные переменные окружения,
+# поэтому значения из GitHub Actions env останутся приоритетными. [web:967]
 load_dotenv()
 
 # ==== Пути проекта ====
@@ -19,11 +21,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]  # /root/gracehub
 SRC_DIR = PROJECT_ROOT / "src"
 sys.path.insert(0, str(SRC_DIR))
 
-import uvicorn  # noqa: E402
+import uvicorn
 
-from shared.database import MasterDatabase, get_master_dsn  # noqa: E402
-from master_bot.main import MasterBot  #
-from master_bot.miniapp_api import create_miniapp_app  # noqa: E402
+from shared.database import MasterDatabase, get_master_dsn
+from master_bot.main import MasterBot
+from master_bot.miniapp_api import create_miniapp_app
 
 logging.basicConfig(
     level=logging.INFO,
@@ -31,20 +33,37 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Читаем bot token из .env
+ENV = (os.getenv("ENV") or "").lower()
+DEBUG = bool(int(os.getenv("DEBUG", "0")))
+
+# --- CI mode defaults ---
+# В CI не хотим тащить реальные Telegram секреты и не хотим сетевые зависимости.
+CI_MODE = ENV == "ci"
+if CI_MODE:
+    logger.warning("CI mode enabled (ENV=ci): Telegram token & webhook domain are not required")
+
+# Читаем bot token из .env / env
 MASTER_BOT_TOKEN = os.getenv("GRACEHUB_BOT_TOKEN") or os.getenv("MASTER_BOT_TOKEN")
 if not MASTER_BOT_TOKEN:
-    logger.error("❌ MASTER_BOT_TOKEN не найден в .env")
-    sys.exit(1)
-
-logger.info("✅ MASTER_BOT_TOKEN загружен из .env")
+    if CI_MODE:
+        # Заглушка: должна быть приемлема, если MasterBot / TelegramAuthValidator
+        # не делает сетевых вызовов на старте.
+        MASTER_BOT_TOKEN = "ci-dummy-token"
+        logger.warning("CI mode: using dummy MASTER_BOT_TOKEN")
+    else:
+        logger.error("❌ MASTER_BOT_TOKEN не найден в .env")
+        sys.exit(1)
+else:
+    logger.info("✅ MASTER_BOT_TOKEN загружен из env/.env")
 
 WEBHOOK_DOMAIN = os.getenv("WEBHOOK_DOMAIN")
 if not WEBHOOK_DOMAIN:
-    logger.error("❌ WEBHOOK_DOMAIN не найден в .env")
-    sys.exit(1)
-
-DEBUG = bool(int(os.getenv("DEBUG", "0")))
+    if CI_MODE:
+        WEBHOOK_DOMAIN = "ci.local"
+        logger.warning("CI mode: using dummy WEBHOOK_DOMAIN=%s", WEBHOOK_DOMAIN)
+    else:
+        logger.error("❌ WEBHOOK_DOMAIN не найден в .env")
+        sys.exit(1)
 
 
 async def main():

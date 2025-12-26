@@ -18,3 +18,5 @@ psycopg2-binary
 asyncpg
 cachetools
 stripe
+# Опционально для тестов
+#schemathesis
