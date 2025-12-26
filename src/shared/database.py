@@ -2195,9 +2195,12 @@ class MasterDatabase:
         """
         Создаёт базовые планы Demo/Lite/Pro/Enterprise, если их нет,
         и под них товары billing_products для оплаты Stars.
+
         Demo: 7 дней, 0 Stars, небольшой лимит тикетов.
         Остальные: 30 дней, разные лимиты и цены.
         """
+        assert self.pool is not None
+
         async with self.pool.acquire() as conn:
             async with conn.transaction():
                 # --- планы ---
@@ -2220,7 +2223,14 @@ class MasterDatabase:
                     )
                 if "enterprise" not in existing:
                     plans_to_insert.append(
-                        ("Enterprise", "enterprise", 2500, 30, 100000, {"can_openchat": True, "branding": True})
+                        (
+                            "Enterprise",
+                            "enterprise",
+                            2500,
+                            30,
+                            100000,
+                            {"can_openchat": True, "branding": True},
+                        )
                     )
 
                 for name, code, price_stars, period_days, tickets_limit, features_json in plans_to_insert:
@@ -2230,7 +2240,12 @@ class MasterDatabase:
                         INSERT INTO saas_plans (name, code, price_stars, period_days, tickets_limit, features_json)
                         VALUES ($1, $2, $3, $4, $5, $6)
                         """,
-                        (name, code, price_stars, period_days, tickets_limit, features_json_str),
+                        name,
+                        code,
+                        price_stars,
+                        period_days,
+                        tickets_limit,
+                        features_json_str,
                     )
 
                 # --- товары под планы (кроме demo) ---
@@ -2252,6 +2267,7 @@ class MasterDatabase:
                     plan_code = row["code"]
                     if plan_code == "demo":
                         continue  # demo не продаём как товар
+
                     product_code = f"plan_{plan_code}_{row['period_days']}d"
                     if product_code in existing_products:
                         continue
@@ -2272,8 +2288,13 @@ class MasterDatabase:
                         INSERT INTO billing_products (code, plan_id, title, description, amount_stars)
                         VALUES ($1, $2, $3, $4, $5)
                         """,
-                        (code, plan_id, title, description, amount_stars),
+                        code,
+                        plan_id,
+                        title,
+                        description,
+                        amount_stars,
                     )
+
 
     async def update_saas_plan_price_stars(self, plancode: str, price_stars: int) -> None:
         code = (plancode or "").strip().lower()
