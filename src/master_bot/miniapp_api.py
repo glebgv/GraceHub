@@ -2847,7 +2847,7 @@ def create_miniapp_app(
         },
     )
     async def cancel_ton_invoice(
-        invoice_id: int = Query(..., ge=1),
+        invoice_id: int = ApiPath(..., ge=1, le=9223372036854775807),
         current_user: Dict[str, Any] = Depends(get_current_user),
     ):
         inv = await miniapp_db.db.get_billing_invoice(invoice_id)
@@ -2962,7 +2962,7 @@ def create_miniapp_app(
         },
     )
     async def yookassa_invoice_status(
-        invoice_id: int = Query(..., ge=1),
+        invoice_id: int = ApiPath(..., ge=1, le=9223372036854775807),
         current_user: Dict[str, Any] = Depends(get_current_user),
     ):
         inv = await miniapp_db.db.get_billing_invoice(invoice_id)
@@ -3311,7 +3311,7 @@ def create_miniapp_app(
         },
     )
     async def ton_invoice_status(
-        invoice_id: int = Query(..., ge=1),
+        invoice_id: int = ApiPath(..., ge=1, le=9223372036854775807),
         current_user: Dict[str, Any] = Depends(get_current_user),
     ):
         inv = await miniapp_db.db.get_billing_invoice(invoice_id)
@@ -3766,7 +3766,7 @@ def create_miniapp_app(
         responses={**COMMON_AUTH_RESPONSES, **COMMON_BAD_REQUEST_RESPONSES, **COMMON_NOT_FOUND_RESPONSES},
     )
     async def update_instance_settings_endpoint(
-        instance_id: str,
+        instance_id: InstanceId,
         settings: UpdateInstanceSettings,
         current_user: Dict[str, Any] = Depends(get_current_user),
     ):
