@@ -173,17 +173,6 @@ source venv/bin/activate
 - REST API 服务器
 - 前端应用程序
 
-### 个人使用运行
-
-如果您想为自己和您的团队运行项目并限制外部访问，请在 `.env` 中指定 2 个参数：
-
-```bash
-export GRACEHUB_SINGLE_TENANT_OWNER_ONLY=1
-export GRACEHUB_OWNER_TELEGRAM_ID=YOUR_ID
-```
-
-将 `YOUR_ID` 替换为您的 Telegram ID。
-
 ## 🔧 通过 systemd 生产部署
 
 ### 初始设置和部署

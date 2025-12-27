@@ -116,6 +116,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
     stripe: boolean; // Новый
   }>({ telegramStars: true, ton: true, yookassa: true, stripe: true });
   const [paymentsLoading, setPaymentsLoading] = useState(true);
+  const [paymentPrices, setPaymentPrices] = useState<any>(null);
 
   const [selectedPlan, setSelectedPlan] = useState<SaasPlanDTO | null>(null);
   const [selectedPeriod, setSelectedPeriod] = useState<PeriodOption | null>(periodOptions[0]);
@@ -168,6 +169,10 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
   const [copiedMsg, setCopiedMsg] = useState<string | null>(null);
   const copiedTimerRef = useRef<number | null>(null);
 
+  // Состояние для кастомного дропдауна
+  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
   const showCopied = (msg: string) => {
     setCopiedMsg(msg);
     if (copiedTimerRef.current) window.clearTimeout(copiedTimerRef.current);
@@ -177,6 +182,19 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
   useEffect(() => {
     return () => {
       if (copiedTimerRef.current) window.clearTimeout(copiedTimerRef.current);
+    };
+  }, []);
+
+  // Обработчик клика вне дропдауна для закрытия
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setIsDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
     };
   }, []);
 
@@ -209,6 +227,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
           yookassa: !!s?.payments?.enabled?.yookassa,
           stripe: !!s?.payments?.enabled?.stripe, // Новый
         });
+        setPaymentPrices(s.payments);
       } catch (e: any) {
         // Fail-open to avoid breaking billing if settings are temporarily unavailable
         // (server-side still should validate method availability)
@@ -394,7 +413,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
   const openYooKassaLinkExternally = (link: string) => {
     const tg = (window as any).Telegram?.WebApp;
     try {
-      tg?.openLink?.(link, { tryinstantview: true }); 
+      tg?.openLink?.(link, { try_instant_view: true }); 
       return;
     } catch {
       try {
@@ -1120,7 +1139,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
   return (
     <>
       <div style={{ padding: '12px' }}>
-        {plans.map((plan) => (
+        {plans.filter(plan => plan.planName !== 'Demo').map((plan) => (
           <div key={plan.planCode} className="card">
             <div className="list-item">
               <div className="list-item-info">
@@ -1131,7 +1150,51 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
                     limit: plan.ticketsLimit,
                   })}
                 </div>
-                <div style={{ marginTop: '4px', fontSize: '13px' }}>{plan.priceStars} ⭐</div>
+                {/* Price + available payment methods (preview) */}
+                  <div style={{ marginTop: 4, fontSize: 13 }}>
+                    {(() => {
+                      const enabled = paymentMethods.map((m) => m.value); // already filtered by paymentsEnabled [file:4]
+                      const hasStars = enabled.includes('telegram_stars');
+                      const hasOther = enabled.some((v) => v !== 'telegram_stars');
+
+                      if (hasStars && !hasOther) {
+                        return (
+                          <>
+                            {plan.priceStars} ⭐
+                          </>
+                        );
+                      }
+
+                      if (hasStars && hasOther) {
+                        return (
+                          <>
+                            от {plan.priceStars} ⭐ · {t('billing.and_other_methods', 'и другие способы')}
+                          </>
+                        );
+                      }
+
+                      // no stars at all (ton/yookassa/stripe only)
+                      return <>{t('billing.price_after_invoice_short', 'Цена после выбора метода')}</>;
+                    })()}
+                  </div>
+
+                  <div style={{ marginTop: 6, fontSize: 12, opacity: 0.8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    {paymentMethods.map((m) => (
+                      <span
+                        key={m.value}
+                        style={{
+                          padding: '4px 8px',
+                          borderRadius: 999,
+                          border: '1px solid rgba(148, 163, 184, 0.35)',
+                          background: 'rgba(15, 23, 42, 0.03)',
+                          lineHeight: 1,
+                        }}
+                      >
+                        {m.value === 'telegram_stars' ? '⭐ ' : ''}
+                        {m.label}
+                      </span>
+                    ))}
+                  </div>
               </div>
               <button className="btn" disabled={!plan.productCode} onClick={() => openPlanModal(plan)}>
                 {t('billing.button_details')}
@@ -1184,8 +1247,8 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
                 })}
               </p>
 
-              {/* Способ оплаты (dropdown) */}
-              <div style={{ marginTop: 12 }}>
+              {/* Кастомный дропдаун для способа оплаты */}
+              <div ref={dropdownRef} style={{ position: 'relative', marginTop: 12 }}>
                 <div className="modal-section-title">{t('billing.payment_method_label')}</div>
 
                 {/* В этой модалке блок про "нет способов оплаты" можно оставить (на случай, если модалка уже открыта, а админ выключил оплаты). */}
@@ -1205,40 +1268,76 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
                   </div>
                 )}
 
-                <select
-                  value={paymentMethod}
-                  onChange={(e) => setPaymentMethod(e.target.value as PaymentMethod | '')}
-                  disabled={!hasAnyPaymentMethods || submitting || tonChecking || ykChecking || stripeChecking}
-                  className="modal-select"
+                <div
+                  className="custom-select"
+                  onClick={() => !(!hasAnyPaymentMethods || submitting || tonChecking || ykChecking || stripeChecking) && setIsDropdownOpen(!isDropdownOpen)}
                   style={{
                     width: '100%',
                     padding: '10px 12px',
                     borderRadius: 10,
                     background: 'rgba(15,23,42,0.04)',
                     border: '1px solid rgba(148,163,184,0.7)',
-                    color: 'var(--tg-theme-text-color, #0f172a)',
-                    outline: 'none',
+                    color: paymentMethod ? 'var(--tg-theme-text-color, #0f172a)' : 'var(--tg-theme-hint-color, #94a3b8)',
+                    cursor: (!hasAnyPaymentMethods || submitting || tonChecking || ykChecking || stripeChecking) ? 'not-allowed' : 'pointer',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    opacity: (!hasAnyPaymentMethods || submitting || tonChecking || ykChecking || stripeChecking) ? 0.5 : 1,
                   }}
                 >
-                  <option value="" disabled>
-                    {t('billing.payment_method_placeholder')}
-                  </option>
+                  <span>{paymentMethod ? paymentMethods.find(m => m.value === paymentMethod)?.label : t('billing.payment_method_placeholder')}</span>
+                  <span>▼</span> {/* Простая стрелка, можно заменить на SVG */}
+                </div>
 
-                  {paymentMethods.map((m) => (
-                    <option key={m.value} value={m.value}>
-                      {m.label}
-                    </option>
-                  ))}
-                </select>
-
-                {paymentMethod === 'ton' && <p style={{ marginTop: 8, fontSize: 12, opacity: 0.8 }}>{t('billing.ton_hint')}</p>}
-
-                {paymentMethod === 'yookassa' && (
-                  <p style={{ marginTop: 8, fontSize: 12, opacity: 0.8 }}>{t('billing.yk_hint_inline')}</p>
+                {isDropdownOpen && (
+                  <ul
+                    style={{
+                      position: 'absolute',
+                      top: '100%',
+                      left: 0,
+                      width: '100%',
+                      maxHeight: '200px',
+                      overflowY: 'auto',
+                      background: 'var(--tg-theme-bg-color, #ffffff)',
+                      border: '1px solid rgba(148,163,184,0.7)',
+                      borderRadius: 10,
+                      marginTop: 4,
+                      listStyle: 'none',
+                      padding: 0,
+                      zIndex: 10,
+                      boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+                    }}
+                  >
+                    {paymentMethods.map((m) => (
+                      <li
+                        key={m.value}
+                        onClick={() => {
+                          setPaymentMethod(m.value);
+                          setIsDropdownOpen(false);
+                        }}
+                        style={{
+                          padding: '12px 16px',
+                          cursor: 'pointer',
+                          transition: 'background 0.2s',
+                          color: 'var(--tg-theme-text-color, #0f172a)',
+                        }}
+                        onMouseEnter={(e) => e.currentTarget.style.background = 'rgba(59,130,246,0.1)'}
+                        onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                      >
+                        {m.label}
+                      </li>
+                    ))}
+                  </ul>
                 )}
-
-                {paymentMethod === 'stripe' && <p style={{ marginTop: 8, fontSize: 12, opacity: 0.8 }}>{t('billing.stripe_hint')}</p>}
               </div>
+
+              {paymentMethod === 'ton' && <p style={{ marginTop: 8, fontSize: 12, opacity: 0.8 }}>{t('billing.ton_hint')}</p>}
+
+              {paymentMethod === 'yookassa' && (
+                <p style={{ marginTop: 8, fontSize: 12, opacity: 0.8 }}>{t('billing.yk_hint_inline')}</p>
+              )}
+
+              {paymentMethod === 'stripe' && <p style={{ marginTop: 8, fontSize: 12, opacity: 0.8 }}>{t('billing.stripe_hint')}</p>}
 
               {/* Выбор периода */}
               <div style={{ marginTop: 12 }}>
@@ -1298,15 +1397,39 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
                 </div>
 
                 <div style={{ fontSize: 16, fontWeight: 600 }}>
-                  {paymentMethod === 'telegram_stars'
-                    ? `${selectedPlan.priceStars * selectedPeriod.multiplier} ⭐`
-                    : paymentMethod === 'ton'
-                      ? t('billing.ton_price_after_invoice')
-                      : paymentMethod === 'yookassa'
-                        ? t('billing.yk_price_after_invoice')
-                        : paymentMethod === 'stripe'
-                          ? t('billing.stripe_price_after_invoice')
-                          : '—'}
+                  {(() => {
+                    const getDisplayPrice = () => {
+                      if (!paymentMethod || !paymentPrices) return '—';
+                      const planCode = selectedPlan.planCode.toLowerCase(); // e.g., 'lite'
+                      const periods = selectedPeriod.multiplier;
+                      const methodPrices = paymentPrices[paymentMethod]; // e.g., paymentPrices.ton
+
+                      if (!methodPrices) return t('billing.price_after_invoice');
+
+                      // Map planCode to price field (capitalize first letter for Pro/Enterprise)
+                      const priceField = `price${paymentMethod === 'ton' ? 'PerPeriod' : (paymentMethod === 'yookassa' ? 'Rub' : 'Usd')}${planCode.charAt(0).toUpperCase() + planCode.slice(1)}`;
+                      const basePrice = methodPrices[priceField] || 0; // Fallback to 0 if missing
+
+                      const total = basePrice * periods;
+                      let formatted = total.toFixed(2); // Adjust decimals based on method
+
+                      // Currency-specific formatting
+                      switch (paymentMethod) {
+                        case 'telegram_stars':
+                          return `${selectedPlan.priceStars * periods} ⭐`; // Existing
+                        case 'ton':
+                          return `${formatted} TON`;
+                        case 'yookassa':
+                          return `${Math.round(total)} RUB`; // RUB usually whole numbers
+                        case 'stripe':
+                          const currency = methodPrices.currency?.toUpperCase() || 'USD';
+                          return `${formatted} ${currency}`;
+                        default:
+                          return '—';
+                      }
+                    };
+                    return getDisplayPrice();
+                  })()}
                 </div>
 
                 {submitError && (

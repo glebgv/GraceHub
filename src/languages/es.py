@@ -1,6 +1,5 @@
 # src/languages/es.py
 
-from dataclasses import dataclass
 from .base import Texts
 
 TEXTS_ES = Texts(
@@ -18,7 +17,6 @@ TEXTS_ES = Texts(
     support_not_configured="❌ El soporte no está configurado. Ponte en contacto con el administrador.",
     message_forwarded_to_support="✅ Tu mensaje ha sido reenviado al soporte.",
     you_are_blocked="❌ Estás bloqueado y no puedes usar este bot.",
-
     admin_panel_title="<b>🛠 Panel de administración</b>",
     admin_panel_choose_section="Elige una sección:",
     menu_greeting="✏️ Mensaje de bienvenida",
@@ -34,7 +32,6 @@ TEXTS_ES = Texts(
     greeting_cleared="✅ El mensaje de bienvenida ha sido eliminado.",
     greeting_need_text="Se necesita un mensaje de texto con el saludo.",
     greeting_saved="✅ El nuevo mensaje de bienvenida ha sido guardado.",
-
     openchat_setup_hint=(
         "💬 Para usar este bot, configura OpenChat:\n"
         "1) Crea un supergrupo privado sin @username\n"
@@ -69,7 +66,6 @@ TEXTS_ES = Texts(
         "<b>{chat_title}</b>\n\n"
         "Las nuevas solicitudes de usuarios se crearán como tickets en este chat."
     ),
-
     ticket_btn_not_spam="No es spam",
     ticket_btn_reopen="Reabrir",
     ticket_btn_self="Para mí",
@@ -86,15 +82,12 @@ TEXTS_ES = Texts(
     ticket_restored_from_spam="El ticket ha sido restaurado desde spam",
     ticket_closed="El ticket ha sido cerrado",
     ticket_reopened="El ticket ha sido reabierto",
-
     ticket_closed_rating_request="Tu solicitud ha sido cerrada. Valora al especialista:",
     rating_topic_message="Valoración del usuario: {emoji}",
     rating_thanks_edit="¡Gracias por tu valoración! ¡Siempre estamos encantados de ayudarte!",
     rating_thanks_alert="¡Gracias por tu valoración!",
-
     back="◀️ Atrás",
     cancel="Cancelar",
-
     # Auto-reply: status labels
     autoreply_enabled_label="activado",
     autoreply_disabled_label="desactivado",
@@ -106,7 +99,6 @@ TEXTS_ES = Texts(
     autoreply_turned_off="✅ Las respuestas automáticas han sido desactivadas.",
     autoreply_need_text="Envía el texto de la respuesta automática o /autoreply_off.",
     autoreply_saved_enabled="✅ Respuesta automática guardada y activada.",
-
     # OpenChat: statuses and labels for menu
     openchat_status_on="activado",
     openchat_status_off="desactivado",
@@ -127,7 +119,6 @@ TEXTS_ES = Texts(
         "<code>/bind @{bot_username}</code>\n\n"
         "Para desactivar OpenChat, envía aquí el comando /openchat_off."
     ),
-
     # Privacy Mode: statuses and buttons
     privacy_state_on="activado",
     privacy_state_off="desactivado",
@@ -138,7 +129,6 @@ TEXTS_ES = Texts(
         "estará limitado por Telegram. No es posible impedir completamente las capturas de pantalla."
     ),
     privacy_toggled="Modo de privacidad {state}",
-
     # Blacklist: search
     blacklist_search_prompt=(
         "🔍 Envía una parte del nombre de usuario para buscar en la lista negra.\n"
@@ -164,22 +154,18 @@ TEXTS_ES = Texts(
     blacklist_remove_bad_format="Formato no válido. Proporciona un ID de usuario numérico.",
     blacklist_user_not_found="El usuario <code>{user_id}</code> no se encuentra en la lista negra.",
     blacklist_user_removed="✅ El usuario <code>{user_id}</code> ha sido eliminado de la lista negra.",
-    blacklist_remove_prompt=(
-    "✏️ Envía el ID del usuario que quieres eliminar de la lista negra."
-    ),
+    blacklist_remove_prompt=("✏️ Envía el ID del usuario que quieres eliminar de la lista negra."),
     blacklist_choose_action="Elige una acción.",
     blacklist_add_prompt=(
         "✏️ Envía el ID del usuario que quieres añadir a la lista negra.\n"
         "También puedes indicar el nombre de usuario separado por un espacio: "
         "<code>123456789 @username</code>"
     ),
-
     require_text_message="Se requiere un mensaje de texto.",
     auto_close_log="Se han cerrado automáticamente {count} tickets",
     export_preparing="Preparando la exportación…",
     export_no_users="Todavía no hay usuarios que exportar.",
     export_users_caption="Exportación de usuarios (CSV).",
-
     master_title="🤖 <b>GraceHub Platform - Bot Maestro</b>",
     master_start_howto_title="<b>Cómo empezar:</b>",
     master_start_cmd_add_bot="/add_bot - Añadir un nuevo bot",
@@ -203,10 +189,7 @@ TEXTS_ES = Texts(
         "Aquí solo se realiza la adición y gestión de tus bots de soporte."
     ),
     master_unknown_command="Comando desconocido",
-    master_list_bots_empty=(
-        "Todavía no tienes bots.\n\n"
-        "Usa /add_bot para añadir tu primer bot."
-    ),
+    master_list_bots_empty=("Todavía no tienes bots.\n\nUsa /add_bot para añadir tu primer bot."),
     master_list_bots_title="🤖 <b>Tus bots:</b>",
     master_list_bots_status_label="Estado",
     master_list_bots_add_button="➕ Añadir bot",
@@ -252,7 +235,6 @@ TEXTS_ES = Texts(
         "⚠️ Este bot aún no tiene configurado un plan de soporte activo, por lo que de momento no se aceptan nuevas solicitudes. "
         "Intenta ponerte en contacto con los propietarios del bot por otros canales."
     ),
-
     # Para los propietarios/operadores en el tema General
     billing_owner_limit_reached_message=(
         "⚠️ Se ha alcanzado el límite de tickets de vuestro plan actual. "
@@ -272,32 +254,23 @@ TEXTS_ES = Texts(
     master_owner_only="El bot maestro está disponible solo para el propietario.",
     billing_owner_only="Acceso permitido solo al propietario",
     billing_plan_unavailable="El plan no está disponible",
-    billing_need_instance_first=(
-        "Primero añade al menos un bot y luego podrás contratar un plan."
-    ),
+    billing_need_instance_first=("Primero añade al menos un bot y luego podrás contratar un plan."),
     billing_invoice_create_error="No se pudo crear la factura de Stars",
-
     billing_confirm_title="Plan de la cuenta: <b>{plan_name}</b>",
     billing_confirm_periods="Periodos: {periods}",
     billing_confirm_total="Total a pagar: <b>{total_amount} ⭐</b>",
-    billing_confirm_pay_hint=(
-        "Pulsa el botón de abajo para pagar mediante Telegram Stars."
-    ),
+    billing_confirm_pay_hint=("Pulsa el botón de abajo para pagar mediante Telegram Stars."),
     billing_confirm_after_pay=(
         "Después del pago correcto, se ampliará el acceso a las funciones de la cuenta."
     ),
-
     billing_button_pay_stars="💳 Pagar con Stars",
     billing_button_back_plans="⬅️ Volver a los planes",
-
     billing_expiring_title="🔔 <b>Recordatorio del plan</b>\n\n",
     billing_expiring_body=(
         "Para la instancia @{bot_username} quedan {days_left} días antes de que termine el período.\n"
         "Renueva el plan para que el bot siga funcionando sin limitaciones."
     ),
-
     master_remove_owner_only="Acceso permitido solo al propietario",
-    
     master_remove_not_yours="❌ Este bot no es tuyo",
     master_remove_confirm_title="🤖 <b>{bot_name}</b> (@{bot_username})",
     master_remove_confirm_question="¿Realmente quieres eliminar este bot?",
@@ -305,30 +278,26 @@ TEXTS_ES = Texts(
     master_remove_confirm_yes="✅ Sí, eliminar",
     master_remove_confirm_cancel="❌ Cancelar",
     master_menu_billing="💳 Planes y pago",
-    attachment_too_big = "El archivo es demasiado grande. Por favor, envía un archivo más pequeño.",
+    attachment_too_big="El archivo es demasiado grande. Por favor, envía un archivo más pequeño.",
     too_many_messages="⚠️ Demasiados mensajes. Espera un momento y vuelve a intentarlo.",
     billing_plans_title="Elige un plan para tu cuenta:",
     billing_plan_line="• <b>{plan_name}</b>: {price_stars} ⭐ / {period_days} días, límite de {tickets_limit} tickets",
-    menu_rating = "Valoración al cerrar",
-    rating_state_on = "Solicitud de valoración: ACTIVADA",
-    rating_state_off = "Solicitud de valoración: DESACTIVADA",
-
-    rating_screen = (
+    menu_rating="Valoración al cerrar",
+    rating_state_on="Solicitud de valoración: ACTIVADA",
+    rating_state_off="Solicitud de valoración: DESACTIVADA",
+    rating_screen=(
         "{state}\n\n"
         "Si está activado, después de cerrar el ticket el usuario recibirá "
         "una solicitud para valorar la atención."
     ),
-
-    rating_toggle_btn = "Cambiar solicitud de valoración",
-
-    rating_toggled = "El estado de la solicitud de valoración ha cambiado.\n\n{state}",
-    master_current_plan_with_expiry = "Plan actual: {plan_name} (hasta {date}), quedan {days_left} días.",
-    master_current_plan_no_date = "Plan actual: {plan_name}, quedan {days_left} días.",
-    master_current_plan_paused = "El plan {plan_name} está en pausa (hasta {date}). Renueva tu suscripción para continuar.",
-    billing_unknown_plan_name = "Plan desconocido",
-    ticket_taken_self = "✅ El ticket ha sido asignado a ti",
-    ticket_no_assignees = "No hay operadores disponibles para asignar",
-    first_message_forwarded = "✅ Mensaje enviado al soporte. ¡Te responderemos pronto!",
-    session_flood_message = "⏳ Tus mensajes han sido entregados. ¡Esperando respuesta del operador!",
+    rating_toggle_btn="Cambiar solicitud de valoración",
+    rating_toggled="El estado de la solicitud de valoración ha cambiado.\n\n{state}",
+    master_current_plan_with_expiry="Plan actual: {plan_name} (hasta {date}), quedan {days_left} días.",
+    master_current_plan_no_date="Plan actual: {plan_name}, quedan {days_left} días.",
+    master_current_plan_paused="El plan {plan_name} está en pausa (hasta {date}). Renueva tu suscripción para continuar.",
+    billing_unknown_plan_name="Plan desconocido",
+    ticket_taken_self="✅ El ticket ha sido asignado a ti",
+    ticket_no_assignees="No hay operadores disponibles para asignar",
+    first_message_forwarded="✅ Mensaje enviado al soporte. ¡Te responderemos pronto!",
+    session_flood_message="⏳ Tus mensajes han sido entregados. ¡Esperando respuesta del operador!",
 )
-

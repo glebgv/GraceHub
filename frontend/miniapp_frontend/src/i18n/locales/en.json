@@ -101,7 +101,9 @@
     "payment_success_title": "Payment successful",
     "payment_success_body": "Plan {{name}} for {{months}} month(s) has been paid successfully.",
     "payment_success_ok": "OK",
-    "payment_failed": "Failed to confirm the payment. Please try again."
+    "payment_failed": "Failed to confirm the payment. Please try again.",
+    "valid_until": "Valid until",
+    "days_left": "Days left"
   },
   "firstLaunch": {
     "welcome": "Welcome to the GraceHub bot management platform!",
@@ -239,6 +241,7 @@
   },
   "instances": {
     "select_instance_title": "Select an instance",
-    "available_count": "{{count}} available"
+    "available_count": "{{count}} available",
+    "bot": "Bot"
   }
 }

@@ -1,19 +1,25 @@
 // src/pages/FirstLaunch.tsx
 
 import React, { useEffect, useMemo, useState } from 'react';
+
 import { useTranslation } from 'react-i18next';
+
 import { apiClient } from '../api/client';
+
 import AddBotModal from '../components/AddBotModal';
+
 import logo from '../assets/logo.png';
 
 type LangCode = 'ru' | 'en' | 'es' | 'hi' | 'zh';
 
 interface FirstLaunchProps {
   onAddBotClick: (token: string) => Promise<void> | void;
+
   instanceId?: string | null;
 
   // NEW (for superadmin without instances)
   isSuperadmin?: boolean;
+
   onOpenAdmin?: () => void;
 }
 
@@ -23,6 +29,23 @@ type OfferState = {
   accepted: boolean;
   loading: boolean;
   error: string | null;
+};
+
+const LANGS: Array<{ code: LangCode; label: string; flagCode: string }> = [
+  { code: 'ru', label: 'Русский', flagCode: 'ru' },
+  // В InstancesList для английского использовался gb (или us). Оставляю gb для консистентности.
+  { code: 'en', label: 'English', flagCode: 'gb' },
+  { code: 'es', label: 'Español', flagCode: 'es' },
+  { code: 'hi', label: 'हिन्दी', flagCode: 'in' },
+  { code: 'zh', label: '中文', flagCode: 'cn' },
+];
+
+const FLAGSTYLE: React.CSSProperties = {
+  display: 'inline-block',
+  width: 20,
+  height: 15,
+  borderRadius: 3,
+  flex: '0 0 auto',
 };
 
 const FirstLaunch: React.FC<FirstLaunchProps> = ({
@@ -35,6 +58,7 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
 
   const initialLang = (i18n.language as LangCode) || 'ru';
   const [language, setLanguage] = useState<LangCode>(initialLang);
+
   const [saving, setSaving] = useState(false);
   const [showAddModal, setShowAddModal] = useState(false);
 
@@ -46,6 +70,7 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
     loading: true,
     error: null,
   });
+
   const [offerSubmitting, setOfferSubmitting] = useState(false);
 
   const isOfferGateOpen = useMemo(() => {
@@ -75,8 +100,10 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
         });
       } catch (e: any) {
         if (cancelled) return;
+
         // Fail-open: если оферта не загрузилась из-за ошибки API, не блокируем вход.
         console.error('[FirstLaunch] getOfferStatus failed', e);
+
         setOffer({
           enabled: false,
           url: '',
@@ -96,6 +123,7 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
 
   const acceptOffer = async () => {
     if (!offer.url || offerSubmitting) return;
+
     try {
       setOfferSubmitting(true);
       await apiClient.postOfferDecision(true);
@@ -110,6 +138,7 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
 
   const declineOffer = async () => {
     if (!offer.url || offerSubmitting) return;
+
     try {
       setOfferSubmitting(true);
       await apiClient.postOfferDecision(false);
@@ -124,11 +153,10 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
 
   const saveLanguage = async (lang: LangCode) => {
     if (!instanceId) return;
+
     try {
       setSaving(true);
-      await apiClient.updateSettings(instanceId, {
-        language: lang,
-      });
+      await apiClient.updateSettings(instanceId, { language: lang });
     } catch (err) {
       console.error('[FirstLaunch] Failed to update language', err);
     } finally {
@@ -146,13 +174,7 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
     await onAddBotClick(token);
   };
 
-  const languageOptions: { code: LangCode; label: string }[] = [
-    { code: 'ru', label: 'Русский' },
-    { code: 'en', label: 'English' },
-    { code: 'es', label: 'Español' },
-    { code: 'hi', label: 'हिन्दी' },
-    { code: 'zh', label: '中文' },
-  ];
+  const currentLangMeta = LANGS.find((l) => l.code === language) ?? LANGS[0];
 
   return (
     <div style={{ padding: 12 }}>
@@ -176,7 +198,6 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
           <div className="card" style={{ width: 'min(520px, 100%)' }}>
             <div className="card-header" style={{ justifyContent: 'space-between' }}>
               <div className="card-title">Публичная оферта</div>
-              {/* Крестик не даём — только явное согласие или отмена */}
             </div>
 
             <div style={{ padding: '0 var(--space-14) var(--space-14) var(--space-14)' as any }}>
@@ -207,7 +228,9 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
                     padding: 10,
                   }}
                 >
-                  <div style={{ color: 'var(--tg-color-text)', fontSize: 13 }}>{String(offer.error)}</div>
+                  <div style={{ color: 'var(--tg-color-text)', fontSize: 13 }}>
+                    {String(offer.error)}
+                  </div>
                 </div>
               )}
 
@@ -258,9 +281,8 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
         </div>
       )}
 
-      {/* Заголовок и приветствие */}
       <div className="card" style={{ marginBottom: 16 }}>
-        <div className="cardbody">
+        <div className="card__body">
           <div
             style={{
               display: 'flex',
@@ -271,15 +293,7 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
             }}
           >
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <img
-                src={logo}
-                alt="GraceHub"
-                style={{
-                  width: 32,
-                  height: 32,
-                  borderRadius: 10,
-                }}
-              />
+              <img src={logo} alt="GraceHub" style={{ width: 32, height: 32, borderRadius: 10 }} />
               <span style={{ fontSize: 22, fontWeight: 600 }}>{t('app.title')}</span>
             </div>
 
@@ -290,12 +304,7 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
                 type="button"
                 onClick={onOpenAdmin}
                 title="Superadmin"
-                style={{
-                  padding: 0,
-                  width: 44,
-                  minWidth: 44,
-                  flex: '0 0 auto',
-                }}
+                style={{ padding: 0, width: 44, minWidth: 44, flex: '0 0 auto' }}
               >
                 <span className="nav-icon">🛡️</span>
                 {/* Оставляем тот же nav-label, но скрываем, чтобы было как "иконка" справа сверху */}
@@ -306,24 +315,10 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
             )}
           </div>
 
-          <p
-            style={{
-              margin: 0,
-              fontSize: 14,
-              color: 'var(--tg-color-text-secondary)',
-            }}
-          >
+          <p style={{ margin: 0, fontSize: 14, color: 'var(--tg-color-text-secondary)' }}>
             {t('firstLaunch.welcome')}
           </p>
-
-          <p
-            style={{
-              marginTop: 6,
-              marginBottom: 0,
-              fontSize: 13,
-              color: 'var(--tg-color-text-secondary)',
-            }}
-          >
+          <p style={{ marginTop: 6, marginBottom: 0, fontSize: 13, color: 'var(--tg-color-text-secondary)' }}>
             {t('firstLaunch.description')}
           </p>
 
@@ -340,15 +335,11 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
             >
               {t('settings.languageLabel')}
             </label>
-            <div
-              style={{
-                display: 'flex',
-                flexWrap: 'wrap',
-                gap: 8,
-              }}
-            >
-              {languageOptions.map((item) => {
+
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+              {LANGS.map((item) => {
                 const active = language === item.code;
+
                 return (
                   <button
                     key={item.code}
@@ -358,16 +349,34 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
                     style={{
                       padding: '6px 10px',
                       borderRadius: 999,
-                      border: active ? '1px solid var(--tg-color-accent)' : '1px solid var(--tg-color-hint)',
-                      backgroundColor: active ? 'var(--tg-color-accent)' : 'var(--tg-theme-bg-color, #ffffff)',
+                      border: active
+                        ? '1px solid var(--tg-color-accent)'
+                        : '1px solid var(--tg-color-hint)',
+                      backgroundColor: active
+                        ? 'var(--tg-color-accent)'
+                        : 'var(--tg-theme-bg-color, #ffffff)',
                       color: active ? '#ffffff' : 'var(--tg-color-text, #000000)',
                       fontSize: 12,
                       lineHeight: 1.2,
                       minWidth: 64,
                       whiteSpace: 'nowrap',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 8,
                     }}
+                    aria-label={item.label}
+                    title={item.label}
                   >
-                    {item.label}
+                    <span
+                      aria-hidden
+                      className={`fi fi-${item.flagCode}`}
+                      style={{
+                        ...FLAGSTYLE,
+                        // чтобы флаг не "терялся" на активной синей кнопке
+                        filter: active ? 'saturate(1.05) brightness(1.05)' : undefined,
+                      }}
+                    />
+                    <span>{item.label}</span>
                   </button>
                 );
               })}
@@ -389,10 +398,10 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
         </div>
       </div>
 
-      {/* Основные действия (аналоги меню бота) */}
       <div className="card" style={{ marginBottom: 16 }}>
-        <div className="cardbody">
+        <div className="card__body">
           <h3 style={{ marginTop: 0, marginBottom: 10, fontSize: 16 }}>{t('firstLaunch.actionsTitle')}</h3>
+
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             <button
               className="btn btn--primary btn--full-width"
@@ -406,18 +415,11 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
         </div>
       </div>
 
-      {/* Подсказка как начать */}
       <div className="card">
-        <div className="cardbody">
+        <div className="card__body">
           <h3 style={{ marginTop: 0, marginBottom: 10, fontSize: 16 }}>{t('firstLaunch.howToStartTitle')}</h3>
-          <ol
-            style={{
-              margin: 0,
-              paddingLeft: 18,
-              fontSize: 14,
-              color: 'var(--tg-color-text-secondary)',
-            }}
-          >
+
+          <ol style={{ margin: 0, paddingLeft: 18, fontSize: 14, color: 'var(--tg-color-text-secondary)' }}>
             <li>{t('firstLaunch.step1')}</li>
             <li>{t('firstLaunch.step2')}</li>
             <li>{t('firstLaunch.step3')}</li>
@@ -425,7 +427,9 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
         </div>
       </div>
 
-      {showAddModal && <AddBotModal onClose={() => setShowAddModal(false)} onSubmitToken={handleSubmitToken} />}
+      {showAddModal && (
+        <AddBotModal onClose={() => setShowAddModal(false)} onSubmitToken={handleSubmitToken} />
+      )}
     </div>
   );
 };

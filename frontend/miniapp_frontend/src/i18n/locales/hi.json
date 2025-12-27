@@ -101,7 +101,9 @@
     "payment_success_title": "भुगतान सफल",
     "payment_success_body": "प्लान {{name}} ({{months}} माह) सफलतापूर्वक सक्रिय किया गया।",
     "payment_success_ok": "ओके",
-    "payment_failed": "भुगतान की पुष्टि नहीं हो सकी। कृपया पुनः प्रयास करें।"
+    "payment_failed": "भुगतान की पुष्टि नहीं हो सकी। कृपया पुनः प्रयास करें।",
+    "valid_until": "तक वैध",
+    "days_left": "बचे हुए दिन"
   },
   "firstLaunch": {
     "welcome": "GraceHub बॉट प्रबंधन प्लेटफ़ॉर्म में आपका स्वागत है!",
@@ -239,6 +241,7 @@
   },
   "instances": {
     "select_instance_title": "एक इंस्टेंस चुनें",
-    "available_count": "{{count}} उपलब्ध"
+    "available_count": "{{count}} उपलब्ध",
+    "bot": "बॉट"
   }
 }

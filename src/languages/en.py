@@ -1,6 +1,5 @@
 # src/languages/en.py
 
-from dataclasses import dataclass
 from .base import Texts
 
 TEXTS_EN = Texts(
@@ -18,7 +17,6 @@ TEXTS_EN = Texts(
     support_not_configured="❌ Support is not configured. Please contact the administrator.",
     message_forwarded_to_support="✅ Your message has been forwarded to support.",
     you_are_blocked="❌ You are blocked and cannot use this bot.",
-
     admin_panel_title="<b>🛠 Admin panel</b>",
     admin_panel_choose_section="Choose a section:",
     menu_greeting="✏️ Greeting",
@@ -28,13 +26,11 @@ TEXTS_EN = Texts(
     menu_privacy="🛡 Privacy Mode",
     menu_language="🌐 Language",
     greeting_edit_prompt=(
-        "✏️ Send a new greeting text.\n"
-        "To remove the greeting, send /clear_greeting"
+        "✏️ Send a new greeting text.\nTo remove the greeting, send /clear_greeting"
     ),
     greeting_cleared="✅ Greeting has been removed.",
     greeting_need_text="A text message with greeting is required.",
     greeting_saved="✅ New greeting has been saved.",
-
     openchat_setup_hint=(
         "💬 To use this bot, configure OpenChat:\n"
         "1) Create a private supergroup without @username\n"
@@ -80,7 +76,6 @@ TEXTS_EN = Texts(
         "<code>/bind @{bot_username}</code>\n\n"
         "To disable OpenChat, send /openchat_off here."
     ),
-
     ticket_btn_not_spam="Not spam",
     ticket_btn_reopen="Reopen",
     ticket_btn_self="To me",
@@ -97,16 +92,12 @@ TEXTS_EN = Texts(
     ticket_closed="Ticket has been closed",
     ticket_reopened="Ticket has been reopened",
     ticket_not_found="Ticket not found",
-
     ticket_closed_rating_request="Your request has been closed. Please rate the specialist:",
     rating_topic_message="User rating: {emoji}",
     rating_thanks_edit="Thank you for your rating! We are always happy to help!",
     rating_thanks_alert="Thank you for your rating!",
-
-
     back="◀️ Back",
     cancel="Cancel",
-
     # Auto-reply: status labels
     autoreply_enabled_label="enabled",
     autoreply_disabled_label="disabled",
@@ -118,7 +109,6 @@ TEXTS_EN = Texts(
     autoreply_turned_off="✅ Auto replies have been disabled.",
     autoreply_need_text="Send auto reply text or /autoreply_off.",
     autoreply_saved_enabled="✅ Auto reply saved and enabled.",
-
     # OpenChat: statuses and labels for menu
     openchat_status_on="enabled",
     openchat_status_off="disabled",
@@ -128,7 +118,6 @@ TEXTS_EN = Texts(
     openchat_status_line_off="🔗 Status: 🔴OFF – check binding in the supergroup with topics!",
     openchat_setup_button="⚙️ Configure OpenChat",
     menu_you_are_admin="🕹 You are an administrator",
-
     # Privacy Mode: statuses and buttons
     privacy_state_on="enabled",
     privacy_state_off="disabled",
@@ -139,7 +128,6 @@ TEXTS_EN = Texts(
         "restricted by Telegram. It is not possible to fully prevent screenshots."
     ),
     privacy_toggled="Privacy Mode {state}",
-
     # Blacklist: search
     blacklist_search_prompt=(
         "🔍 Send a part of the username to search in the blacklist.\n"
@@ -178,7 +166,6 @@ TEXTS_EN = Texts(
     export_preparing="Preparing export…",
     export_no_users="There are no users to export yet.",
     export_users_caption="Users export (CSV).",
-
     master_title="🤖 <b>GraceHub Platform - Master Bot</b>",
     master_start_howto_title="<b>How to start:</b>",
     master_start_cmd_add_bot="/add_bot - Add a new bot",
@@ -202,10 +189,7 @@ TEXTS_EN = Texts(
         "This interface is only for adding and managing your support bots."
     ),
     master_unknown_command="Unknown command",
-    master_list_bots_empty=(
-        "You don't have any bots yet.\n\n"
-        "Use /add_bot to add your first bot."
-    ),
+    master_list_bots_empty=("You don't have any bots yet.\n\nUse /add_bot to add your first bot."),
     master_list_bots_title="🤖 <b>Your bots:</b>",
     master_list_bots_status_label="Status",
     master_list_bots_add_button="➕ Add bot",
@@ -251,7 +235,6 @@ TEXTS_EN = Texts(
         "⚠️ This bot does not have an active support plan configured yet, so new requests are temporarily not accepted. "
         "Please try to reach the owners of the bot through other channels."
     ),
-
     # For owners/operators in the General topic
     billing_owner_limit_reached_message=(
         "⚠️ You have reached the ticket limit for your current plan. "
@@ -271,30 +254,20 @@ TEXTS_EN = Texts(
     master_owner_only="The master bot is available only to the owner.",
     billing_owner_only="Access is restricted to the owner only",
     billing_plan_unavailable="The plan is not available",
-    billing_need_instance_first=(
-        "Add at least one bot first, then you can purchase a plan."
-    ),
+    billing_need_instance_first=("Add at least one bot first, then you can purchase a plan."),
     billing_invoice_create_error="Failed to create Stars invoice",
-
     billing_confirm_title="Account plan: <b>{plan_name}</b>",
     billing_confirm_periods="Periods: {periods}",
     billing_confirm_total="Total to pay: <b>{total_amount} ⭐</b>",
-    billing_confirm_pay_hint=(
-        "Tap the button below to pay via Telegram Stars."
-    ),
-    billing_confirm_after_pay=(
-        "After successful payment, your account features will be extended."
-    ),
-
+    billing_confirm_pay_hint=("Tap the button below to pay via Telegram Stars."),
+    billing_confirm_after_pay=("After successful payment, your account features will be extended."),
     billing_button_pay_stars="💳 Pay with Stars",
     billing_button_back_plans="⬅️ Back to plans",
-
     billing_expiring_title="🔔 <b>Plan reminder</b>\n\n",
     billing_expiring_body=(
         "Instance @{bot_username} has {days_left} days left before the billing period ends.\n"
         "Extend your plan to keep the bot running without limitations."
     ),
-
     master_remove_owner_only="Access is restricted to the owner only",
     master_remove_not_yours="❌ This bot does not belong to you",
     master_remove_confirm_title="🤖 <b>{bot_name}</b> (@{bot_username})",
@@ -303,30 +276,26 @@ TEXTS_EN = Texts(
     master_remove_confirm_yes="✅ Yes, delete",
     master_remove_confirm_cancel="❌ Cancel",
     master_menu_billing="💳 Plans & Billing",
-    attachment_too_big = "The file is too large. Please send a smaller file.",
+    attachment_too_big="The file is too large. Please send a smaller file.",
     too_many_messages="⚠️ Too many messages. Please wait a bit and try again.",
     billing_plans_title="Choose a plan for your account:",
     billing_plan_line="• <b>{plan_name}</b>: {price_stars} ⭐ / {period_days} days, limit {tickets_limit} tickets",
-    menu_rating = "Rating on close",
-    rating_state_on = "Rating request: ENABLED",
-    rating_state_off = "Rating request: DISABLED",
-
-    rating_screen = (
+    menu_rating="Rating on close",
+    rating_state_on="Rating request: ENABLED",
+    rating_state_off="Rating request: DISABLED",
+    rating_screen=(
         "{state}\n\n"
         "When enabled, after a ticket is closed the user will receive "
         "a request to rate the support quality."
     ),
-
-    rating_toggle_btn = "Toggle rating request",
-
-    rating_toggled = "Rating request state has been changed.\n\n{state}",
-    master_current_plan_with_expiry = "Current plan: {plan_name} (until {date}), {days_left} days left.",
-    master_current_plan_no_date = "Current plan: {plan_name}, {days_left} days left.",
-    master_current_plan_paused = "Plan {plan_name} is paused (until {date}). Renew your subscription to continue.",
-    billing_unknown_plan_name = "Unknown plan",
-    ticket_taken_self = "✅ The ticket has been assigned to you",
-    ticket_no_assignees = "No available operators to assign",
-    first_message_forwarded = "✅ Message forwarded to support. We'll reply soon!",
-    session_flood_message = "⏳ Your messages have been delivered. Awaiting operator response!",
+    rating_toggle_btn="Toggle rating request",
+    rating_toggled="Rating request state has been changed.\n\n{state}",
+    master_current_plan_with_expiry="Current plan: {plan_name} (until {date}), {days_left} days left.",
+    master_current_plan_no_date="Current plan: {plan_name}, {days_left} days left.",
+    master_current_plan_paused="Plan {plan_name} is paused (until {date}). Renew your subscription to continue.",
+    billing_unknown_plan_name="Unknown plan",
+    ticket_taken_self="✅ The ticket has been assigned to you",
+    ticket_no_assignees="No available operators to assign",
+    first_message_forwarded="✅ Message forwarded to support. We'll reply soon!",
+    session_flood_message="⏳ Your messages have been delivered. Awaiting operator response!",
 )
-

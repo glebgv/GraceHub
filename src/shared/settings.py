@@ -3,7 +3,6 @@ import os
 from pathlib import Path
 from urllib.parse import quote
 
-
 BASE_DIR = Path(os.getenv("APP_BASE_DIR", "/app"))
 DATA_DIR = Path(os.getenv("DATA_DIR", str(BASE_DIR / "data")))
 LOGS_DIR = Path(os.getenv("LOGS_DIR", str(BASE_DIR / "logs")))
@@ -17,13 +16,15 @@ DB_PORT = int(os.getenv("DB_PORT", "5432"))
 DB_NAME = os.getenv("DB_NAME", "gracehub")
 
 # Автоматическое URL-кодирование пароля для безопасности
-_db_password_encoded = quote(DB_PASSWORD, safe='')
+_db_password_encoded = quote(DB_PASSWORD, safe="")
 
 # Полная DATABASE_URL (используется MasterDatabase)
 DATABASE_URL = f"postgresql://{DB_USER}:{_db_password_encoded}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
 # Альтернатива: асинхронный драйвер для FastAPI (если понадобится)
-DATABASE_URL_ASYNC = f"postgresql+asyncpg://{DB_USER}:{_db_password_encoded}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+DATABASE_URL_ASYNC = (
+    f"postgresql+asyncpg://{DB_USER}:{_db_password_encoded}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+)
 
 
 # === КЛЮЧИ ===
@@ -60,34 +61,12 @@ MAX_INSTANCES_PER_USER = int(os.getenv("MAX_INSTANCES_PER_USER", "5"))
 WORKER_MONITOR_INTERVAL = int(os.getenv("WORKER_MONITOR_INTERVAL", "600"))
 BILLING_CRON_INTERVAL = int(os.getenv("BILLING_CRON_INTERVAL", "3600"))
 
-
-WORKER_MAX_FILE_MB: int = int(os.getenv("WORKER_MAX_FILE_MB", 50))
-
-#STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")  # sk_test_...
-#STRIPE_PUBLISHABLE_KEY = os.getenv("STRIPE_PUBLISHABLE_KEY", "")  # pk_test_...
-#STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")  # whsec_... (для валидации сигнатур)
-#STRIPE_CURRENCY = os.getenv("STRIPE_CURRENCY", "usd")  # или "rub"
-
-
-ANTIFLOOD_MAX_USER_MESSAGES_PER_MINUTE = int(os.getenv("ANTIFLOOD_MAX_USER_MESSAGES_PER_MINUTE", "30"))
-
 # === ADMIN / ROLES ===
-# Пример env: GRACEHUB_SUPERADMIN_TELEGRAM_IDS="123456789,987654321"
-_SUPERADMIN_RAW = os.getenv("GRACEHUB_SUPERADMIN_TELEGRAM_IDS", "").strip()
+_SUPERADMIN_RAW = os.getenv("GRACEHUB_SUPERADMIN_TELEGRAM_ID", "").strip()
 
-def _parse_int_list_csv(value: str) -> list[int]:
-    if not value:
-        return []
-    out: list[int] = []
-    for part in value.split(","):
-        part = part.strip()
-        if not part:
-            continue
-        try:
-            out.append(int(part))
-        except ValueError:
-            # игнорируем мусор типа "abc"
-            continue
-    return out
+GRACEHUB_SUPERADMIN_TELEGRAM_ID: int | None = None
 
-SUPERADMIN_TELEGRAM_IDS: list[int] = _parse_int_list_csv(_SUPERADMIN_RAW)
+if _SUPERADMIN_RAW.isdigit():
+    _n = int(_SUPERADMIN_RAW)
+    if _n > 0:
+        GRACEHUB_SUPERADMIN_TELEGRAM_ID = _n

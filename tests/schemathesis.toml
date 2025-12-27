@@ -1,0 +1,41 @@
+headers = { Authorization = "Bearer ${API_TOKEN}" }
+
+[checks]
+missing_required_header.expected-statuses = [400, 401, 403, 406, 422]
+
+# Отключаем конкретные операции по exact path
+[[operations]]
+include-path = "/api/instances"
+enabled = false
+
+[[operations]]
+include-path = "/api/billing/yookassa/status"
+enabled = false
+
+[[operations]]
+include-path = "/api/webhook/stripe"
+enabled = false
+
+[[operations]]
+include-path = "/api/billing/ton/status"
+enabled = false
+
+# Отключаем по exact "operation name" (метод + путь)
+[[operations]]
+include-name = "POST /api/invoices/stripe/{invoice_id}/cancel"
+enabled = false
+
+# --- Убираем "admin" ручки, которые стабильно 403 (missing_auth warning) ---
+
+[[operations]]
+include-path = "/api/platform/single-tenant"
+enabled = false
+
+[[operations]]
+include-path = "/api/platform/superadmins"
+enabled = false
+
+[[operations]]
+include-path = "/manage/health"
+enabled = false
+

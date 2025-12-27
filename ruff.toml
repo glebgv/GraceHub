@@ -1,0 +1,30 @@
+# ruff.toml
+
+line-length = 100
+indent-width = 4
+
+# Поставь под минимальную версию Python в проде (пример: py311).
+target-version = "py310"
+
+# Чтобы exclude работал даже для файлов, переданных явно.
+force-exclude = true
+
+exclude = [
+  "site",
+  "tests",
+  "venv",
+  "images",
+  "frontend",
+  "examples",
+  "docs",
+  "docker",
+  "data",
+]
+
+[lint]
+select = ["E", "F", "I"]
+ignore = ["E501"]
+
+[lint.per-file-ignores]
+"**/__init__.py" = ["E402"]
+

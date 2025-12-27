@@ -1,43 +1,61 @@
 # src/shared/database.py
-import os
 import json
 import logging
-from datetime import datetime, timezone, timedelta
+import os
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional, List, Any, Dict, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import asyncpg
-from cryptography.fernet import Fernet
 from cachetools import TTLCache
+from cryptography.fernet import Fernet
 
-from .models import BotInstance, InstanceStatus
 from . import settings
+from .models import BotInstance, InstanceStatus
 
 logger = logging.getLogger(__name__)
 
 
 def get_master_dsn() -> str:
     """
-    Возвращает DSN для master-БД из settings.py или env
+    Возвращает DSN для master-БД.
+
+    Приоритет:
+    1) env DATABASE_URL (обязательно для CI)
+    2) settings.DATABASE_URL (удобно для локальной разработки)
     """
-    # 1. Импорт settings с правильным путем
-    try:
-        from . import settings
-        return settings.DATABASE_URL
-    except (ImportError, AttributeError):
-        pass
-    
-    # 2. Fallback на env переменную
+    env = (os.getenv("ENV") or "").lower()
     env_dsn = os.getenv("DATABASE_URL")
+
+    # CI guard: в CI запрещаем "молча" брать DSN из settings/.env
+    if env == "ci":
+        if not env_dsn:
+            raise RuntimeError(
+                "ENV=ci: DATABASE_URL не задан (или пустой).\n"
+                "Нужно передать DATABASE_URL через GitHub Actions env, например:\n"
+                "DATABASE_URL=postgresql://gh_user:postgres@127.0.0.1:5432/gracehub"
+            )
+        return env_dsn
+
+    # Не-CI: сначала env (если задан), чтобы можно было переопределять локально
     if env_dsn:
         return env_dsn
-    
+
+    # Фоллбек на settings
+    try:
+        from . import settings
+
+        dsn = getattr(settings, "DATABASE_URL", None)
+        if dsn:
+            return dsn
+    except ImportError:
+        pass
+
     raise RuntimeError(
         "DATABASE_URL не задан.\n"
         "1. Добавь в .env: DB_USER, DB_PASSWORD, DB_HOST, DB_NAME\n"
         "2. Или DATABASE_URL=postgresql://user:pass@host:port/dbname"
     )
-
 
 
 class MasterDatabase:
@@ -66,11 +84,7 @@ class MasterDatabase:
             )
 
         self.pool = await asyncpg.create_pool(
-            self.dsn,
-            min_size=5,
-            max_size=20,
-            timeout=30,
-            max_inactive_connection_lifetime=300
+            self.dsn, min_size=5, max_size=20, timeout=30, max_inactive_connection_lifetime=300
         )
 
         key = self.get_or_create_encryption_key()
@@ -78,12 +92,12 @@ class MasterDatabase:
 
         await self.create_tables()
         await self.ensure_default_platform_settings()
+        await self.ensure_env_superadmin_in_db()
         logger.info(f"Master database (Postgres) initialized: {self.dsn}")
 
     async def count_instances_for_user(self, userid: int) -> int:
         row = await self.fetchone(
-            "SELECT COUNT(*) AS cnt FROM bot_instances WHERE user_id = $1",
-            (userid,)
+            "SELECT COUNT(*) AS cnt FROM bot_instances WHERE user_id = $1", (userid,)
         )
         return int(row["cnt"]) if row else 0
 
@@ -104,7 +118,6 @@ class MasterDatabase:
         url = str(offer.get("url", "") or "").strip()
         return {"enabled": enabled, "url": url}
 
-
     async def get_user_offer_status(self, user_id: int) -> Dict[str, Any]:
         row = await self.fetchone(
             """
@@ -120,7 +133,6 @@ class MasterDatabase:
             if row
             else {"user_id": user_id, "offer_url": None, "accepted": False, "accepted_at": None}
         )
-
 
     async def upsert_user_offer(
         self,
@@ -153,7 +165,6 @@ class MasterDatabase:
             (user_id, offer_url, accepted, source),
         )
 
-
     async def has_accepted_offer(self, user_id: int, offer_url: str) -> bool:
         if not offer_url:
             return True
@@ -173,6 +184,7 @@ class MasterDatabase:
         if isinstance(raw, str):
             try:
                 import json
+
                 raw = json.loads(raw)
             except Exception:
                 raw = None
@@ -184,7 +196,6 @@ class MasterDatabase:
         except Exception:
             v = 0
         return max(v, 0)
-
 
     async def update_instance_webhook(
         self,
@@ -244,8 +255,7 @@ class MasterDatabase:
             return self.settings_cache[cache_key]
 
         row = await self.fetchone(
-            "SELECT value FROM platform_settings WHERE key = $1 LIMIT 1",
-            (key,)
+            "SELECT value FROM platform_settings WHERE key = $1 LIMIT 1", (key,)
         )
         value = row["value"] if row else default
         if isinstance(value, str):
@@ -255,7 +265,6 @@ class MasterDatabase:
                 value = default
         self.settings_cache[cache_key] = value
         return value
-
 
     async def set_platform_setting(
         self,
@@ -271,7 +280,7 @@ class MasterDatabase:
             SET value = EXCLUDED.value,
                 updated_at = NOW()
             """,
-            (key, value_json)
+            (key, value_json),
         )
         # Инвалидируем кэш после обновления
         cache_key = f"platform_setting:{key}"
@@ -399,7 +408,6 @@ class MasterDatabase:
         rows = await self.fetchall(sql)
         return [dict(r) for r in rows]
 
-
     async def get_all_instances_for_monitor(self) -> list[BotInstance]:
         """
         Возвращает все инстансы для мониторинга (running + error и т.д.).
@@ -426,8 +434,6 @@ class MasterDatabase:
         )
         return [BotInstance(**row) for row in rows]
 
-
-
     async def get_instance_settings(self, instance_id: str) -> Optional[Dict[str, Any]]:
         """
         Настройки инстанса для мастер-бота (как dict).
@@ -446,7 +452,7 @@ class MasterDatabase:
             WHERE bi.instance_id = $1
             LIMIT 1
             """,
-            (instance_id,)
+            (instance_id,),
         )
         if not row:
             return None
@@ -476,7 +482,7 @@ class MasterDatabase:
             FROM instance_meta
             WHERE instance_id = $1
             """,
-            (instance_id,)
+            (instance_id,),
         )
 
         if meta:
@@ -545,44 +551,44 @@ class MasterDatabase:
             WHERE payload = $1
             LIMIT 1
             """,
-            (payload,)
+            (payload,),
         )
         return dict(row) if row else None
 
     async def mark_billing_invoice_paid_yookassa(
-            self,
-            invoice_id: int,
-            payment_id: str,
-            amount_minor_units: int,
-            currency: str = "RUB",
-        ) -> bool:
-            """
-            Идемпотентно помечает YooKassa-инвойс оплаченным с блокировкой строки.
-            Возвращает True, если статус изменился на 'paid' (был не paid).
-            Возвращает False, если инвойс уже был paid или не найден.
-            """
-            async with self.pool.acquire() as conn:
-                async with conn.transaction():
-                    # Блокируем строку инвойса для исключения race conditions
-                    row = await conn.fetchrow(
-                        """
+        self,
+        invoice_id: int,
+        payment_id: str,
+        amount_minor_units: int,
+        currency: str = "RUB",
+    ) -> bool:
+        """
+        Идемпотентно помечает YooKassa-инвойс оплаченным с блокировкой строки.
+        Возвращает True, если статус изменился на 'paid' (был не paid).
+        Возвращает False, если инвойс уже был paid или не найден.
+        """
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                # Блокируем строку инвойса для исключения race conditions
+                row = await conn.fetchrow(
+                    """
                         SELECT status
                         FROM billing_invoices
                         WHERE invoice_id = $1
                         FOR UPDATE
                         """,
-                        invoice_id
-                    )
+                    invoice_id,
+                )
 
-                    if not row:
-                        return False  # Инвойс не найден
+                if not row:
+                    return False  # Инвойс не найден
 
-                    if row["status"] == "paid":
-                        return False  # Уже оплачен — идемпотентно выходим
+                if row["status"] == "paid":
+                    return False  # Уже оплачен — идемпотентно выходим
 
-                    # Обновляем только если статус ещё не paid
-                    await conn.execute(
-                        """
+                # Обновляем только если статус ещё не paid
+                await conn.execute(
+                    """
                         UPDATE billing_invoices
                         SET status = 'paid',
                             provider_tx_hash = $1,
@@ -592,10 +598,12 @@ class MasterDatabase:
                             updated_at = NOW()
                         WHERE invoice_id = $4
                         """,
-                        payment_id, amount_minor_units, currency, invoice_id
-                    )
-                    return True
-
+                    payment_id,
+                    amount_minor_units,
+                    currency,
+                    invoice_id,
+                )
+                return True
 
     async def get_billing_invoice(self, invoice_id: int) -> dict | None:
         # Добавлено для TON (комментарий перемещён вне строки SQL)
@@ -622,7 +630,7 @@ class MasterDatabase:
             WHERE invoice_id = $1
             LIMIT 1
             """,
-            (invoice_id,)
+            (invoice_id,),
         )
         return dict(row) if row else None
 
@@ -648,11 +656,9 @@ class MasterDatabase:
 
         # Если нужно понимать, изменилось ли реально — можно проверить статус после
         row = await self.fetchone(
-            "SELECT status FROM billing_invoices WHERE invoice_id = $1",
-            (invoice_id,)
+            "SELECT status FROM billing_invoices WHERE invoice_id = $1", (invoice_id,)
         )
         return bool(row and row["status"] == "cancelled")
-
 
     async def get_saas_plans_for_billing(self) -> list[dict]:
         """
@@ -677,41 +683,40 @@ class MasterDatabase:
         )
         return [dict(r) for r in rows]
 
-
     async def mark_billing_invoice_paid_ton(
-            self,
-            invoice_id: int,
-            tx_hash: str,
-            amount_minor_units: int,
-            currency: str = "TON",
-        ) -> bool:
-            """
-            Идемпотентно помечает TON-инвойс оплаченным с блокировкой строки.
-            Возвращает True, если статус реально обновили (pending/cancelled → paid).
-            Возвращает False, если инвойс уже был paid или не найден.
-            """
-            async with self.pool.acquire() as conn:
-                async with conn.transaction():
-                    # Блокируем строку инвойса
-                    row = await conn.fetchrow(
-                        """
+        self,
+        invoice_id: int,
+        tx_hash: str,
+        amount_minor_units: int,
+        currency: str = "TON",
+    ) -> bool:
+        """
+        Идемпотентно помечает TON-инвойс оплаченным с блокировкой строки.
+        Возвращает True, если статус реально обновили (pending/cancelled → paid).
+        Возвращает False, если инвойс уже был paid или не найден.
+        """
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                # Блокируем строку инвойса
+                row = await conn.fetchrow(
+                    """
                         SELECT status
                         FROM billing_invoices
                         WHERE invoice_id = $1
                         FOR UPDATE
                         """,
-                        invoice_id
-                    )
+                    invoice_id,
+                )
 
-                    if not row:
-                        return False  # Инвойс не найден
+                if not row:
+                    return False  # Инвойс не найден
 
-                    if row["status"] == "paid":
-                        return False  # Уже оплачен — идемпотентно
+                if row["status"] == "paid":
+                    return False  # Уже оплачен — идемпотентно
 
-                    # Обновляем данные
-                    await conn.execute(
-                        """
+                # Обновляем данные
+                await conn.execute(
+                    """
                         UPDATE billing_invoices
                         SET status = 'paid',
                             provider_tx_hash = $1,
@@ -721,10 +726,12 @@ class MasterDatabase:
                             updated_at = NOW()
                         WHERE invoice_id = $4
                         """,
-                        tx_hash, amount_minor_units, currency, invoice_id
-                    )
-                    return True
-
+                    tx_hash,
+                    amount_minor_units,
+                    currency,
+                    invoice_id,
+                )
+                return True
 
     async def set_billing_invoice_ton_failed(
         self,
@@ -771,7 +778,6 @@ class MasterDatabase:
             (tx_hash, amount_minor_units, currency, invoice_id),
         )
 
-
     async def get_saas_plan_with_product_by_code(self, plan_code: str) -> dict | None:
         row = await self.fetchone(
             """
@@ -792,11 +798,9 @@ class MasterDatabase:
             WHERE sp.code = $1
             LIMIT 1
             """,
-            (plan_code,)
+            (plan_code,),
         )
         return dict(row) if row else None
-
-
 
     async def apply_saas_plan_for_invoice(self, invoice_id: int) -> None:
         """
@@ -819,7 +823,7 @@ class MasterDatabase:
             JOIN saas_plans       AS sp ON sp.plan_id = bp.plan_id
             WHERE bi.invoice_id = $1
             """,
-            (invoice_id,)
+            (invoice_id,),
         )
         if not row:
             logger.warning("apply_saas_plan_for_invoice: invoice %s not found", invoice_id)
@@ -892,7 +896,6 @@ class MasterDatabase:
             data["plan_code"],
             period_days,
         )
-
 
     async def create_tables(self) -> None:
         assert self.pool is not None
@@ -1038,9 +1041,15 @@ class MasterDatabase:
                 )
 
                 # Индексы
-                await conn.execute("CREATE INDEX IF NOT EXISTS idx_instances_user   ON bot_instances(user_id)")
-                await conn.execute("CREATE INDEX IF NOT EXISTS idx_instances_status ON bot_instances(status)")
-                await conn.execute("CREATE INDEX IF NOT EXISTS idx_rate_limits_time ON rate_limits(last_request)")
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_instances_user   ON bot_instances(user_id)"
+                )
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_instances_status ON bot_instances(status)"
+                )
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_rate_limits_time ON rate_limits(last_request)"
+                )
 
                 # Таблицы mini app
                 await self._create_miniapp_tables(conn)
@@ -1055,7 +1064,6 @@ class MasterDatabase:
         logger.info(
             "Master database tables initialized (Postgres, including miniapp, worker and billing tables)"
         )
-
 
     async def ensure_default_platform_settings(self) -> None:
         """
@@ -1416,11 +1424,19 @@ class MasterDatabase:
         )
 
         # Миграции для существующих баз: добавляем новые поля и constraints
-        await conn.execute("ALTER TABLE billing_invoices ADD COLUMN IF NOT EXISTS external_id TEXT;")
+        await conn.execute(
+            "ALTER TABLE billing_invoices ADD COLUMN IF NOT EXISTS external_id TEXT;"
+        )
         await conn.execute("ALTER TABLE billing_invoices ADD COLUMN IF NOT EXISTS plan_code TEXT;")
-        await conn.execute("ALTER TABLE billing_invoices ADD COLUMN IF NOT EXISTS period_applied BOOLEAN NOT NULL DEFAULT FALSE;")
-        await conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS unique_external_id_non_null ON billing_invoices (external_id) WHERE external_id IS NOT NULL;")  # Partial UNIQUE index для NULL-safe
-        await conn.execute("ALTER TABLE billing_invoices ADD COLUMN IF NOT EXISTS periods INTEGER NOT NULL DEFAULT 1;")
+        await conn.execute(
+            "ALTER TABLE billing_invoices ADD COLUMN IF NOT EXISTS period_applied BOOLEAN NOT NULL DEFAULT FALSE;"
+        )
+        await conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS unique_external_id_non_null ON billing_invoices (external_id) WHERE external_id IS NOT NULL;"
+        )  # Partial UNIQUE index для NULL-safe
+        await conn.execute(
+            "ALTER TABLE billing_invoices ADD COLUMN IF NOT EXISTS periods INTEGER NOT NULL DEFAULT 1;"
+        )
         await conn.execute(
             """
             ALTER TABLE billing_invoices 
@@ -1505,7 +1521,34 @@ class MasterDatabase:
             """
         )
 
-    
+    async def ensure_env_superadmin_in_db(self) -> None:
+        env_id = getattr(settings, "GRACEHUB_SUPERADMIN_TELEGRAM_ID", None)
+        if not isinstance(env_id, int) or env_id <= 0:
+            return
+
+        current = await self.get_platform_setting("miniapp_public", default={})
+        if not isinstance(current, dict):
+            current = {}
+
+        raw_ids = current.get("superadmins", [])
+        if not isinstance(raw_ids, list):
+            raw_ids = []
+
+        out: list[int] = []
+        for x in raw_ids:
+            try:
+                n = int(x)
+                if n > 0:
+                    out.append(n)
+            except Exception:
+                continue
+
+        if env_id not in out:
+            out.append(env_id)
+
+        current["superadmins"] = sorted(list(dict.fromkeys(out)))
+
+        await self.set_platform_setting("miniapp_public", current)
 
     # === Thin async wrappers for miniapp_api and worker ===
 
@@ -1576,15 +1619,24 @@ class MasterDatabase:
         async with self.pool.acquire() as conn:
             async with conn.transaction():
                 # Удаляем связанные записи
-                await conn.execute("DELETE FROM instance_settings WHERE instance_id = $1", *(instance_id,))
-                await conn.execute("DELETE FROM instance_billing WHERE instance_id = $1", *(instance_id,))
+                await conn.execute(
+                    "DELETE FROM instance_settings WHERE instance_id = $1", *(instance_id,)
+                )
+                await conn.execute(
+                    "DELETE FROM instance_billing WHERE instance_id = $1", *(instance_id,)
+                )
                 await conn.execute("DELETE FROM operators WHERE instance_id = $1", *(instance_id,))
                 await conn.execute("DELETE FROM tickets WHERE instance_id = $1", *(instance_id,))
-                await conn.execute("DELETE FROM blacklisted_users WHERE instance_id = $1", *(instance_id,))
-                await conn.execute("DELETE FROM rate_limits WHERE instance_id = $1", *(instance_id,))
+                await conn.execute(
+                    "DELETE FROM blacklisted_users WHERE instance_id = $1", *(instance_id,)
+                )
+                await conn.execute(
+                    "DELETE FROM rate_limits WHERE instance_id = $1", *(instance_id,)
+                )
                 # Удаляем инстанс
-                await conn.execute("DELETE FROM bot_instances WHERE instance_id = $1", *(instance_id,))
-
+                await conn.execute(
+                    "DELETE FROM bot_instances WHERE instance_id = $1", *(instance_id,)
+                )
 
     async def update_billing_invoice_link_and_payload(
         self,
@@ -1622,17 +1674,17 @@ class MasterDatabase:
         self,
         instance_id: str,
         user_id: int,
-        plan_code: str,      # для совместимости, можно не использовать
+        plan_code: str,  # для совместимости, можно не использовать
         periods: int,
-        amount_stars: int,   # Stars сумма (XTR), оставляем для совместимости
+        amount_stars: int,  # Stars сумма (XTR), оставляем для совместимости
         product_code: str,
         payload: str,
         invoice_link: str,
         status: str = "pending",
         *,
-        payment_method: str = "telegram_stars",    # telegram_stars | ton | yookassa | stripe
-        currency: str = "XTR",                     # XTR | TON | RUB | (Stripe: USD/EUR/...)
-        amount_minor_units: int | None = None,     # TON: nanoton, YooKassa: kopeks, Stripe: cents
+        payment_method: str = "telegram_stars",  # telegram_stars | ton | yookassa | stripe
+        currency: str = "XTR",  # XTR | TON | RUB | (Stripe: USD/EUR/...)
+        amount_minor_units: int | None = None,  # TON: nanoton, YooKassa: kopeks, Stripe: cents
     ) -> int:
         # product_code = billing_products.code → достаём product_id
         product_row = await self.fetchone(
@@ -1667,7 +1719,13 @@ class MasterDatabase:
         payment_method = str(payment_method or "").strip().lower()
 
         # алиасы, если где-то в коде встречаются другие значения
-        if payment_method in ("telegram_stars", "tg_stars", "stars", "telegramstars", "telegram-stars"):
+        if payment_method in (
+            "telegram_stars",
+            "tg_stars",
+            "stars",
+            "telegramstars",
+            "telegram-stars",
+        ):
             payment_method = "telegram_stars"
 
         # Нормализация под метод
@@ -1748,7 +1806,6 @@ class MasterDatabase:
         )
         return row["invoice_id"]
 
-
     async def update_billing_invoice_status(self, invoice_id: int, status: str) -> None:
         """
         Обновляет статус инвойса в billing_invoices.
@@ -1765,7 +1822,9 @@ class MasterDatabase:
         )
         logger.info(f"Updated invoice {invoice_id} status to {status}")
 
-    async def update_billing_invoice_status_by_external(self, external_id: str, status: str) -> None:
+    async def update_billing_invoice_status_by_external(
+        self, external_id: str, status: str
+    ) -> None:
         """
         Обновляет статус инвойса по external_id (для webhook Stripe).
         """
@@ -1787,21 +1846,19 @@ class MasterDatabase:
         """
         now = datetime.now(timezone.utc)
         invoice = await self.fetchone(
-            "SELECT * FROM billing_invoices WHERE invoice_id = $1",
-            (invoice_id,)
+            "SELECT * FROM billing_invoices WHERE invoice_id = $1", (invoice_id,)
         )
-        if not invoice or invoice['status'] != 'succeeded':
+        if not invoice or invoice["status"] != "succeeded":
             logger.warning(f"Cannot apply invoice {invoice_id}: invalid status")
             return
 
-        instance_id = invoice['instance_id']
-        periods = invoice['periods']
-        plan_code = invoice['plan_code']
+        instance_id = invoice["instance_id"]
+        periods = invoice["periods"]
+        plan_code = invoice["plan_code"]
 
         # Получаем текущий биллинг
         billing = await self.fetchone(
-            "SELECT * FROM instance_billing WHERE instance_id = $1",
-            (instance_id,)
+            "SELECT * FROM instance_billing WHERE instance_id = $1", (instance_id,)
         )
         if not billing:
             logger.error(f"No billing for instance {instance_id}")
@@ -1809,16 +1866,15 @@ class MasterDatabase:
 
         # Получаем план для period_days и tickets_limit
         plan = await self.fetchone(
-            "SELECT period_days, tickets_limit FROM saas_plans WHERE code = $1",
-            (plan_code,)
+            "SELECT period_days, tickets_limit FROM saas_plans WHERE code = $1", (plan_code,)
         )
         if not plan:
             logger.error(f"Plan {plan_code} not found")
             return
 
         # Вычисляем новый period_end (продлеваем от текущего конца или now)
-        current_end = billing['period_end'] if billing['period_end'] > now else now
-        new_end = current_end + timedelta(days=plan['period_days'] * periods)
+        current_end = billing["period_end"] if billing["period_end"] > now else now
+        new_end = current_end + timedelta(days=plan["period_days"] * periods)
 
         await self.execute(
             """
@@ -1832,7 +1888,7 @@ class MasterDatabase:
                 updated_at = NOW()
             WHERE instance_id = $4
             """,
-            (plan_code, new_end, plan['tickets_limit'], instance_id),
+            (plan_code, new_end, plan["tickets_limit"], instance_id),
         )
 
         # Обновляем инвойс как applied
@@ -1843,32 +1899,33 @@ class MasterDatabase:
                 updated_at = NOW()
             WHERE invoice_id = $1
             """,
-            (invoice_id,)
+            (invoice_id,),
         )
         logger.info(f"Applied invoice {invoice_id} to instance {instance_id}")
 
     async def get_instance(self, instance_id: str) -> Optional[BotInstance]:
-        row = await self.fetchone("SELECT * FROM bot_instances WHERE instance_id = $1", (instance_id,))
+        row = await self.fetchone(
+            "SELECT * FROM bot_instances WHERE instance_id = $1", (instance_id,)
+        )
         if not row:
             return None
         return self.row_to_instance(row)
 
     async def get_instance_by_token_hash(self, token_hash: str) -> Optional[BotInstance]:
-        row = await self.fetchone("SELECT * FROM bot_instances WHERE token_hash = $1", (token_hash,))
+        row = await self.fetchone(
+            "SELECT * FROM bot_instances WHERE token_hash = $1", (token_hash,)
+        )
         if not row:
             return None
         return self.row_to_instance(row)
 
     async def get_user_instances(self, user_id: int) -> List[BotInstance]:
         rows = await self.fetchall(
-            "SELECT * FROM bot_instances WHERE user_id = $1 ORDER BY created_at DESC",
-            (user_id,)
+            "SELECT * FROM bot_instances WHERE user_id = $1 ORDER BY created_at DESC", (user_id,)
         )
         return [self.row_to_instance(r) for r in rows]
 
-    async def get_user_instances_with_meta(
-        self, user_id: int
-    ) -> List[Dict[str, Any]]:
+    async def get_user_instances_with_meta(self, user_id: int) -> List[Dict[str, Any]]:
         rows = await self.fetchall(
             """
             SELECT
@@ -1883,7 +1940,7 @@ class MasterDatabase:
             WHERE bi.user_id = $1 OR bi.owner_user_id = $1
             ORDER BY bi.created_at DESC
             """,
-            (user_id,)
+            (user_id,),
         )
 
         result: List[Dict[str, Any]] = []
@@ -1903,7 +1960,7 @@ class MasterDatabase:
                 FROM instance_meta
                 WHERE instance_id = $1
                 """,
-                (inst["instance_id"],)
+                (inst["instance_id"],),
             )
             if meta:
                 inst.update(dict(meta))
@@ -1926,7 +1983,7 @@ class MasterDatabase:
             WHERE bi.instance_id = $1
             LIMIT 1
             """,
-            (instance_id,)
+            (instance_id,),
         )
 
         if not row:
@@ -1948,7 +2005,7 @@ class MasterDatabase:
             FROM instance_meta
             WHERE instance_id = $1
             """,
-            (inst["instance_id"],)
+            (inst["instance_id"],),
         )
 
         if meta:
@@ -1957,7 +2014,6 @@ class MasterDatabase:
         inst["role"] = "owner"
         return inst
 
-
     async def get_all_active_instances(self) -> List[BotInstance]:
         rows = await self.fetchall(
             """
@@ -1965,7 +2021,7 @@ class MasterDatabase:
              WHERE status IN ($1, $2)
              ORDER BY created_at
             """,
-            (InstanceStatus.RUNNING.value, InstanceStatus.STARTING.value)
+            (InstanceStatus.RUNNING.value, InstanceStatus.STARTING.value),
         )
         return [self.row_to_instance(r) for r in rows]
 
@@ -2007,8 +2063,7 @@ class MasterDatabase:
     async def get_decrypted_token(self, instance_id: str) -> Optional[str]:
         assert self.cipher is not None
         row = await self.fetchone(
-            "SELECT encrypted_token FROM encrypted_tokens WHERE instance_id = $1",
-            (instance_id,)
+            "SELECT encrypted_token FROM encrypted_tokens WHERE instance_id = $1", (instance_id,)
         )
         if not row:
             return None
@@ -2033,10 +2088,7 @@ class MasterDatabase:
         logger.info("set_user_state: user_id=%s, state=%s", user_id, state)
 
     async def get_user_state(self, user_id: int) -> Optional[str]:
-        row = await self.fetchone(
-            "SELECT state FROM user_states WHERE user_id = $1",
-            (user_id,)
-        )
+        row = await self.fetchone("SELECT state FROM user_states WHERE user_id = $1", (user_id,))
         logger.info("get_user_state: user_id=%s, state=%s", user_id, row["state"] if row else None)
         return row["state"] if row else None
 
@@ -2078,10 +2130,9 @@ class MasterDatabase:
             FROM instance_billing
             WHERE instance_id = $1
             """,
-            (instance_id,)
+            (instance_id,),
         )
         return dict(row) if row else None
-
 
     async def get_saas_plan_by_id(self, plan_id: int) -> Optional[dict]:
         """
@@ -2101,10 +2152,9 @@ class MasterDatabase:
             WHERE plan_id = $1
             LIMIT 1
             """,
-            (plan_id,)
+            (plan_id,),
         )
         return dict(row) if row else None
-
 
     async def increment_tickets_used(self, instance_id: str) -> Tuple[bool, Optional[str]]:
         """
@@ -2126,7 +2176,7 @@ class MasterDatabase:
                     WHERE instance_id = $1
                     FOR UPDATE
                     """,
-                    instance_id
+                    instance_id,
                 )
 
                 if not row:
@@ -2146,7 +2196,7 @@ class MasterDatabase:
                          WHERE instance_id = $2
                         """,
                         now,
-                        instance_id
+                        instance_id,
                     )
                     return False, "expired"
 
@@ -2159,7 +2209,7 @@ class MasterDatabase:
                          WHERE instance_id = $2
                         """,
                         now,
-                        instance_id
+                        instance_id,
                     )
                     return False, "limit_reached"
 
@@ -2171,7 +2221,7 @@ class MasterDatabase:
                      WHERE instance_id = $2
                     """,
                     now,
-                    instance_id
+                    instance_id,
                 )
         return True, None
 
@@ -2179,9 +2229,12 @@ class MasterDatabase:
         """
         Создаёт базовые планы Demo/Lite/Pro/Enterprise, если их нет,
         и под них товары billing_products для оплаты Stars.
+
         Demo: 7 дней, 0 Stars, небольшой лимит тикетов.
         Остальные: 30 дней, разные лимиты и цены.
         """
+        assert self.pool is not None
+
         async with self.pool.acquire() as conn:
             async with conn.transaction():
                 # --- планы ---
@@ -2204,17 +2257,36 @@ class MasterDatabase:
                     )
                 if "enterprise" not in existing:
                     plans_to_insert.append(
-                        ("Enterprise", "enterprise", 2500, 30, 100000, {"can_openchat": True, "branding": True})
+                        (
+                            "Enterprise",
+                            "enterprise",
+                            2500,
+                            30,
+                            100000,
+                            {"can_openchat": True, "branding": True},
+                        )
                     )
 
-                for name, code, price_stars, period_days, tickets_limit, features_json in plans_to_insert:
+                for (
+                    name,
+                    code,
+                    price_stars,
+                    period_days,
+                    tickets_limit,
+                    features_json,
+                ) in plans_to_insert:
                     features_json_str = json.dumps(features_json)
                     await conn.execute(
                         """
                         INSERT INTO saas_plans (name, code, price_stars, period_days, tickets_limit, features_json)
                         VALUES ($1, $2, $3, $4, $5, $6)
                         """,
-                        (name, code, price_stars, period_days, tickets_limit, features_json_str),
+                        name,
+                        code,
+                        price_stars,
+                        period_days,
+                        tickets_limit,
+                        features_json_str,
                     )
 
                 # --- товары под планы (кроме demo) ---
@@ -2236,6 +2308,7 @@ class MasterDatabase:
                     plan_code = row["code"]
                     if plan_code == "demo":
                         continue  # demo не продаём как товар
+
                     product_code = f"plan_{plan_code}_{row['period_days']}d"
                     if product_code in existing_products:
                         continue
@@ -2256,7 +2329,11 @@ class MasterDatabase:
                         INSERT INTO billing_products (code, plan_id, title, description, amount_stars)
                         VALUES ($1, $2, $3, $4, $5)
                         """,
-                        (code, plan_id, title, description, amount_stars),
+                        code,
+                        plan_id,
+                        title,
+                        description,
+                        amount_stars,
                     )
 
     async def update_saas_plan_price_stars(self, plancode: str, price_stars: int) -> None:
@@ -2300,7 +2377,6 @@ class MasterDatabase:
             (code,),
         )
 
-
     async def ensure_default_billing(self, instance_id: str) -> None:
         """
         Гарантирует, что для инстанса есть запись instance_billing.
@@ -2312,8 +2388,7 @@ class MasterDatabase:
             async with conn.transaction():
                 # уже есть биллинг — ничего не делаем
                 row = await conn.fetchrow(
-                    "SELECT 1 FROM instance_billing WHERE instance_id = $1",
-                    *(instance_id,)
+                    "SELECT 1 FROM instance_billing WHERE instance_id = $1", *(instance_id,)
                 )
                 if row:
                     return
@@ -2321,10 +2396,12 @@ class MasterDatabase:
                 # ищем demo-план
                 row = await conn.fetchrow(
                     "SELECT plan_id, period_days, tickets_limit FROM saas_plans WHERE code = $1",
-                    *("demo",)
+                    *("demo",),
                 )
                 if not row:
-                    logger.error("ensure_default_billing: demo plan not found, instance_id=%s", instance_id)
+                    logger.error(
+                        "ensure_default_billing: demo plan not found, instance_id=%s", instance_id
+                    )
                     return
 
                 plan_id = row["plan_id"]
@@ -2383,12 +2460,8 @@ class MasterDatabase:
         )
 
     async def get_user_language(self, user_id: int) -> Optional[str]:
-        row = await self.fetchone(
-            "SELECT language FROM user_states WHERE user_id = $1",
-            (user_id,)
-        )
+        row = await self.fetchone("SELECT language FROM user_states WHERE user_id = $1", (user_id,))
         return row["language"] if row and row["language"] is not None else None
-
 
     async def set_user_language(self, user_id: int, lang_code: str) -> None:
         """

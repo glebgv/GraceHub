@@ -5,34 +5,51 @@ Mini App API для управления инстансами ботов.
 """
 
 import asyncio
+import base64
+import binascii
 import hashlib
 import hmac
 import json
 import logging
-import base64
-import binascii
-import stripe
-import time
 import os
 import secrets
-from pathlib import Path
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Tuple
-import httpx
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
-from shared import settings
 from enum import Enum
-from urllib.parse import parse_qsl, unquote, quote
-from fastapi import APIRouter
+from typing import Annotated, Any, Dict, List, Optional, Tuple
+from urllib.parse import parse_qsl, quote, unquote
+
+import httpx
+import stripe
+from fastapi import APIRouter, Body, Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi import Path as ApiPath
+from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field, StrictBool, StrictInt, StrictStr, ValidationError
+
+from shared import settings
+from worker.main import GraceHubWorker
 
 from .main import MasterBot
+from .routers.test_auth import router as test_auth_router
 
 logger = logging.getLogger(__name__)
+
+# Константы под коды ответов
+COMMON_AUTH_RESPONSES = {
+    401: {"description": "Unauthorized"},
+    403: {"description": "Forbidden"},
+}
+
+COMMON_NOT_FOUND_RESPONSES = {
+    404: {"description": "Not Found"},
+}
+
+COMMON_BAD_REQUEST_RESPONSES = {
+    400: {"description": "Bad Request"},
+}
 
 # ========================================================================
 # Models & Schemas
@@ -118,15 +135,17 @@ class OpenChatConfig(BaseModel):
     openchat_username: Optional[str] = None
     general_panel_chat_id: Optional[int] = None
 
+
 class InstanceSettings(BaseModel):
     openchat_enabled: bool = False
     autoclose_hours: int = 12
-    general_panel_chat_id: Optional[int] = None 
+    general_panel_chat_id: Optional[int] = None
     auto_reply: AutoReplyConfig
     branding: BrandingConfig
     privacy_mode_enabled: bool = False
     language: Optional[str] = None
     openchat: Optional[OpenChatConfig] = None
+
 
 class UpdateInstanceSettings(BaseModel):
     autoclose_hours: Optional[int] = None
@@ -161,15 +180,13 @@ class AddOperatorRequest(BaseModel):
 
 
 class ResolveInstanceRequest(BaseModel):
-    """
-    Запрос на определение инстанса при старте мини‑аппы.
-    Любое из полей может быть None:
-    - instance_id: явное указание инстанса
-    - admin_id: Telegram user id администратора, к которому привязан инстанс
-    """
-
-    instance_id: Optional[str] = None
-    admin_id: Optional[int] = None
+    instance_id: Optional[StrictStr] = Field(
+        default=None,
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    )
+    admin_id: Optional[StrictInt] = None
 
 
 class ResolveInstanceResponse(BaseModel):
@@ -190,10 +207,11 @@ class ResolveInstanceResponse(BaseModel):
     link_forbidden: bool = False
 
 
-class CreateInstanceRequest(BaseModel):
-    """Создание нового инстанса по токену бота (аналог /add_bot)."""
+TELEGRAM_BOT_TOKEN_RE = r"^[0-9]{8,10}:[A-Za-z0-9_-]{35}$"
 
-    token: str
+
+class CreateInstanceRequest(BaseModel):
+    token: str = Field(min_length=1, pattern=TELEGRAM_BOT_TOKEN_RE)
 
 
 class CreateInstanceResponse(BaseModel):
@@ -201,6 +219,7 @@ class CreateInstanceResponse(BaseModel):
     botusername: str
     botname: str
     role: str = "owner"
+
 
 class BillingInfo(BaseModel):
     instance_id: str
@@ -213,7 +232,8 @@ class BillingInfo(BaseModel):
     period_start: str
     period_end: str
     days_left: int
-    unlimited: bool 
+    unlimited: bool
+
 
 class SaasPlanOut(BaseModel):
     planCode: str
@@ -223,11 +243,13 @@ class SaasPlanOut(BaseModel):
     priceStars: int
     productCode: str | None
 
+
 class PaymentMethod(str, Enum):
     telegram_stars = "telegram_stars"
     ton = "ton"
     yookassa = "yookassa"
     stripe = "stripe"
+
 
 class CreateInvoiceRequest(BaseModel):
     plan_code: str = Field(..., description="Код тарифа (lite/pro/enterprise/demo)")
@@ -237,19 +259,25 @@ class CreateInvoiceRequest(BaseModel):
         description="Метод оплаты",
     )
 
+
 class CreateInvoiceResponse(BaseModel):
     invoice_id: int = Field(..., description="Unique identifier for the invoice")
     invoice_link: str = Field(..., description="URL to the invoice or payment page")
 
     # Для TON (для Stars будут None)
-    amount_minor_units: Optional[int] = Field(None, description="Amount in minor units (e.g., nanoton for TON)")
+    amount_minor_units: Optional[int] = Field(
+        None, description="Amount in minor units (e.g., nanoton for TON)"
+    )
     amount_ton: Optional[float] = Field(None, description="Human-readable amount in TON")
-    
+
     # Для Stripe (для других методов будут None)
     session_id: Optional[str] = Field(None, description="Stripe Checkout session ID")
-    amount_cents: Optional[int] = Field(None, description="Amount in cents (minor units for Stripe currencies like USD)")
+    amount_cents: Optional[int] = Field(
+        None, description="Amount in cents (minor units for Stripe currencies like USD)"
+    )
 
     currency: Optional[str] = Field(None, description="Currency code (e.g., 'TON', 'XTR', 'USD')")
+
 
 class StripeInvoiceStatusResponse(BaseModel):
     invoice_id: int
@@ -258,9 +286,11 @@ class StripeInvoiceStatusResponse(BaseModel):
     payment_intent_id: Optional[str] = None
     period_applied: bool = False
 
+
 class StripeInvoiceCancelResponse(BaseModel):
     invoice_id: int
-    status: str  # canceled
+    status: str
+
 
 class TonInvoiceStatusResponse(BaseModel):
     invoice_id: int
@@ -268,12 +298,15 @@ class TonInvoiceStatusResponse(BaseModel):
     tx_hash: Optional[str] = None
     period_applied: bool = False
 
+
 class TonInvoiceCancelResponse(BaseModel):
     invoice_id: int
-    status: str  # cancelled
+    status: str
+
 
 class UpdateTicketStatusRequest(BaseModel):
     status: str = Field(..., description="new, inprogress, answered, closed, spam")
+
 
 class YooKassaStatusResponse(BaseModel):
     invoice_id: int
@@ -281,15 +314,19 @@ class YooKassaStatusResponse(BaseModel):
     payment_id: str | None = None
     period_applied: bool = False
 
+
 class PlatformSettingUpsert(BaseModel):
     value: Dict[str, Any]
+
 
 class SingleTenantConfig(BaseModel):
     enabled: bool = False
     allowed_user_ids: List[int] = Field(default_factory=list)
 
+
 class SuperadminsUpsert(BaseModel):
     ids: List[int] = Field(default_factory=list)
+
 
 class SuperadminsResponse(BaseModel):
     ids: List[int] = Field(default_factory=list)
@@ -299,19 +336,44 @@ class OfferSettingsOut(BaseModel):
     enabled: bool = False
     url: str = ""
 
+
 class OfferStatusOut(BaseModel):
     enabled: bool = False
     url: str = ""
-    accepted: bool = True  # если оферта выключена — считаем accepted=True
+    accepted: bool = True
     acceptedAt: Optional[str] = None
 
-class OfferDecisionIn(BaseModel):
-    accepted: bool
 
+class OfferDecisionIn(BaseModel):
+    accepted: StrictBool
+
+
+class YooKassaWebhook(BaseModel):
+    event: StrictStr
+
+    class Object(BaseModel):
+        id: StrictStr
+
+    object: Object
+
+
+INSTANCE_ID_RE = r"^[A-Za-z0-9_-]{1,128}$"
+
+InstanceId = Annotated[
+    str,
+    ApiPath(
+        ...,
+        min_length=1,
+        max_length=128,
+        pattern=INSTANCE_ID_RE,
+        description="GraceHub instance id",
+    ),
+]
 
 # ========================================================================
 # Telegram Validation
 # ========================================================================
+
 
 def normalize_ids(v: Any) -> List[int]:
     if not v:
@@ -440,9 +502,7 @@ class TelegramAuthValidator:
         current_time = time.time()
 
         self._session_cache = {
-            h: ts
-            for h, ts in self._session_cache.items()
-            if current_time - ts < self.session_ttl
+            h: ts for h, ts in self._session_cache.items() if current_time - ts < self.session_ttl
         }
 
         return hash_value in self._session_cache
@@ -571,25 +631,12 @@ class MiniAppDB:
         )
         return dict(row) if row else None
 
-
     async def get_worker_setting(self, instanceid: str, key: str) -> Optional[str]:
         row = await self.db.fetchone(
             "SELECT value FROM worker_settings WHERE instance_id = $1 AND key = $2",
             (instanceid, key),
         )
         return row["value"] if row else None
-
-    async def set_worker_setting(self, instanceid: str, key: str, value: str) -> None:
-        await self.db.execute(
-            """
-            INSERT INTO worker_settings (instance_id, key, value)
-            VALUES ($1, $2, $3)
-            ON CONFLICT (instance_id, key) DO UPDATE
-              SET value = EXCLUDED.value
-            """,
-            (instanceid, key, value),
-        )
-
 
     async def get_instance_settings(self, instance_id: str) -> InstanceSettings:
         data = await self.db.get_instance_settings(instance_id)
@@ -692,9 +739,7 @@ class MiniAppDB:
         inst["role"] = "owner"
         return inst
 
-    async def add_instance_member(
-        self, instance_id: str, user_id: int, role: str
-    ) -> None:
+    async def add_instance_member(self, instance_id: str, user_id: int, role: str) -> None:
         """Добавляет участника к инстансу."""
         logger.info(
             "MiniAppDB.add_instance_member: instance_id=%s user_id=%s role=%s",
@@ -714,7 +759,6 @@ class MiniAppDB:
             (instance_id, user_id, role, datetime.now(timezone.utc)),
         )
 
-
     async def remove_instance_member(self, instance_id: str, user_id: int) -> None:
         """Удаляет участника."""
         logger.info(
@@ -726,9 +770,6 @@ class MiniAppDB:
             "DELETE FROM instance_members WHERE instance_id = $1 AND user_id = $2",
             (instance_id, user_id),
         )
-
-
-
 
     async def get_instance_members(self, instance_id: str) -> List[Dict[str, Any]]:
         """Участники инстанса."""
@@ -751,9 +792,7 @@ class MiniAppDB:
         )
         return result
 
-    async def get_instance_stats(
-        self, instance_id: str, days: int = 30
-    ) -> Dict[str, Any]:
+    async def get_instance_stats(self, instance_id: str, days: int = 30) -> Dict[str, Any]:
         """Живая статистика по тикетам из Postgres."""
         date_from = datetime.now(timezone.utc) - timedelta(days=days)
 
@@ -849,7 +888,6 @@ class MiniAppDB:
             },
         }
 
-
     # ==== Тикеты: листинг ====
     async def list_tickets(
         self,
@@ -889,7 +927,7 @@ class MiniAppDB:
         # поиск по username / user_id
         if search:
             where_clauses.append(
-                f"(username ILIKE ${counter} OR CAST(user_id AS TEXT) LIKE ${counter+1})"
+                f"(username ILIKE ${counter} OR CAST(user_id AS TEXT) LIKE ${counter + 1})"
             )
             like = f"%{search}%"
             params.extend([like, like])
@@ -918,7 +956,7 @@ class MiniAppDB:
             FROM tickets
             {where_sql}
             ORDER BY created_at DESC
-            LIMIT ${len(params)+1} OFFSET ${len(params)+2}
+            LIMIT ${len(params) + 1} OFFSET ${len(params) + 2}
             """
         rows = await self.db.fetchall(list_sql, tuple(params + [limit, offset]))
 
@@ -953,60 +991,6 @@ class MiniAppDB:
         return result, total
 
     # ==== Тикеты: обновление статуса ====
-
-    async def update_ticket_status(
-        self,
-        instanceid: str,
-        ticketid: int,
-        status: str,
-    ) -> None:
-        """
-        Обновляет статус тикета в worker-DB.
-        Фронт шлёт нормализованный статус: new / inprogress / answered / closed / spam.
-        """
-        worker_db_path = Path("data/instances") / f"{instanceid}.db"
-        if not worker_db_path.exists():
-            logger.error(
-                "MiniAppDB.update_ticket_status worker DB not found for instance_id=%s, path=%s",
-                instanceid,
-                worker_db_path,
-            )
-            raise HTTPException(status_code=404, detail="Instance worker DB not found")
-
-        allowed = {"new", "inprogress", "answered", "closed", "spam"}
-        norm = status.lower()
-        if norm not in allowed:
-            raise HTTPException(status_code=400, detail="Invalid status")
-
-        # маппинг обратно в raw-значение для таблицы tickets
-        norm_to_raw = {
-            "new": "new",
-            "inprogress": "inprogress",
-            "answered": "answered",
-            "closed": "closed",
-            "spam": "spam",
-        }
-        raw_status = norm_to_raw[norm]
-
-        conn = sqlite3.connect(str(worker_db_path))
-        cur = conn.cursor()
-
-        now_iso = datetime.now(timezone.utc).isoformat()
-
-        set_parts: List[str] = ["status = ?", "updatedat = ?"]
-        params: List[Any] = [raw_status, now_iso]
-
-        # если закрываем тикет — ставим closedat
-        if norm in {"closed", "spam"}:
-            set_parts.append("closedat = ?")
-            params.append(now_iso)
-
-        params.append(ticketid)
-        sql = f"UPDATE tickets SET {', '.join(set_parts)} WHERE id = ?"
-        cur.execute(sql, params)
-        conn.commit()
-        conn.close()
-
 
     async def check_access(
         self, instance_id: str, user_id: int, required_role: Optional[str] = None
@@ -1081,7 +1065,6 @@ class MiniAppDB:
         )
         return bool(row and row["value"] == "True")
 
-
     async def set_worker_setting(self, instance_id: str, key: str, value: str) -> None:
         await self.db.execute(
             """
@@ -1103,15 +1086,11 @@ class MiniAppDB:
 
         fields = {
             "auto_close_hours": payload.autoclose_hours,
-            "auto_reply_greeting": payload.auto_reply.greeting
-            if payload.auto_reply
-            else None,
+            "auto_reply_greeting": payload.auto_reply.greeting if payload.auto_reply else None,
             "auto_reply_default_answer": payload.auto_reply.default_answer
             if payload.auto_reply
             else None,
-            "branding_bot_name": payload.branding.bot_name
-            if payload.branding
-            else None,
+            "branding_bot_name": payload.branding.bot_name if payload.branding else None,
             "openchat_enabled": payload.openchat_enabled
             if payload.openchat_enabled is not None
             else None,
@@ -1166,14 +1145,14 @@ class MiniAppDB:
                 ) VALUES ($1, NULL, NULL, $2, $3, $4, $5, $6, $7, $8)
                 """,
                 (
-                    instance_id,                         # $1 (instance_id)
-                    fields["auto_close_hours"],          # $2 (auto_close_hours)
-                    fields["auto_reply_greeting"],       # $3 (auto_reply_greeting)
-                    fields["auto_reply_default_answer"], # $4 (auto_reply_default_answer)
-                    fields["branding_bot_name"],         # $5 (branding_bot_name)
-                    fields["openchat_enabled"],          # $6 (openchat_enabled)
-                    fields["language"],                  # $7 (language)
-                    datetime.now(timezone.utc),          # $8 (updated_at)
+                    instance_id,  # $1 (instance_id)
+                    fields["auto_close_hours"],  # $2 (auto_close_hours)
+                    fields["auto_reply_greeting"],  # $3 (auto_reply_greeting)
+                    fields["auto_reply_default_answer"],  # $4 (auto_reply_default_answer)
+                    fields["branding_bot_name"],  # $5 (branding_bot_name)
+                    fields["openchat_enabled"],  # $6 (openchat_enabled)
+                    fields["language"],  # $7 (language)
+                    datetime.now(timezone.utc),  # $8 (updated_at)
                 ),
             )
 
@@ -1183,10 +1162,10 @@ class MiniAppDB:
 
             for col, value in fields.items():
                 if value is not None:
-                    set_parts.append(f"{col} = ${len(params)+1}")
+                    set_parts.append(f"{col} = ${len(params) + 1}")
                     params.append(value)
 
-            set_parts.append(f"updated_at = ${len(params)+1}")
+            set_parts.append(f"updated_at = ${len(params) + 1}")
             params.append(datetime.now(timezone.utc))
             params.append(instance_id)
 
@@ -1217,16 +1196,11 @@ async def lifespan(app: FastAPI):
     yield
     logger.info("Mini App API завершает работу")
 
-def get_global_roles_for_user(user_id: int) -> list[str]:
-    ids = getattr(settings, "SUPERADMIN_TELEGRAM_IDS", None)
-    if not ids:
-        return []
-    # ids может быть list[int] или строка "1,2,3" — приведи к list[int]
-    if isinstance(ids, str):
-        ids_list = [int(x.strip()) for x in ids.split(",") if x.strip().isdigit()]
-    else:
-        ids_list = [int(x) for x in ids]
-    return ["superadmin"] if user_id in ids_list else []
+
+async def get_global_roles_for_user(user_id: int) -> list[str]:
+    superadmins = await _parse_superadmin_ids()
+    return ["superadmin"] if int(user_id) in superadmins else []
+
 
 async def get_current_user(
     authorization: Optional[str] = Header(None),
@@ -1238,16 +1212,20 @@ async def get_current_user(
     try:
         session = session_manager.validate_session(token)
 
-        # совместимость ключей
-        user_id = session.get("user_id") or session.get("userid")
+        # нормализуем user_id -> int
+        raw_user_id = session.get("user_id") or session.get("userid") or session.get("userId")
+        user_id = int(raw_user_id or 0)
+
+        # оставляем совместимость ключей (как у тебя по проекту)
+        session["userid"] = user_id
         session["user_id"] = user_id
 
-        # роли через нормализатор (поддерживает и "1,2,3", и list[int])
-        session["roles"] = get_global_roles_for_user(user_id) if user_id else []
-
+        session["roles"] = await get_global_roles_for_user(user_id) if user_id else []
         return session
+
     except ValueError as e:
         raise HTTPException(status_code=401, detail=str(e))
+
 
 async def get_single_tenant_config(db) -> SingleTenantConfig:
     # ожидаем, что вся публичная конфигурация miniapp лежит в одном ключе
@@ -1305,9 +1283,7 @@ async def get_single_tenant_config(db) -> SingleTenantConfig:
     return cfg
 
 
-
 async def _parse_superadmin_ids() -> set[int]:
-    # miniapp_db создаётся в create_miniapp_app и содержит master_db в miniappdb.db [file:56]
     if miniapp_db is None or getattr(miniapp_db, "db", None) is None:
         return set()
 
@@ -1352,11 +1328,14 @@ async def require_superadmin(
         raise HTTPException(status_code=403, detail="Superadmin only")
     return current_user
 
+
 manage_router = APIRouter(
     prefix="/manage",
     tags=["manage"],
     dependencies=[Depends(require_superadmin)],
+    responses={**COMMON_AUTH_RESPONSES},
 )
+
 
 @manage_router.get("/health")
 async def manage_health():
@@ -1374,7 +1353,22 @@ def create_miniapp_app(
     global telegram_validator, session_manager, miniapp_db, master_bot
 
     app = FastAPI(title="GraceHub Mini App API", debug=debug, lifespan=lifespan)
+
+    telegram_validator = TelegramAuthValidator(bot_token)
+    session_manager = SessionManager(ttl_minutes=30)
+    miniapp_db = MiniAppDB(master_db)
+    master_bot = master_bot_instance
+
+    # 2) Публикуем в app.state (чтобы роуты могли брать через request.app.state)
+    app.state.session_manager = session_manager
+    app.state.telegram_validator = telegram_validator
+
+    # 3) Подключаем основные роуты
     app.include_router(manage_router)
+
+    env = os.getenv("ENV", "").lower()
+    if env in {"ci", "test"}:
+        app.include_router(test_auth_router, tags=["__test__"])
 
     app.add_middleware(
         CORSMiddleware,
@@ -1399,11 +1393,6 @@ def create_miniapp_app(
             content={"detail": exc.errors(), "body": body},
         )
 
-    telegram_validator = TelegramAuthValidator(bot_token)
-    session_manager = SessionManager(ttl_minutes=30)
-    miniapp_db = MiniAppDB(master_db)
-    master_bot = master_bot_instance
-
     # ====================================================================
     # Dependencies
     # ====================================================================
@@ -1417,13 +1406,14 @@ def create_miniapp_app(
             instance_id, current_user["user_id"], required_role
         )
         if not has_access:
-            raise HTTPException(status_code=403, detail="Нет доступа к этому инстансу")
-
+            raise HTTPException(status_code=403, detail="You cannot access this instance")
 
     async def assert_payment_method_enabled(payment_method: str) -> None:
-        raw = await miniappdb.db.get_platform_setting("miniapp_public", default=None)
+        raw = await miniapp_db.db.get_platform_setting("miniapp_public", default=None)
         if not raw:
-            raise HTTPException(status_code=400, detail="Методы оплаты отключены администратором")
+            raise HTTPException(
+                status_code=400, detail="Payment methods have been disabled by the administrator."
+            )
 
         if isinstance(raw, str):
             try:
@@ -1432,11 +1422,15 @@ def create_miniapp_app(
                 raw = None
 
         if not isinstance(raw, dict):
-            raise HTTPException(status_code=400, detail="Методы оплаты отключены администратором")
+            raise HTTPException(
+                status_code=400, detail="Payment methods have been disabled by the administrator."
+            )
 
-        enabled = ((raw.get("payments") or {}).get("enabled") or {})
+        enabled = (raw.get("payments") or {}).get("enabled") or {}
         if not isinstance(enabled, dict):
-            raise HTTPException(status_code=400, detail="Методы оплаты отключены администратором")
+            raise HTTPException(
+                status_code=400, detail="Payment methods have been disabled by the administrator."
+            )
 
         pm = payment_method
         if hasattr(pm, "value"):
@@ -1451,11 +1445,12 @@ def create_miniapp_app(
         }.get(pm)
 
         if not key:
-            raise HTTPException(status_code=400, detail="Неизвестный метод оплаты")
+            raise HTTPException(status_code=400, detail="Unknown payment method")
 
         if not bool(enabled.get(key, False)):
-            raise HTTPException(status_code=400, detail="Метод оплаты отключён администратором")
-
+            raise HTTPException(
+                status_code=400, detail="Payment methods have been disabled by the administrator."
+            )
 
     # ====================================================================
     # Endpoints
@@ -1464,19 +1459,24 @@ def create_miniapp_app(
     @app.post(
         "/api/instances/{instance_id}/billing/create_invoice",
         response_model=CreateInvoiceResponse,
+        responses={
+            **COMMON_AUTH_RESPONSES,  # 401/403
+            **COMMON_BAD_REQUEST_RESPONSES,  # 400
+            **COMMON_NOT_FOUND_RESPONSES,  # 404
+            409: {"description": "Conflict"},
+        },
     )
     async def create_billing_invoice(
-        instance_id: str,
+        instance_id: InstanceId,
         req: CreateInvoiceRequest,
         current_user: Dict[str, Any] = Depends(get_current_user),
     ):
-        import os
-        import uuid
-        import time
-        import httpx
         import json
-        from urllib.parse import quote
-        import base64  # Добавлен для генерации memo в TON
+        import time
+        import uuid
+
+        import httpx
+
         request_id = str(uuid.uuid4())
         t0 = time.monotonic()
 
@@ -1497,7 +1497,12 @@ def create_miniapp_app(
 
         logger.info(
             "billing.create_invoice start request_id=%s instance_id=%s user_id=%s plan_code=%s periods=%s payment_method=%s",
-            request_id, instance_id, user_id, getattr(req, "plan_code", None), periods, payment_method,
+            request_id,
+            instance_id,
+            user_id,
+            getattr(req, "plan_code", None),
+            periods,
+            payment_method,
         )
 
         async def get_miniapp_public() -> dict:
@@ -1536,11 +1541,15 @@ def create_miniapp_app(
 
             # Fail-closed: if settings missing/unreadable -> payments considered disabled
             if not raw:
-                raise HTTPException(status_code=400, detail="Методы оплаты отключены администратором")
+                raise HTTPException(
+                    status_code=400, detail="Методы оплаты отключены администратором"
+                )
 
-            enabled_flags = ((raw.get("payments") or {}).get("enabled") or {})
+            enabled_flags = (raw.get("payments") or {}).get("enabled") or {}
             if not isinstance(enabled_flags, dict):
-                raise HTTPException(status_code=400, detail="Методы оплаты отключены администратором")
+                raise HTTPException(
+                    status_code=400, detail="Методы оплаты отключены администратором"
+                )
 
             if not bool(enabled_flags.get(method_key, False)):
                 raise HTTPException(status_code=400, detail=f"Метод оплаты отключён: {pm}")
@@ -1556,7 +1565,9 @@ def create_miniapp_app(
             product = await miniapp_db.get_billing_product_by_plan_code(req.plan_code)
             logger.info(
                 "billing.create_invoice product request_id=%s plan_code=%s product=%s",
-                request_id, req.plan_code, {
+                request_id,
+                req.plan_code,
+                {
                     "ok": bool(product),
                     "product_code": (product or {}).get("product_code"),
                     "amount_stars": (product or {}).get("amount_stars"),
@@ -1571,7 +1582,9 @@ def create_miniapp_app(
             main_instance = await miniapp_db.get_instance_by_owner(user_id)
             logger.info(
                 "billing.create_invoice main_instance request_id=%s found=%s instance_id=%s",
-                request_id, bool(main_instance), (main_instance or {}).get("instance_id"),
+                request_id,
+                bool(main_instance),
+                (main_instance or {}).get("instance_id"),
             )
             if not main_instance:
                 raise HTTPException(
@@ -1604,7 +1617,9 @@ def create_miniapp_app(
                 payload = f"saas:{invoice_id}"
 
                 if master_bot is None:
-                    logger.error("billing.create_invoice master_bot is None request_id=%s", request_id)
+                    logger.error(
+                        "billing.create_invoice master_bot is None request_id=%s", request_id
+                    )
                     raise HTTPException(status_code=500, detail="MasterBot не инициализирован")
 
                 try:
@@ -1617,8 +1632,12 @@ def create_miniapp_app(
                         amount_stars=total_amount,
                     )
                 except Exception:
-                    logger.exception("billing.create_invoice stars masterbot error request_id=%s", request_id)
-                    raise HTTPException(status_code=500, detail="Не удалось создать инвойс Telegram Stars")
+                    logger.exception(
+                        "billing.create_invoice stars masterbot error request_id=%s", request_id
+                    )
+                    raise HTTPException(
+                        status_code=500, detail="Не удалось создать инвойс Telegram Stars"
+                    )
 
                 await miniapp_db.db.update_billing_invoice_link_and_payload(
                     invoice_id=invoice_id,
@@ -1628,7 +1647,9 @@ def create_miniapp_app(
 
                 logger.info(
                     "billing.create_invoice done request_id=%s method=telegram_stars invoice_id=%s elapsed_ms=%s",
-                    request_id, invoice_id, int((time.monotonic() - t0) * 1000),
+                    request_id,
+                    invoice_id,
+                    int((time.monotonic() - t0) * 1000),
                 )
                 return CreateInvoiceResponse(
                     invoice_id=invoice_id,
@@ -1654,13 +1675,19 @@ def create_miniapp_app(
                 }
 
                 if plan not in price_map or price_map[plan] <= 0:
-                    raise HTTPException(status_code=400, detail="TON: цена не настроена в панели администратора")
+                    raise HTTPException(
+                        status_code=400, detail="TON: цена не настроена в панели администратора"
+                    )
 
                 amount_ton = float(price_map[plan]) * float(periods)
                 amount_minor_units = int(amount_ton * 1_000_000_000)
 
                 # wallet from SuperAdmin (with fallback to env settings)
-                ton_address = (ton_cfg.get("walletAddress") or "").strip() or getattr(settings, "TON_WALLET_ADDRESS", "") or ""
+                ton_address = (
+                    (ton_cfg.get("walletAddress") or "").strip()
+                    or getattr(settings, "TON_WALLET_ADDRESS", "")
+                    or ""
+                )
                 ton_address = str(ton_address).strip()
                 if not ton_address:
                     raise HTTPException(status_code=500, detail="TON: walletAddress не настроен")
@@ -1685,7 +1712,9 @@ def create_miniapp_app(
 
                 logger.info(
                     "billing.create_invoice ton memo generated request_id=%s invoice_id=%s memo=%s",
-                    request_id, invoice_id, memo,
+                    request_id,
+                    invoice_id,
+                    memo,
                 )
 
                 comment = memo  # Use plain memo as comment
@@ -1713,12 +1742,16 @@ def create_miniapp_app(
                         updated_at = NOW()
                     WHERE invoice_id = $2
                     """,
-                    (memo, invoice_id)
+                    (memo, invoice_id),
                 )
 
                 logger.info(
                     "billing.create_invoice done request_id=%s method=ton invoice_id=%s amount_minor_units=%s amount_ton=%s elapsed_ms=%s",
-                    request_id, invoice_id, amount_minor_units, amount_ton, int((time.monotonic() - t0) * 1000),
+                    request_id,
+                    invoice_id,
+                    amount_minor_units,
+                    amount_ton,
+                    int((time.monotonic() - t0) * 1000),
                 )
                 return CreateInvoiceResponse(
                     invoice_id=invoice_id,
@@ -1752,9 +1785,15 @@ def create_miniapp_app(
                 )
 
                 if not shop_id or not secret_key:
-                    raise HTTPException(status_code=500, detail="ЮKassa: shopId/secretKey не настроены в панели администратора")
+                    raise HTTPException(
+                        status_code=500,
+                        detail="ЮKassa: shopId/secretKey не настроены в панели администратора",
+                    )
                 if not return_url:
-                    raise HTTPException(status_code=500, detail="ЮKassa: returnUrl не настроен в панели администратора")
+                    raise HTTPException(
+                        status_code=500,
+                        detail="ЮKassa: returnUrl не настроен в панели администратора",
+                    )
 
                 plan = req.plan_code.lower()
                 price_map_rub = {
@@ -1765,11 +1804,16 @@ def create_miniapp_app(
 
                 logger.info(
                     "billing.create_invoice yookassa price_map_rub request_id=%s price_lite=%s price_pro=%s price_enterprise=%s",
-                    request_id, price_map_rub["lite"], price_map_rub["pro"], price_map_rub["enterprise"],
+                    request_id,
+                    price_map_rub["lite"],
+                    price_map_rub["pro"],
+                    price_map_rub["enterprise"],
                 )
 
                 if plan not in price_map_rub or price_map_rub[plan] <= 0:
-                    raise HTTPException(status_code=400, detail="ЮKassa: цена не настроена в панели администратора")
+                    raise HTTPException(
+                        status_code=400, detail="ЮKassa: цена не настроена в панели администратора"
+                    )
 
                 amount_rub = float(price_map_rub[plan]) * float(periods)
                 amount_minor_units = int(round(amount_rub * 100))
@@ -1777,7 +1821,10 @@ def create_miniapp_app(
 
                 logger.info(
                     "billing.create_invoice yookassa amount request_id=%s amount_rub=%s amount_value=%s amount_minor_units=%s",
-                    request_id, amount_rub, amount_value, amount_minor_units,
+                    request_id,
+                    amount_rub,
+                    amount_value,
+                    amount_minor_units,
                 )
                 try:
                     invoice_id = await miniapp_db.db.insert_billing_invoice(
@@ -1797,13 +1844,18 @@ def create_miniapp_app(
                 except Exception:
                     logger.exception(
                         "billing.create_invoice yookassa db.insert_billing_invoice failed request_id=%s instance_id=%s account_instance_id=%s user_id=%s product_code=%s",
-                        request_id, instance_id, account_instance_id, user_id, product.get("product_code"),
+                        request_id,
+                        instance_id,
+                        account_instance_id,
+                        user_id,
+                        product.get("product_code"),
                     )
                     raise
 
                 logger.info(
                     "billing.create_invoice yookassa db invoice created request_id=%s invoice_id=%s",
-                    request_id, invoice_id,
+                    request_id,
+                    invoice_id,
                 )
 
                 idempotence_key = str(uuid.uuid4())
@@ -1829,7 +1881,10 @@ def create_miniapp_app(
 
                 logger.info(
                     "billing.create_invoice yookassa request request_id=%s url=%s idempotence_key=%s body=%s",
-                    request_id, yk_url, idempotence_key, body,
+                    request_id,
+                    yk_url,
+                    idempotence_key,
+                    body,
                 )
 
                 try:
@@ -1864,7 +1919,9 @@ def create_miniapp_app(
                     )
                     raise HTTPException(status_code=502, detail="ЮKassa: ошибка создания платежа")
                 except Exception:
-                    logger.exception("billing.create_invoice yookassa request failed request_id=%s", request_id)
+                    logger.exception(
+                        "billing.create_invoice yookassa request failed request_id=%s", request_id
+                    )
                     raise HTTPException(status_code=502, detail="ЮKassa: не удалось создать платеж")
 
                 yk_payment_id = data.get("id")
@@ -1873,13 +1930,17 @@ def create_miniapp_app(
 
                 logger.info(
                     "billing.create_invoice yookassa parsed request_id=%s invoice_id=%s yk_payment_id=%s confirmation_url=%s",
-                    request_id, invoice_id, yk_payment_id, confirmation_url,
+                    request_id,
+                    invoice_id,
+                    yk_payment_id,
+                    confirmation_url,
                 )
 
                 if not yk_payment_id or not confirmation_url:
                     logger.error(
                         "billing.create_invoice yookassa missing fields request_id=%s data=%s",
-                        request_id, data,
+                        request_id,
+                        data,
                     )
                     raise HTTPException(status_code=502, detail="ЮKassa: некорректный ответ API")
 
@@ -1894,13 +1955,19 @@ def create_miniapp_app(
                 except Exception:
                     logger.exception(
                         "billing.create_invoice yookassa db.update_billing_invoice_link_and_payload failed request_id=%s invoice_id=%s payload=%s confirmation_url=%s",
-                        request_id, invoice_id, payload, confirmation_url,
+                        request_id,
+                        invoice_id,
+                        payload,
+                        confirmation_url,
                     )
                     raise
 
                 logger.info(
                     "billing.create_invoice done request_id=%s method=yookassa invoice_id=%s yk_payment_id=%s elapsed_ms=%s",
-                    request_id, invoice_id, yk_payment_id, int((time.monotonic() - t0) * 1000),
+                    request_id,
+                    invoice_id,
+                    yk_payment_id,
+                    int((time.monotonic() - t0) * 1000),
                 )
 
                 return CreateInvoiceResponse(
@@ -1936,9 +2003,14 @@ def create_miniapp_app(
                 )
 
                 if not secret_key:
-                    raise HTTPException(status_code=500, detail="Stripe: secretKey не настроен в панели администратора")
+                    raise HTTPException(
+                        status_code=500,
+                        detail="Stripe: secretKey не настроен в панели администратора",
+                    )
                 if not success_url or not cancel_url:
-                    raise HTTPException(status_code=500, detail="Stripe: success_url/cancel_url не настроены")
+                    raise HTTPException(
+                        status_code=500, detail="Stripe: success_url/cancel_url не настроены"
+                    )
 
                 plan = req.plan_code.lower()
                 price_map_usd = {
@@ -1949,19 +2021,29 @@ def create_miniapp_app(
 
                 logger.info(
                     "billing.create_invoice stripe price_map_usd request_id=%s price_lite=%s price_pro=%s price_enterprise=%s",
-                    request_id, price_map_usd["lite"], price_map_usd["pro"], price_map_usd["enterprise"],
+                    request_id,
+                    price_map_usd["lite"],
+                    price_map_usd["pro"],
+                    price_map_usd["enterprise"],
                 )
 
                 if plan not in price_map_usd or price_map_usd[plan] <= 0:
-                    raise HTTPException(status_code=400, detail="Stripe: цена не настроена в панели администратора")
+                    raise HTTPException(
+                        status_code=400, detail="Stripe: цена не настроена в панели администратора"
+                    )
 
                 amount_usd = float(price_map_usd[plan]) * float(periods)
-                amount_minor_units = int(round(amount_usd * 100))  # Центы для USD (или другой валюты)
+                amount_minor_units = int(
+                    round(amount_usd * 100)
+                )  # Центы для USD (или другой валюты)
                 amount_value = f"{amount_usd:.2f}"
 
                 logger.info(
                     "billing.create_invoice stripe amount request_id=%s amount_usd=%s amount_value=%s amount_minor_units=%s",
-                    request_id, amount_usd, amount_value, amount_minor_units,
+                    request_id,
+                    amount_usd,
+                    amount_value,
+                    amount_minor_units,
                 )
                 try:
                     invoice_id = await miniapp_db.db.insert_billing_invoice(
@@ -1981,31 +2063,38 @@ def create_miniapp_app(
                 except Exception:
                     logger.exception(
                         "billing.create_invoice stripe db.insert_billing_invoice failed request_id=%s instance_id=%s account_instance_id=%s user_id=%s product_code=%s",
-                        request_id, instance_id, account_instance_id, user_id, product.get("product_code"),
+                        request_id,
+                        instance_id,
+                        account_instance_id,
+                        user_id,
+                        product.get("product_code"),
                     )
                     raise
 
                 logger.info(
                     "billing.create_invoice stripe db invoice created request_id=%s invoice_id=%s",
-                    request_id, invoice_id,
+                    request_id,
+                    invoice_id,
                 )
 
                 stripe.api_key = secret_key
 
                 try:
                     session = stripe.checkout.Session.create(
-                        payment_method_types=['card'],
-                        line_items=[{
-                            'price_data': {
-                                'currency': currency,
-                                'product_data': {
-                                    'name': f"{product.get('title') or product['name']} x{periods}",
+                        payment_method_types=["card"],
+                        line_items=[
+                            {
+                                "price_data": {
+                                    "currency": currency,
+                                    "product_data": {
+                                        "name": f"{product.get('title') or product['name']} x{periods}",
+                                    },
+                                    "unit_amount": amount_minor_units,
                                 },
-                                'unit_amount': amount_minor_units,
-                            },
-                            'quantity': 1,
-                        }],
-                        mode='payment',
+                                "quantity": 1,
+                            }
+                        ],
+                        mode="payment",
                         success_url=success_url,
                         cancel_url=cancel_url,
                         metadata={
@@ -2019,10 +2108,16 @@ def create_miniapp_app(
                         },
                     )
                 except stripe.error.StripeError as e:
-                    logger.exception("billing.create_invoice stripe session create error request_id=%s: %s", request_id, e)
+                    logger.exception(
+                        "billing.create_invoice stripe session create error request_id=%s: %s",
+                        request_id,
+                        e,
+                    )
                     raise HTTPException(status_code=502, detail="Stripe: ошибка создания сессии")
                 except Exception:
-                    logger.exception("billing.create_invoice stripe request failed request_id=%s", request_id)
+                    logger.exception(
+                        "billing.create_invoice stripe request failed request_id=%s", request_id
+                    )
                     raise HTTPException(status_code=502, detail="Stripe: не удалось создать сессию")
 
                 session_id = session.id
@@ -2030,13 +2125,17 @@ def create_miniapp_app(
 
                 logger.info(
                     "billing.create_invoice stripe parsed request_id=%s invoice_id=%s session_id=%s invoice_link=%s",
-                    request_id, invoice_id, session_id, invoice_link,
+                    request_id,
+                    invoice_id,
+                    session_id,
+                    invoice_link,
                 )
 
                 if not session_id or not invoice_link:
                     logger.error(
                         "billing.create_invoice stripe missing fields request_id=%s data=%s",
-                        request_id, session,
+                        request_id,
+                        session,
                     )
                     raise HTTPException(status_code=502, detail="Stripe: некорректный ответ API")
 
@@ -2053,13 +2152,19 @@ def create_miniapp_app(
                 except Exception:
                     logger.exception(
                         "billing.create_invoice stripe db.update_billing_invoice_link_and_payload failed request_id=%s invoice_id=%s payload=%s invoice_link=%s",
-                        request_id, invoice_id, payload, invoice_link,
+                        request_id,
+                        invoice_id,
+                        payload,
+                        invoice_link,
                     )
                     raise
 
                 logger.info(
                     "billing.create_invoice done request_id=%s method=stripe invoice_id=%s session_id=%s elapsed_ms=%s",
-                    request_id, invoice_id, session_id, int((time.monotonic() - t0) * 1000),
+                    request_id,
+                    invoice_id,
+                    session_id,
+                    int((time.monotonic() - t0) * 1000),
                 )
                 return CreateInvoiceResponse(
                     invoice_id=invoice_id,
@@ -2074,13 +2179,17 @@ def create_miniapp_app(
         except HTTPException as e:
             logger.warning(
                 "billing.create_invoice http_exception request_id=%s status_code=%s detail=%s elapsed_ms=%s",
-                request_id, e.status_code, getattr(e, "detail", None), int((time.monotonic() - t0) * 1000),
+                request_id,
+                e.status_code,
+                getattr(e, "detail", None),
+                int((time.monotonic() - t0) * 1000),
             )
             raise
         except Exception:
             logger.exception(
                 "billing.create_invoice unhandled_error request_id=%s elapsed_ms=%s",
-                request_id, int((time.monotonic() - t0) * 1000),
+                request_id,
+                int((time.monotonic() - t0) * 1000),
             )
             raise HTTPException(status_code=500, detail=f"Internal error (request_id={request_id})")
 
@@ -2096,6 +2205,7 @@ def create_miniapp_app(
         shared.settings.TON_API_BASE_URL / shared.settings.TON_API_KEY
         """
         import json
+
         import httpx
 
         # 1) load miniapp_public
@@ -2111,14 +2221,23 @@ def create_miniapp_app(
                 raw = None
 
         raw = raw if isinstance(raw, dict) else {}
-        ton_cfg = (((raw.get("payments") or {}).get("ton")) or {})
+        ton_cfg = ((raw.get("payments") or {}).get("ton")) or {}
 
         # 2) base url + api key from DB with fallback to settings
-        base_url = str(ton_cfg.get("apiBaseUrl") or "").strip() or str(getattr(settings, "TON_API_BASE_URL", "") or "").strip()
+        base_url = (
+            str(ton_cfg.get("apiBaseUrl") or "").strip()
+            or str(getattr(settings, "TON_API_BASE_URL", "") or "").strip()
+        )
         if not base_url:
-            raise HTTPException(status_code=500, detail="TON: apiBaseUrl not configured (miniapp_public.payments.ton.apiBaseUrl)")
+            raise HTTPException(
+                status_code=500,
+                detail="TON: apiBaseUrl not configured (miniapp_public.payments.ton.apiBaseUrl)",
+            )
 
-        api_key = str(ton_cfg.get("apiKey") or "").strip() or str(getattr(settings, "TON_API_KEY", "") or "").strip()
+        api_key = (
+            str(ton_cfg.get("apiKey") or "").strip()
+            or str(getattr(settings, "TON_API_KEY", "") or "").strip()
+        )
 
         url = f"{base_url.rstrip('/')}/getTransactions"
 
@@ -2139,7 +2258,6 @@ def create_miniapp_app(
         result = data.get("result")
         return result or []
 
-
     def _maybe_b64decode(s: str) -> str:
         """Попытка декодировать base64 в обычный текст. Если не получится — вернём как есть."""
         if not s or not isinstance(s, str):
@@ -2159,19 +2277,19 @@ def create_miniapp_app(
         """
         in_msg = tx.get("in_msg") or {}
         logger.debug("Extract comment: raw_in_msg=%s", in_msg)
-        
+
         # Проверяем 'message' (альтернативное поле в некоторых API responses)
         message = in_msg.get("message")
         if message:
             logger.debug("Extract comment: found message=%s", message)
             return str(message).strip()
-        
+
         # Если API уже парсит comment
         comment = in_msg.get("comment")
         if comment:
             logger.debug("Extract comment: found comment=%s", comment)
             return str(comment).strip()
-        
+
         # Декодируем из msg_data (base64)
         msg_data = in_msg.get("msg_data") or {}
         if msg_data.get("@type") == "msg.dataText":
@@ -2185,31 +2303,31 @@ def create_miniapp_app(
                     return decoded_text
                 except Exception as e:
                     logger.error("TON comment decode error: %s text_b64=%s", e, text_b64)
-        
+
         # Альтернатива: decoded_body для некоторых форматов
         decoded_body = tx.get("decoded_body") or {}
         if decoded_body.get("type") == "text_comment":
             text = decoded_body.get("text", "").strip()
             logger.debug("Extract comment: found decoded_body.text=%s", text)
             return text
-        
+
         # Лог если ничего не найдено
         logger.debug("Extract comment: no comment found in tx")
-        
+
         return None
 
     async def check_ton_payment(invoice_id: int) -> dict:
         """
         Проверяет статус оплаты TON-инвойса через TonCenter.
-        
+
         Особенности:
         - Использует memo из БД (если есть) или payload как expected_comment.
         - Применяет тариф ТОЛЬКО если mark_billing_invoice_paid_ton вернул True
         (т.е. статус реально изменился с pending/cancelled на paid).
         - Полностью безопасно от race conditions благодаря блокировке строки в БД.
         """
-        import json
         import base64  # Добавлено для декодирования base64
+        import json
 
         inv = await miniapp_db.db.get_billing_invoice(invoice_id)
         if not inv:
@@ -2222,10 +2340,7 @@ def create_miniapp_app(
 
         # Если уже оплачен — сразу возвращаем
         if current_status == "paid":
-            return {
-                "status": "paid",
-                "tx_hash": inv.get("provider_tx_hash")
-            }
+            return {"status": "paid", "tx_hash": inv.get("provider_tx_hash")}
 
         # --- Конфигурация TON из platform_settings ---
         try:
@@ -2246,7 +2361,7 @@ def create_miniapp_app(
         if not wallet:
             raise HTTPException(
                 status_code=500,
-                detail="TON walletAddress not configured in miniapp_public.payments.ton.walletAddress"
+                detail="TON walletAddress not configured in miniapp_public.payments.ton.walletAddress",
             )
 
         need_amount = inv.get("amount_minor_units") or 0
@@ -2257,17 +2372,24 @@ def create_miniapp_app(
         expected_comment = inv.get("memo") or inv.get("payload")
 
         # Добавлено: fallback если memo выглядит как base64 — декодируем перед сравнением
-        if expected_comment and isinstance(expected_comment, str) and len(expected_comment) % 4 == 0:
+        if (
+            expected_comment
+            and isinstance(expected_comment, str)
+            and len(expected_comment) % 4 == 0
+        ):
             try:
                 # Добавляем padding если нужно и декодируем
                 decoded_bytes = base64.urlsafe_b64decode(expected_comment + "==")
                 expected_comment = decoded_bytes.decode("utf-8").strip()
                 logger.info(
                     "TON expected_comment decoded from base64: original=%s decoded=%s",
-                    inv.get("memo") or inv.get("payload"), expected_comment
+                    inv.get("memo") or inv.get("payload"),
+                    expected_comment,
                 )
             except Exception as e:
-                logger.warning("TON expected_comment base64 decode failed: %s - keeping original", e)
+                logger.warning(
+                    "TON expected_comment base64 decode failed: %s - keeping original", e
+                )
                 # Если ошибка, оставляем как есть
 
         # --- Получаем последние транзакции ---
@@ -2284,11 +2406,18 @@ def create_miniapp_app(
         raw_in_msgs = [tx.get("in_msg") for tx in txs[:3]]
         logger.debug("TON raw in_msgs (sample): %s", raw_in_msgs)
 
-        found_comments = [_extract_in_msg_comment(tx) for tx in txs if _extract_in_msg_comment(tx) is not None]
+        found_comments = [
+            _extract_in_msg_comment(tx) for tx in txs if _extract_in_msg_comment(tx) is not None
+        ]
 
         logger.info(
             "TON check: invoice_id=%s wallet=%s need_amount=%s expected_comment=%s current_status=%s found_comments=%s",
-            invoice_id, wallet, need_amount, expected_comment, current_status, found_comments
+            invoice_id,
+            wallet,
+            need_amount,
+            expected_comment,
+            current_status,
+            found_comments,
         )
 
         # --- Ищем подходящую входящую транзакцию ---
@@ -2305,7 +2434,12 @@ def create_miniapp_app(
             # Добавлено: Расширенный лог для каждого tx
             logger.info(
                 "TON tx scan: tx_hash=%s value=%s comment=%s raw_in_msg=%s (need_amount=%s expected_comment=%s)",
-                tx.get("transaction_id", {}).get("hash"), value, comment, in_msg, need_amount, expected_comment
+                tx.get("transaction_id", {}).get("hash"),
+                value,
+                comment,
+                in_msg,
+                need_amount,
+                expected_comment,
             )
 
             # Проверяем сумму
@@ -2336,33 +2470,45 @@ def create_miniapp_app(
                 await miniapp_db.db.apply_saas_plan_for_invoice(invoice_id)
                 logger.info(
                     "TON payment confirmed and plan applied: invoice_id=%s tx_hash=%s amount=%s",
-                    invoice_id, tx_hash, value
+                    invoice_id,
+                    tx_hash,
+                    value,
                 )
                 return {"status": "paid", "tx_hash": tx_hash}
             else:
                 # Кто-то другой уже успел обработать эту транзакцию
                 logger.info(
                     "TON payment already processed by concurrent request: invoice_id=%s tx_hash=%s",
-                    invoice_id, tx_hash
+                    invoice_id,
+                    tx_hash,
                 )
                 return {
                     "status": "paid",
-                    "tx_hash": tx_hash  # Можно взять из БД, но для простоты возвращаем найденный
+                    "tx_hash": tx_hash,  # Можно взять из БД, но для простоты возвращаем найденный
                 }
 
         # Добавлено: Если ничего не нашли — лог summary всех value/comment
-        summary_tx = [(tx.get("in_msg", {}).get("value"), _extract_in_msg_comment(tx)) for tx in txs]
+        summary_tx = [
+            (tx.get("in_msg", {}).get("value"), _extract_in_msg_comment(tx)) for tx in txs
+        ]
         logger.info("TON no match summary: tx_values_comments=%s", summary_tx)
 
         # Если ничего не нашли — возвращаем текущий статус (pending или cancelled)
         return {"status": current_status}
-        
-    @app.get("/api/invoices/stripe/{invoice_id}/status", response_model=StripeInvoiceStatusResponse)
+
+    @app.get(
+        "/api/invoices/stripe/{invoice_id}/status",
+        response_model=StripeInvoiceStatusResponse,
+        responses={
+            **COMMON_AUTH_RESPONSES,
+            **COMMON_NOT_FOUND_RESPONSES,
+            **COMMON_BAD_REQUEST_RESPONSES,
+        },
+    )
     async def get_stripe_invoice_status(
-        invoice_id: int,
+        invoice_id: int = ApiPath(..., ge=1, le=9223372036854775807),
         current_user: Dict[str, Any] = Depends(get_current_user),
     ):
-        # DB-first (вариант A): не ходим в Stripe API, доверяем webhook'у + БД
         invoice = await miniapp_db.db.fetchone(
             """
             SELECT
@@ -2387,17 +2533,13 @@ def create_miniapp_app(
         if str(invoice.get("payment_method") or "").lower() != "stripe":
             raise HTTPException(status_code=400, detail="Not a Stripe invoice")
 
-        # Вариант A: статус возвращаем из БД (его обновляет webhook через external_id) и period_applied тоже из БД
-        # Важно: "status" в ответе теперь будет твоим внутренним (pending/succeeded/failed/cancelled),
-        # а не Stripe payment_status (paid/unpaid).
         return StripeInvoiceStatusResponse(
             invoice_id=int(invoice["invoice_id"]),
             status=str(invoice.get("status") or "pending"),
             session_id=invoice.get("external_id"),
-            payment_intent_id=None,  # без Stripe API мы его не знаем; если нужно — сохраняй в БД в webhook
+            payment_intent_id=None,
             period_applied=bool(invoice.get("period_applied", False)),
         )
-
 
     @app.get("/api/offer/settings", response_model=OfferSettingsOut)
     async def get_offer_settings():
@@ -2421,25 +2563,34 @@ def create_miniapp_app(
             acceptedAt=acceptedat.isoformat() if acceptedat else None,
         )
 
-
     @app.post("/api/offer/decision")
-    async def post_offer_decision(payload: OfferDecisionIn, current_user: Dict[str, Any] = Depends(get_current_user)):
+    async def post_offer_decision(
+        payload: OfferDecisionIn,
+        current_user: Dict[str, Any] = Depends(get_current_user),
+    ):
         uid = int(current_user.get("user_id") or 0)
         s = await master_db.get_offer_settings()
         if not s["enabled"] or not s["url"]:
-            return {"status": "ignored"}  # оферта выключена
+            return {"status": "ignored"}
 
-        await master_db.upsert_user_offer(uid, s["url"], bool(payload.accepted), source="miniapp")
-        return {"status": "ok", "accepted": bool(payload.accepted)}
+        await master_db.upsert_user_offer(uid, s["url"], payload.accepted, source="miniapp")
+        return {"status": "ok", "accepted": payload.accepted}
 
-    @app.post("/api/invoices/stripe/{invoice_id}/cancel", response_model=StripeInvoiceCancelResponse)
+    @app.post(
+        "/api/invoices/stripe/{invoice_id}/cancel",
+        response_model=StripeInvoiceCancelResponse,
+        responses={
+            **COMMON_AUTH_RESPONSES,
+            **COMMON_NOT_FOUND_RESPONSES,
+        },
+    )
     async def cancel_stripe_invoice(
         invoice_id: int,
         current_user: Dict[str, Any] = Depends(get_current_user),
     ):
         invoice = await miniapp_db.db.fetchone(
             "SELECT * FROM billing_invoices WHERE invoice_id = $1 AND user_id = $2",
-            (invoice_id, current_user['user_id'])
+            (invoice_id, current_user["user_id"]),
         )
         if not invoice:
             raise HTTPException(status_code=404, detail="Invoice not found")
@@ -2447,22 +2598,28 @@ def create_miniapp_app(
         stripe.api_key = settings.STRIPE_SECRET_KEY
 
         try:
-            session = stripe.checkout.Session.retrieve(invoice['external_id'])
-            if session.status != 'complete':
-                stripe.checkout.Session.expire(invoice['external_id'])
+            session = stripe.checkout.Session.retrieve(invoice["external_id"])
+            if session.status != "complete":
+                stripe.checkout.Session.expire(invoice["external_id"])
                 await miniapp_db.db.update_billing_invoice_status(invoice_id, "canceled")
             return StripeInvoiceCancelResponse(invoice_id=invoice_id, status="canceled")
         except stripe.error.StripeError as e:
             logger.error(f"Stripe cancel error for invoice {invoice_id}: {e}")
             raise HTTPException(status_code=500, detail="Ошибка отмены сессии Stripe")
 
-    @app.post("/api/webhook/stripe")
-    async def stripe_webhook(request: Request):
+    @app.post(
+        "/api/webhook/stripe",
+        responses={
+            **COMMON_BAD_REQUEST_RESPONSES,
+            422: {"description": "Validation Error"},
+            503: {"description": "Stripe webhook not configured"},
+        },
+    )
+    async def stripe_webhook(
+        request: Request,
+        stripe_signature: str = Header(..., alias="stripe-signature"),
+    ):
         payload = await request.body()
-        sig_header = request.headers.get("stripe-signature")
-
-        if not sig_header:
-            raise HTTPException(status_code=400, detail="Missing stripe-signature")
 
         ps = await miniapp_db.db.get_platform_setting("miniapp_public", default=None)
         if isinstance(ps, str):
@@ -2471,17 +2628,19 @@ def create_miniapp_app(
             except Exception:
                 ps = None
 
+        # Было 500 → лучше 503 (в окружении сервис поднят, но конфиг не готов)
         if not isinstance(ps, dict):
-            raise HTTPException(status_code=500, detail="Platform settings not configured")
+            raise HTTPException(status_code=503, detail="Platform settings not configured")
 
         stripe_cfg = (ps.get("payments") or {}).get("stripe") or {}
         wh_secret = str(stripe_cfg.get("webhookSecret") or "").strip()
 
+        # Было 500 → нужно 503, и он уже задокументирован в responses
         if not wh_secret:
-            raise HTTPException(status_code=500, detail="Stripe webhookSecret not configured")
+            raise HTTPException(status_code=503, detail="Stripe webhook not configured")
 
         try:
-            event = stripe.Webhook.construct_event(payload, sig_header, wh_secret)
+            event = stripe.Webhook.construct_event(payload, stripe_signature, wh_secret)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid payload")
         except stripe.error.SignatureVerificationError:
@@ -2489,35 +2648,62 @@ def create_miniapp_app(
 
         if event.get("type") == "checkout.session.completed":
             session = (event.get("data") or {}).get("object") or {}
-
             external_id = session.get("id")
             metadata = session.get("metadata") or {}
             invoice_id = metadata.get("saas_invoice_id") or metadata.get("saasInvoiceId")
 
             if external_id and invoice_id:
-                await miniapp_db.db.update_billing_invoice_status_by_external(external_id, "succeeded")
+                await miniapp_db.db.update_billing_invoice_status_by_external(
+                    external_id, "succeeded"
+                )
                 await miniapp_db.db.apply_invoice_to_billing(int(invoice_id))
 
         return {"status": "ok"}
 
-    @app.get("/api/platform/single-tenant", response_model=SingleTenantConfig)
+    @app.get(
+        "/api/platform/single-tenant",
+        response_model=SingleTenantConfig,
+        responses={
+            **COMMON_AUTH_RESPONSES,  # 401/403
+        },
+    )
     async def get_single_tenant_config_endpoint(
         current_user: Dict[str, Any] = Depends(require_superadmin),
     ):
         # Читаем ТОЛЬКО из miniapp_public.singleTenant
         return await get_single_tenant_config(master_db)
 
-    @app.get("/api/platform/superadmins", response_model=SuperadminsResponse)
-    async def get_platform_superadmins(currentuser: Dict[str, Any] = Depends(get_current_user)):
-        await require_superadmin(currentuser)  # твой superadmin-guard
+    @app.get(
+        "/api/platform/superadmins",
+        response_model=SuperadminsResponse,
+        responses={
+            **COMMON_AUTH_RESPONSES,  # 401/403
+        },
+    )
+    async def get_platform_superadmins(
+        currentuser: Dict[str, Any] = Depends(get_current_user),
+    ):
+        await require_superadmin(currentuser)  # superadmin-guard
+
         raw = await master_db.get_platform_setting("miniapp_public", default={})
         if not isinstance(raw, dict):
             raw = {}
+
         ids = normalize_ids(raw.get("superadmins"))
         return SuperadminsResponse(ids=ids)
 
-    @app.post("/api/platform/superadmins", response_model=SuperadminsResponse)
-    async def set_platform_superadmins(payload: SuperadminsUpsert, currentuser: Dict[str, Any] = Depends(get_current_user)):
+    @app.post(
+        "/api/platform/superadmins",
+        response_model=SuperadminsResponse,
+        responses={
+            **COMMON_AUTH_RESPONSES,  # 401/403
+            **COMMON_BAD_REQUEST_RESPONSES,  # 400 (если вдруг добавишь валидацию/ограничения)
+        },
+    )
+    async def set_platform_superadmins(
+        payload: SuperadminsUpsert,
+        currentuser: Dict[str, Any] = Depends(get_current_user),
+    ):
         await require_superadmin(currentuser)
 
         raw = await master_db.get_platform_setting("miniapp_public", default={})
@@ -2526,17 +2712,24 @@ def create_miniapp_app(
 
         raw["superadmins"] = normalize_ids(payload.ids)
 
-        await master_db.setplatformsetting("miniapp_public", raw)
+        await master_db.set_platform_setting("miniapp_public", raw)
         return SuperadminsResponse(ids=raw["superadmins"])
 
-    @app.post("/api/platform/single-tenant", response_model=SingleTenantConfig)
+    @app.post(
+        "/api/platform/single-tenant",
+        response_model=SingleTenantConfig,
+        responses={
+            **COMMON_AUTH_RESPONSES,  # 401/403
+            **COMMON_BAD_REQUEST_RESPONSES,  # 400 (у тебя уже есть raise HTTPException(400,...))
+        },
+    )
     async def set_single_tenant_config_endpoint(
         payload: SingleTenantConfig,
         current_user: Dict[str, Any] = Depends(require_superadmin),
     ):
         # 1) нормализуем список id
         allowed: List[int] = []
-        for x in (payload.allowed_user_ids or []):
+        for x in payload.allowed_user_ids or []:
             try:
                 allowed.append(int(x))
             except (TypeError, ValueError):
@@ -2581,7 +2774,13 @@ def create_miniapp_app(
         # 7) возвращаем нормализованный конфиг
         return SingleTenantConfig(enabled=bool(payload.enabled), allowed_user_ids=allowed)
 
-    @app.post("/api/auth/telegram", response_model=AuthResponse)
+    @app.post(
+        "/api/auth/telegram",
+        response_model=AuthResponse,
+        responses={
+            **COMMON_AUTH_RESPONSES,
+        },
+    )
     async def auth_telegram(req: TelegramAuthRequest, request: Request):
         init_header = request.headers.get("X-Telegram-Init-Data")
         logger.info(
@@ -2627,7 +2826,7 @@ def create_miniapp_app(
                 len(superadmins),
             )
         except Exception:
-            logger.exception("auth_telegram: failed to evaluate GRACEHUB_SUPERADMIN_TELEGRAM_IDS")
+            logger.exception("auth_telegram: failed to evaluate GRACEHUB_SUPERADMIN_TELEGRAM_ID")
 
         # ------------------------------------------------------------------
         # single-tenant mode (from DB: platform_settings.single_tenant)
@@ -2728,17 +2927,24 @@ def create_miniapp_app(
             default_instance_id=default_instance_id,
         )
 
-
-    @app.post("/api/billing/ton/cancel", response_model=TonInvoiceCancelResponse)
+    @app.post(
+        "/api/billing/ton/cancel",
+        response_model=TonInvoiceCancelResponse,
+        responses={
+            **COMMON_AUTH_RESPONSES,
+            **COMMON_NOT_FOUND_RESPONSES,
+            **COMMON_BAD_REQUEST_RESPONSES,
+            409: {"description": "Conflict"},
+        },
+    )
     async def cancel_ton_invoice(
-        invoice_id: int = Query(...),
+        invoice_id: int = Query(..., ge=1, le=9223372036854775807),
         current_user: Dict[str, Any] = Depends(get_current_user),
     ):
         inv = await miniapp_db.db.get_billing_invoice(invoice_id)
         if not inv:
             raise HTTPException(status_code=404, detail="Invoice not found")
 
-        # доступ к инстансу
         await require_instance_access(inv["instance_id"], current_user)
 
         if inv.get("payment_method") != "ton":
@@ -2752,8 +2958,6 @@ def create_miniapp_app(
 
         await miniapp_db.db.cancel_billing_invoice(invoice_id)
         return TonInvoiceCancelResponse(invoice_id=invoice_id, status="cancelled")
-
-
 
     @app.get("/api/saas/plans", response_model=list[SaasPlanOut])
     async def get_saas_plans():
@@ -2804,6 +3008,7 @@ def create_miniapp_app(
 
     async def _yookassa_get_payment(payment_id: str) -> dict:
         import json
+
         import httpx
 
         # читаем креды из platformsettings.miniapp_public
@@ -2819,13 +3024,16 @@ def create_miniapp_app(
                 raw = None
 
         raw = raw if isinstance(raw, dict) else {}
-        yk_cfg = (((raw.get("payments") or {}).get("yookassa")) or {})
+        yk_cfg = ((raw.get("payments") or {}).get("yookassa")) or {}
 
         shop_id = str(yk_cfg.get("shopId") or "").strip()
         secret_key = str(yk_cfg.get("secretKey") or "").strip()
 
         if not shop_id or not secret_key:
-            raise HTTPException(status_code=500, detail="ЮKassa credentials not configured (miniapp_public.payments.yookassa.shopId/secretKey)")
+            raise HTTPException(
+                status_code=500,
+                detail="ЮKassa credentials not configured (miniapp_public.payments.yookassa.shopId/secretKey)",
+            )
 
         url = f"https://api.yookassa.ru/v3/payments/{payment_id}"
         async with httpx.AsyncClient(timeout=15.0) as client:
@@ -2836,23 +3044,29 @@ def create_miniapp_app(
             resp.raise_for_status()
             return resp.json()
 
-
-    @app.get("/api/billing/yookassa/status", response_model=YooKassaStatusResponse)
+    @app.get(
+        "/api/billing/yookassa/status",
+        response_model=YooKassaStatusResponse,
+        responses={
+            **COMMON_AUTH_RESPONSES,
+            **COMMON_NOT_FOUND_RESPONSES,
+            **COMMON_BAD_REQUEST_RESPONSES,
+            500: {"description": "Internal Server Error"},
+        },
+    )
     async def yookassa_invoice_status(
-        invoice_id: int,
+        invoice_id: int = Query(..., ge=1, le=9223372036854775807),
         current_user: Dict[str, Any] = Depends(get_current_user),
     ):
         inv = await miniapp_db.db.get_billing_invoice(invoice_id)
         if not inv:
             raise HTTPException(status_code=404, detail="Invoice not found")
 
-        # NB: поля из DB: instanceid / paymentmethod [file:284]
         await require_instance_access(inv["instance_id"], current_user)
 
         if (inv.get("payment_method") or "").lower() != "yookassa":
             raise HTTPException(status_code=400, detail="Invoice is not YooKassa")
 
-        # если уже paid — сразу отдаём
         if (inv.get("status") or "").lower() == "paid":
             return YooKassaStatusResponse(
                 invoice_id=invoice_id,
@@ -2863,12 +3077,13 @@ def create_miniapp_app(
 
         payment_id = _extract_yk_payment_id(inv.get("payload"))
         if not payment_id:
-            raise HTTPException(status_code=500, detail="YooKassa payment_id missing in invoice payload")
+            raise HTTPException(
+                status_code=500, detail="YooKassa payment_id missing in invoice payload"
+            )
 
         data = await _yookassa_get_payment(payment_id)
         st = (data.get("status") or "pending").lower()
 
-        # amount.value в ЮKassa обычно строка вида "199.00" => переводим в копейки 
         amt = data.get("amount") or {}
         currency = amt.get("currency") or "RUB"
         value_str = amt.get("value") or "0.00"
@@ -2899,16 +3114,28 @@ def create_miniapp_app(
             period_applied=False,
         )
 
+    @app.post(
+        "/api/billing/yookassa/webhook",
+        responses={
+            **COMMON_BAD_REQUEST_RESPONSES,
+        },
+    )
+    async def yookassa_webhook(
+        request: Request,
+        body: YooKassaWebhook = Body(...),
+    ):
+        try:
+            raw = await request.json()
+        except Exception:
+            raise HTTPException(status_code=400, detail="invalid json")
 
-    @app.post("/api/billing/yookassa/webhook")
-    async def yookassa_webhook(request: Request):
-        body = await request.json()
-        event = body.get("event")
-        obj = body.get("object") or {}
-        payment_id = obj.get("id")
+        try:
+            body = YooKassaWebhook.model_validate(raw)
+        except ValidationError as e:
+            raise HTTPException(status_code=422, detail=e.errors())
 
-        if not payment_id:
-            raise HTTPException(status_code=400, detail="missing payment id")
+        event = body.event
+        payment_id = body.object.id
 
         if event not in ("payment.succeeded", "payment.canceled", "payment.waiting_for_capture"):
             return {"ok": True}
@@ -2920,7 +3147,6 @@ def create_miniapp_app(
 
         invoice_id = int(inv["invoiceid"])
 
-        # перепроверка статуса через API (рекомендованный подход) 
         data = await _yookassa_get_payment(payment_id)
         st = (data.get("status") or "pending").lower()
 
@@ -2943,15 +3169,19 @@ def create_miniapp_app(
 
         return {"ok": True, "status": st}
 
-    @app.get("/api/platform/settings")
-    async def get_platform_settings(current_user: Dict[str, Any] = Depends(get_current_user)):
+    @app.get(
+        "/api/platform/settings",
+        responses={
+            **COMMON_AUTH_RESPONSES,  # 401/403 (если в твоих константах 403 тоже есть)
+        },
+    )
+    async def get_platform_settings(
+        current_user: Dict[str, Any] = Depends(get_current_user),
+    ):
         logger.warning("HIT get_platform_settings build=2025-12-19-1239")
-        # при желании: ограничить superadmin’ом
+
         data = await master_db.get_platform_setting("miniapp_public", default={})
         return {"key": "miniapp_public", "value": data}
-
-    logger = logging.getLogger("master_bot.platform_settings")
-
 
     def _short_hash(obj: Any) -> str:
         try:
@@ -2959,7 +3189,6 @@ def create_miniapp_app(
         except Exception:
             s = str(obj)
         return hashlib.sha256(s.encode("utf-8")).hexdigest()[:12]
-
 
     def _safe_enabled(value: Any) -> Optional[Dict[str, Any]]:
         """
@@ -2980,26 +3209,51 @@ def create_miniapp_app(
             "stripe": enabled.get("stripe"),
         }
 
-
     def _enabled_debug(value: Any) -> Dict[str, Any]:
         """
         Диагностика структуры payments/enabled (без секретов).
         """
         if not isinstance(value, dict):
-            return {"valueType": type(value).__name__, "paymentsType": None, "enabledType": None, "enabledKeys": None}
+            return {
+                "valueType": type(value).__name__,
+                "paymentsType": None,
+                "enabledType": None,
+                "enabledKeys": None,
+            }
 
         payments = value.get("payments", None)
         if not isinstance(payments, dict):
-            return {"valueType": "dict", "paymentsType": type(payments).__name__, "enabledType": None, "enabledKeys": None}
+            return {
+                "valueType": "dict",
+                "paymentsType": type(payments).__name__,
+                "enabledType": None,
+                "enabledKeys": None,
+            }
 
         enabled = payments.get("enabled", None)
         if not isinstance(enabled, dict):
-            return {"valueType": "dict", "paymentsType": "dict", "enabledType": type(enabled).__name__, "enabledKeys": None}
+            return {
+                "valueType": "dict",
+                "paymentsType": "dict",
+                "enabledType": type(enabled).__name__,
+                "enabledKeys": None,
+            }
 
-        return {"valueType": "dict", "paymentsType": "dict", "enabledType": "dict", "enabledKeys": sorted(enabled.keys())}
+        return {
+            "valueType": "dict",
+            "paymentsType": "dict",
+            "enabledType": "dict",
+            "enabledKeys": sorted(enabled.keys()),
+        }
 
-
-    @app.post("/api/platform/settings/{key}")
+    @app.post(
+        "/api/platform/settings/{key}",
+        responses={
+            **COMMON_AUTH_RESPONSES,  # 401/403 (get_current_user + require_superadmin)
+            **COMMON_BAD_REQUEST_RESPONSES,  # 400 (miniapp_public value must be object + возможные другие проверки)
+            # 422 FastAPI добавит сам для ошибок валидации тела/параметров, если payload не проходит pydantic
+        },
+    )
     async def set_platform_settings(
         key: str,
         payload: PlatformSettingUpsert,
@@ -3099,9 +3353,16 @@ def create_miniapp_app(
 
         return {"status": "ok"}
 
-    @app.get("/api/instances/{instance_id}/billing", response_model=BillingInfo)
+    @app.get(
+        "/api/instances/{instance_id}/billing",
+        response_model=BillingInfo,
+        responses={
+            **COMMON_AUTH_RESPONSES,  # 401/403
+            **COMMON_NOT_FOUND_RESPONSES,  # 404
+        },
+    )
     async def get_instance_billing_endpoint(
-        instance_id: str,
+        instance_id: InstanceId,
         current_user: Dict[str, Any] = Depends(get_current_user),
     ):
         """
@@ -3150,17 +3411,23 @@ def create_miniapp_app(
             unlimited=False,
         )
 
-
-    @app.get("/api/billing/ton/status", response_model=TonInvoiceStatusResponse)
+    @app.get(
+        "/api/billing/ton/status",
+        response_model=TonInvoiceStatusResponse,
+        responses={
+            **COMMON_AUTH_RESPONSES,
+            **COMMON_NOT_FOUND_RESPONSES,
+            **COMMON_BAD_REQUEST_RESPONSES,
+        },
+    )
     async def ton_invoice_status(
-        invoice_id: int,
+        invoice_id: int = Query(..., ge=1, le=9223372036854775807),
         current_user: Dict[str, Any] = Depends(get_current_user),
     ):
         inv = await miniapp_db.db.get_billing_invoice(invoice_id)
         if not inv:
             raise HTTPException(status_code=404, detail="Invoice not found")
 
-        # Проверяем, что пользователь имеет доступ к инстансу из инвойса
         await require_instance_access(inv["instance_id"], current_user)
 
         if inv.get("payment_method") != "ton":
@@ -3174,7 +3441,6 @@ def create_miniapp_app(
                 period_applied=True,
             )
 
-        # pending: пробуем дернуть сеть
         res = await check_ton_payment(invoice_id)
 
         if res["status"] == "paid":
@@ -3216,10 +3482,7 @@ def create_miniapp_app(
                 )
                 return ResolveInstanceResponse(instance_id=None, link_forbidden=False)
 
-            owner_match = (
-                inst.get("owner_id") == user_id
-                or inst.get("owner_user_id") == user_id
-            )
+            owner_match = inst.get("owner_id") == user_id or inst.get("owner_user_id") == user_id
             if not owner_match:
                 logger.info(
                     "resolve_instance: forbidden for user_id=%s instance_id=%s",
@@ -3253,9 +3516,7 @@ def create_miniapp_app(
                 )
                 return ResolveInstanceResponse(instance_id=None, link_forbidden=True)
 
-            integrator_instance = await miniapp_db.get_instance_by_owner(
-                payload.admin_id
-            )
+            integrator_instance = await miniapp_db.get_instance_by_owner(payload.admin_id)
             if not integrator_instance:
                 logger.info(
                     "resolve_instance: no instance for owner admin_id=%s",
@@ -3284,9 +3545,7 @@ def create_miniapp_app(
                 role="owner",
                 created_at=str(integrator_instance.get("created_at", "")),
                 openchat_username=integrator_instance.get("openchat_username"),
-                general_panel_chat_id=integrator_instance.get(
-                    "general_panel_chat_id"
-                ),
+                general_panel_chat_id=integrator_instance.get("general_panel_chat_id"),
                 link_forbidden=False,
             )
 
@@ -3300,9 +3559,7 @@ def create_miniapp_app(
     async def get_me(current_user: Dict[str, Any] = Depends(get_current_user)):
         # Совместимость: где-то у тебя user_id, где-то userid.
         user_id = (
-            current_user.get("user_id")
-            or current_user.get("userid")
-            or current_user.get("userId")
+            current_user.get("user_id") or current_user.get("userid") or current_user.get("userId")
         )
         if not user_id:
             raise HTTPException(status_code=401, detail="Unauthorized")
@@ -3401,7 +3658,15 @@ def create_miniapp_app(
             )
         return result
 
-    @app.post("/api/instances", response_model=CreateInstanceResponse)
+    @app.post(
+        "/api/instances",
+        response_model=CreateInstanceResponse,
+        responses={
+            **COMMON_AUTH_RESPONSES,
+            **COMMON_BAD_REQUEST_RESPONSES,
+            500: {"description": "Internal Server Error"},
+        },
+    )
     async def create_instance(
         req: CreateInstanceRequest,
         current_user: Dict[str, Any] = Depends(get_current_user),
@@ -3411,10 +3676,7 @@ def create_miniapp_app(
         - MasterBot проверяет токен, создаёт запись в БД, шифрует токен, запускает воркер.
         """
         user_id = current_user["user_id"]
-        token = req.token.strip()
-
-        if not token:
-            raise HTTPException(status_code=400, detail="Токен бота пустой")
+        token = req.token
 
         logger.info(
             "create_instance (miniapp): user_id=%s token_preview=%s",
@@ -3444,17 +3706,25 @@ def create_miniapp_app(
         try:
             worker = GraceHubWorker(instance.instance_id, token, master_bot.db)
             master_bot.workers[instance.instance_id] = worker
-            master_bot.instances[instance.instance_id] = instance  # Если не добавлено в process_bot_token_from_miniapp
+            master_bot.instances[instance.instance_id] = (
+                instance  # Если не добавлено в process_bot_token_from_miniapp
+            )
 
             if not await master_bot.setup_worker_webhook(instance.instance_id, token):
                 raise ValueError("Failed to setup webhook")
 
-            master_bot.worker_tasks[instance.instance_id] = asyncio.create_task(worker.auto_close_tickets_loop())
+            master_bot.worker_tasks[instance.instance_id] = asyncio.create_task(
+                worker.auto_close_tickets_loop()
+            )
         except Exception as e:
-            logger.error(f"Failed to setup worker/webhook for new instance {instance.instance_id}: {e}")
+            logger.error(
+                f"Failed to setup worker/webhook for new instance {instance.instance_id}: {e}"
+            )
             # Опционально: rollback создания инстанса, если нужно
             await master_bot.db.delete_instance(instance.instance_id)
-            raise HTTPException(status_code=500, detail="Ошибка при настройке webhook для нового инстанса")
+            raise HTTPException(
+                status_code=500, detail="Ошибка при настройке webhook для нового инстанса"
+            )
 
         logger.info(
             "create_instance (miniapp): created instance_id=%s user_id=%s bot_username=%s",
@@ -3470,9 +3740,17 @@ def create_miniapp_app(
             role="owner",
         )
 
-    @app.get("/api/instances/{instance_id}/stats", response_model=InstanceStats)
+    @app.get(
+        "/api/instances/{instance_id}/stats",
+        response_model=InstanceStats,
+        responses={
+            **COMMON_AUTH_RESPONSES,
+            **COMMON_NOT_FOUND_RESPONSES,
+            **COMMON_BAD_REQUEST_RESPONSES,
+        },
+    )
     async def get_instance_stats(
-        instance_id: str,
+        instance_id: InstanceId,
         current_user: Dict[str, Any] = Depends(get_current_user),
         days: int = Query(30, ge=1, le=365),
     ):
@@ -3481,10 +3759,15 @@ def create_miniapp_app(
         stats = await miniapp_db.get_instance_stats(instance_id, days)
         return InstanceStats(**stats)
 
-
-    @app.delete("/api/instances/{instance_id}")
+    @app.delete(
+        "/api/instances/{instance_id}",
+        responses={
+            **COMMON_AUTH_RESPONSES,
+            **COMMON_NOT_FOUND_RESPONSES,
+        },
+    )
     async def delete_instance_endpoint(
-        instance_id: str,
+        instance_id: InstanceId,
         current_user: Dict[str, Any] = Depends(get_current_user),
     ):
         """
@@ -3539,24 +3822,25 @@ def create_miniapp_app(
 
         return {"status": "ok"}
 
-
     # ---------- НАСТРОЙКИ ИНСТАНСА (Settings.tsx) ----------
 
-    @app.get("/api/instances/{instance_id}/settings", response_model=InstanceSettings)
+    @app.get(
+        "/api/instances/{instance_id}/settings",
+        response_model=InstanceSettings,
+        responses={
+            **COMMON_AUTH_RESPONSES,
+            **COMMON_NOT_FOUND_RESPONSES,
+        },
+    )
     async def get_instance_settings_endpoint(
-        instance_id: str,
+        instance_id: InstanceId,
         current_user: Dict[str, Any] = Depends(get_current_user),
     ):
         await require_instance_access(instance_id, current_user)
-
         settings = await miniapp_db.get_instance_settings(instance_id)
-        # settings здесь – твой внутренний объект/словарь с:
-        # openchat_enabled, general_panel_chat_id, auto_close_hours,
-        # auto_reply, branding, privacy_mode_enabled, language, openchat_username
-
         # New: Fetch instance status from DB (e.g., running/error)
-        instance = await master_bot.db.get_instance(instance_id)  # Assuming access to master_bot
-        status = instance.status.value if instance else "unknown"  # Use InstanceStatus enum value
+        instance = await master_bot.db.get_instance(instance_id)
+        status = instance.status.value if instance else "unknown"
 
         logger.info(
             "Instance settings for %s: openchat_enabled=%s general_panel_chat_id=%s language=%s status=%s",
@@ -3580,15 +3864,20 @@ def create_miniapp_app(
                 openchat_username=getattr(settings, "openchat_username", None),
                 general_panel_chat_id=settings.general_panel_chat_id,
             ),
-            status=status,  # New field
+            status=status,
         )
 
     @app.post(
         "/api/instances/{instance_id}/settings",
         response_model=InstanceSettings,
+        responses={
+            **COMMON_AUTH_RESPONSES,
+            **COMMON_BAD_REQUEST_RESPONSES,
+            **COMMON_NOT_FOUND_RESPONSES,
+        },
     )
     async def update_instance_settings_endpoint(
-        instance_id: str,
+        instance_id: InstanceId,
         settings: UpdateInstanceSettings,
         current_user: Dict[str, Any] = Depends(get_current_user),
     ):
@@ -3611,15 +3900,18 @@ def create_miniapp_app(
         await miniapp_db.update_instance_settings(instance_id, settings)
         return await miniapp_db.get_instance_settings(instance_id)
 
-
     # ---------- Tickets / Operators ----------
 
     @app.get(
         "/api/instances/{instance_id}/tickets",
         response_model=TicketsListResponse,
+        responses={
+            **COMMON_AUTH_RESPONSES,
+            **COMMON_NOT_FOUND_RESPONSES,
+        },
     )
     async def list_tickets_endpoint(
-        instance_id: str,
+        instance_id: InstanceId,
         status: Optional[str] = None,
         search: Optional[str] = None,
         limit: int = Query(20, ge=1, le=100),
@@ -3651,7 +3943,7 @@ def create_miniapp_app(
                 user_id=row["userid"],
                 username=row.get("username"),
                 status=row["status"],
-                status_emoji="",  # TODO: подставить из настроек, если нужно
+                status_emoji="",
                 created_at=row["createdat"],
                 last_user_msg_at=row.get("lastusermsgat"),
                 last_admin_reply_at=row.get("lastadminreplyat"),
@@ -3660,12 +3952,18 @@ def create_miniapp_app(
             for row in rows
         ]
 
-
         return TicketsListResponse(items=items, total=total)
 
-    @app.post("/api/instances/{instance_id}/tickets/{ticket_id}/status")
+    @app.post(
+        "/api/instances/{instance_id}/tickets/{ticket_id}/status",
+        responses={
+            **COMMON_AUTH_RESPONSES,
+            **COMMON_BAD_REQUEST_RESPONSES,
+            **COMMON_NOT_FOUND_RESPONSES,
+        },
+    )
     async def update_ticket_status_endpoint(
-        instance_id: str,
+        instance_id: InstanceId,
         ticket_id: int,
         payload: UpdateTicketStatusRequest,
         current_user: Dict[str, Any] = Depends(get_current_user),
@@ -3690,9 +3988,13 @@ def create_miniapp_app(
     @app.get(
         "/api/instances/{instance_id}/operators",
         response_model=List[InstanceMember],
+        responses={
+            **COMMON_AUTH_RESPONSES,
+            **COMMON_NOT_FOUND_RESPONSES,
+        },
     )
     async def get_operators(
-        instance_id: str,
+        instance_id: InstanceId,
         current_user: Dict[str, Any] = Depends(get_current_user),
     ):
         await require_instance_access(instance_id, current_user)
@@ -3700,39 +4002,46 @@ def create_miniapp_app(
         members = await miniapp_db.get_instance_members(instance_id)
         return [InstanceMember(**m) for m in members]
 
-    @app.post("/api/instances/{instance_id}/operators")
+    @app.post(
+        "/api/instances/{instance_id}/operators",
+        responses={
+            **COMMON_AUTH_RESPONSES,
+            **COMMON_BAD_REQUEST_RESPONSES,
+            **COMMON_NOT_FOUND_RESPONSES,
+        },
+    )
     async def add_operator(
-        instance_id: str,
+        instance_id: InstanceId,
         req: AddOperatorRequest,
         current_user: Dict[str, Any] = Depends(get_current_user),
     ):
         await require_instance_access(instance_id, current_user, required_role="owner")
 
         if not req.user_id and not req.username:
-            raise HTTPException(
-                status_code=400, detail="Укажите user_id или username"
-            )
+            raise HTTPException(status_code=400, detail="Укажите user_id или username")
 
         user_id = req.user_id
         if req.username and not user_id:
             raise HTTPException(
                 status_code=400,
-                detail=(
-                    "Поиск по username требует интеграции. Используйте user_id."
-                ),
+                detail=("Поиск по username требует интеграции. Используйте user_id."),
             )
 
         await miniapp_db.add_instance_member(instance_id, user_id, req.role)
         return {"status": "ok", "message": "Оператор добавлен"}
 
-    @app.delete("/api/instances/{instance_id}/operators/{user_id}")
+    @app.delete(
+        "/api/instances/{instance_id}/operators/{user_id}",
+        responses={
+            **COMMON_AUTH_RESPONSES,
+        },
+    )
     async def remove_operator(
-        instance_id: str,
         user_id: int,
+        instance_id: InstanceId,
         current_user: Dict[str, Any] = Depends(get_current_user),
     ):
         await require_instance_access(instance_id, current_user, required_role="owner")
-
         await miniapp_db.remove_instance_member(instance_id, user_id)
         return {"status": "ok", "message": "Оператор удалён"}
 

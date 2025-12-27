@@ -1,46 +1,50 @@
 import asyncio
-import logging
 import json
-import sqlite3
-from datetime import datetime, timezone, timedelta
-from typing import Optional, Dict, List, Tuple
-import secrets
-import hashlib
+import logging
 import os
-import sys
+import secrets
+import socket
 import subprocess
+import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from languages import LANGS
-
-# Абсолютный путь к src
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))  # /root/gracehub/src/master_bot -> /root/gracehub
-sys.path.insert(0, os.path.join(project_root, 'src'))
-
-from worker.main import GraceHubWorker
+from typing import Dict, List, Optional
 
 from aiogram import Bot, Dispatcher, F
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramAPIError, TelegramUnauthorizedError
 from aiogram.filters import Command
 from aiogram.types import (
-    Message,
     CallbackQuery,
-    InlineKeyboardMarkup,
     InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
     Update,
-    PreCheckoutQuery
 )
-from aiogram.enums import ParseMode, ChatType
-from aiogram.client.default import DefaultBotProperties
-from aiogram.exceptions import TelegramBadRequest, TelegramAPIError, TelegramUnauthorizedError
-from aiogram.types.web_app_info import WebAppInfo
 from aiohttp import web
+from dotenv import load_dotenv
 
-# ✅ НАСТРОЙКА ЛОГОВ ПЕРЕД ВСЕМИ ИМПОРТАМИ shared.* !!!
+from languages import LANGS
+from shared import settings
+from shared.database import MasterDatabase
+from shared.models import BotInstance, InstanceStatus
+from shared.security import SecurityManager
+from shared.webhook_manager import WebhookManager
+from worker.main import GraceHubWorker
+
+# Абсолютный путь к src
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+sys.path.insert(0, os.path.join(project_root, "src"))
+
 BASE_DIR = Path(__file__).resolve().parents[2]  # /root/GraceHub
 LOG_DIR = BASE_DIR / "logs"
 LOG_DIR.mkdir(exist_ok=True, parents=True)
 LOG_FILE = LOG_DIR / "masterbot.log"
 
-formatter = logging.Formatter("%(asctime)s [pid=%(process)d] - %(name)s - %(levelname)s - %(message)s")
+formatter = logging.Formatter(
+    "%(asctime)s [pid=%(process)d] - %(name)s - %(levelname)s - %(message)s"
+)
 
 fh = logging.FileHandler(LOG_FILE, encoding="utf-8")
 fh.setLevel(logging.INFO)
@@ -57,19 +61,17 @@ logger.setLevel(logging.INFO)
 
 print(f"✅ Logging configured to: {LOG_FILE}")
 
-
-# ТЕПЕРЬ импорты shared — они подхватят НАСТРОЕННЫЙ логгер
-from shared.database import MasterDatabase
-from shared.models import BotInstance, InstanceStatus
-from shared.webhook_manager import WebhookManager
-from shared.security import SecurityManager
-from shared import settings
-from dotenv import load_dotenv
-
 load_dotenv(override=False)
 
+
 class MasterBot:
-    def __init__(self, token: str, webhook_domain: str, webhook_port: int = 9443, db: MasterDatabase | None = None):
+    def __init__(
+        self,
+        token: str,
+        webhook_domain: str,
+        webhook_port: int = 9443,
+        db: MasterDatabase | None = None,
+    ):
         self.bot = Bot(
             token=token,
             default=DefaultBotProperties(parse_mode=ParseMode.HTML),
@@ -86,7 +88,7 @@ class MasterBot:
         else:
             self.db = MasterDatabase()
 
-        self.webhook_manager = WebhookManager(webhook_domain, use_https=True)  # Явно указываем HTTPS
+        self.webhook_manager = WebhookManager(webhook_domain, use_https=True)
         self.security = SecurityManager()
 
         self.instances: Dict[str, BotInstance] = {}
@@ -118,8 +120,36 @@ class MasterBot:
         st = (data or {}).get("single_tenant") or {}
         return {
             "enabled": bool(st.get("enabled", False)),
-            "allowed_user_ids": list(st.get("allowed_user_ids", []))  # Ensure it's a list
+            "allowed_user_ids": list(st.get("allowed_user_ids", [])),  # Ensure it's a list
         }
+
+    def _format_db_startup_error(self, e: Exception) -> str:
+        # Частые случаи: "Connection refused", timeout, DNS, auth, etc.
+        msg = str(e).strip()
+
+        # socket / OS level
+        if isinstance(e, ConnectionRefusedError):
+            return "Connection refused (database is not accepting TCP connections)."
+        if isinstance(e, TimeoutError):
+            return "Connection timed out (database host/port unreachable or overloaded)."
+        if isinstance(e, socket.gaierror):
+            return "Host name resolution failed (invalid DB host or DNS issue)."
+        low = msg.lower()
+        if "connection refused" in low:
+            return "Connection refused (database is not accepting TCP connections)."
+        if "password authentication failed" in low or "authentication failed" in low:
+            return "Authentication failed (invalid database user/password)."
+        if "does not exist" in low and "database" in low:
+            return "Database does not exist (check DB name)."
+        if "no route to host" in low:
+            return "No route to host (network connectivity issue)."
+        if "name or service not known" in low:
+            return "Host name resolution failed (invalid DB host or DNS issue)."
+        if "timeout" in low:
+            return "Connection timed out (database host/port unreachable or overloaded)."
+
+        # fallback
+        return msg or e.__class__.__name__
 
     async def _notify_owner_invalid_token(
         self,
@@ -211,12 +241,9 @@ class MasterBot:
                 try:
                     texts = await self.t(chat_id)
 
-                    text = (
-                        texts.billing_expiring_title +
-                        texts.billing_expiring_body.format(
-                            bot_username=bot_username,
-                            days_left=days_left,
-                        )
+                    text = texts.billing_expiring_title + texts.billing_expiring_body.format(
+                        bot_username=bot_username,
+                        days_left=days_left,
                     )
 
                     await self.bot.send_message(
@@ -332,14 +359,11 @@ class MasterBot:
         except Exception as e:
             logger.exception("BillingCron: notify_paused failed: %s", e)
 
-
     async def run_billing_cron_loop(self, interval_seconds: int = 3600) -> None:
         logger.info("BillingCron: starting loop with interval=%s sec", interval_seconds)
         while True:
             await self._run_billing_cycle()
             await asyncio.sleep(interval_seconds)
-
-
 
     # ====================== УПРАВЛЕНИЕ ВОРКЕРАМИ ======================
 
@@ -348,7 +372,6 @@ class MasterBot:
         if not proc:
             return False
         return proc.poll() is None
-
 
     def spawn_worker(self, instance_id: str, token: str) -> None:
         """
@@ -367,14 +390,13 @@ class MasterBot:
         worker_path = Path(__file__).resolve().parent.parent / "worker" / "main.py"
 
         proc = subprocess.Popen(
-        [sys.executable, str(worker_path)],
-        env=env,
-        stdout=None,   # или subprocess.PIPE, но тогда надо читать
-        stderr=None,
+            [sys.executable, str(worker_path)],
+            env=env,
+            stdout=None,  # или subprocess.PIPE, но тогда надо читать
+            stderr=None,
         )
         self.worker_procs[instance_id] = proc
         logger.info(f"Spawned worker process for instance {instance_id} (pid={proc.pid})")
-
 
     async def stop_worker(self, instance_id: str) -> None:
         """
@@ -511,7 +533,6 @@ class MasterBot:
         )
         return link
 
-
     def _build_miniapp_url(self, instance: BotInstance, admin_user_id: int) -> str:
         """
         Собирает URL мини-аппы для конкретного инстанса и администратора.
@@ -525,11 +546,7 @@ class MasterBot:
             return ""
 
         # фронтенд читает query-параметры instance_id/admin_id
-        return (
-            f"{base_url}"
-            f"?instance_id={instance.instance_id}"
-            f"&admin_id={admin_user_id}"
-        )
+        return f"{base_url}?instance_id={instance.instance_id}&admin_id={admin_user_id}"
 
     async def auto_close_tickets_loop(self) -> None:
         """
@@ -541,18 +558,20 @@ class MasterBot:
             try:
                 now = datetime.now(timezone.utc)
                 # Получаем все active инстансы (running, paused и т.д.)
-                instances = await self.db.get_all_active_instances()  # Используйте существующий метод
+                instances = (
+                    await self.db.get_all_active_instances()
+                )  # Используйте существующий метод
                 for instance in instances:
                     instance_id = instance.instance_id
                     # Тянем hours из instance_settings (per-instance)
                     settings_row = await self.db.fetchone(
                         "SELECT autoclose_hours FROM instance_settings WHERE instance_id = $1",
-                        (instance_id,)
+                        (instance_id,),
                     )
-                    hours = settings_row['autoclose_hours'] if settings_row else 12  # Дефолт 12
-                    
+                    hours = settings_row["autoclose_hours"] if settings_row else 12  # Дефолт 12
+
                     cutoff = now - timedelta(hours=hours)
-                    
+
                     # Находим тикеты для закрытия
                     rows = await self.db.fetchall(
                         """
@@ -568,9 +587,9 @@ class MasterBot:
                         """,
                         (instance_id, cutoff),
                     )
-                    
+
                     if rows:
-                        ticket_ids = [row['id'] for row in rows]
+                        ticket_ids = [row["id"] for row in rows]
                         await self.db.execute(
                             """
                             UPDATE tickets
@@ -578,7 +597,7 @@ class MasterBot:
                                 updated_at = NOW()
                             WHERE id = ANY($1)
                             """,
-                            (ticket_ids,)
+                            (ticket_ids,),
                         )
                         logger.info(f"Auto-closed {len(rows)} tickets for instance {instance_id}")
             except Exception as e:
@@ -606,7 +625,6 @@ class MasterBot:
 
         await callback.answer("Отменено.", show_alert=True)
         await callback.message.answer("Без принятия оферты использование сервиса невозможно.")
-
 
     async def process_bot_token_from_miniapp(
         self,
@@ -639,9 +657,7 @@ class MasterBot:
             await test_bot.session.close()
 
         # 3) Проверка, что такого бота ещё нет
-        existing = await self.db.get_instance_by_token_hash(
-            self.security.hash_token(token)
-        )
+        existing = await self.db.get_instance_by_token_hash(self.security.hash_token(token))
         if existing:
             raise ValueError("Этот бот уже добавлен в систему")
 
@@ -654,7 +670,6 @@ class MasterBot:
         )
 
         return instance
-
 
     async def _send_personal_miniapp_link(
         self,
@@ -733,8 +748,6 @@ class MasterBot:
         # === Stars / оплата тарифов ===
         self.dp.message(F.successful_payment)(self.handle_successful_payment)
 
-
-
     # ====================== МЕНЮ МАСТЕРА ======================
 
     async def handle_menu_callback(self, callback: CallbackQuery):
@@ -765,15 +778,25 @@ class MasterBot:
             keyboard = InlineKeyboardMarkup(
                 inline_keyboard=[
                     [
-                        InlineKeyboardButton(text=base_texts.language_ru_label, callback_data="lang_ru"),
-                        InlineKeyboardButton(text=base_texts.language_en_label, callback_data="lang_en"),
+                        InlineKeyboardButton(
+                            text=base_texts.language_ru_label, callback_data="lang_ru"
+                        ),
+                        InlineKeyboardButton(
+                            text=base_texts.language_en_label, callback_data="lang_en"
+                        ),
                     ],
                     [
-                        InlineKeyboardButton(text=base_texts.language_es_label, callback_data="lang_es"),
-                        InlineKeyboardButton(text=base_texts.language_hi_label, callback_data="lang_hi"),
+                        InlineKeyboardButton(
+                            text=base_texts.language_es_label, callback_data="lang_es"
+                        ),
+                        InlineKeyboardButton(
+                            text=base_texts.language_hi_label, callback_data="lang_hi"
+                        ),
                     ],
                     [
-                        InlineKeyboardButton(text=base_texts.language_zh_label, callback_data="lang_zh"),
+                        InlineKeyboardButton(
+                            text=base_texts.language_zh_label, callback_data="lang_zh"
+                        ),
                     ],
                 ]
             )
@@ -882,15 +905,25 @@ class MasterBot:
             keyboard = InlineKeyboardMarkup(
                 inline_keyboard=[
                     [
-                        InlineKeyboardButton(text=base_texts.language_ru_label, callback_data="lang_ru"),
-                        InlineKeyboardButton(text=base_texts.language_en_label, callback_data="lang_en"),
+                        InlineKeyboardButton(
+                            text=base_texts.language_ru_label, callback_data="lang_ru"
+                        ),
+                        InlineKeyboardButton(
+                            text=base_texts.language_en_label, callback_data="lang_en"
+                        ),
                     ],
                     [
-                        InlineKeyboardButton(text=base_texts.language_es_label, callback_data="lang_es"),
-                        InlineKeyboardButton(text=base_texts.language_hi_label, callback_data="lang_hi"),
+                        InlineKeyboardButton(
+                            text=base_texts.language_es_label, callback_data="lang_es"
+                        ),
+                        InlineKeyboardButton(
+                            text=base_texts.language_hi_label, callback_data="lang_hi"
+                        ),
                     ],
                     [
-                        InlineKeyboardButton(text=base_texts.language_zh_label, callback_data="lang_zh"),
+                        InlineKeyboardButton(
+                            text=base_texts.language_zh_label, callback_data="lang_zh"
+                        ),
                     ],
                 ]
             )
@@ -945,9 +978,7 @@ class MasterBot:
                         )
         # ----------------------------------------------------------
 
-        text = (
-            f"{texts.master_title}\n\n"
-        )
+        text = f"{texts.master_title}\n\n"
 
         if plan_line:
             text += f"{plan_line}\n\n"
@@ -961,7 +992,6 @@ class MasterBot:
         )
 
         await message.answer(text, reply_markup=self.get_main_menu_for_lang(texts))
-
 
     async def handle_language_choice(self, callback: CallbackQuery):
         user_id = callback.from_user.id
@@ -985,7 +1015,6 @@ class MasterBot:
             reply_markup=self.get_main_menu_for_lang(texts),
         )
         await callback.answer()
-
 
     async def cmd_add_bot_entry(self, message: Message):
         """
@@ -1030,7 +1059,6 @@ class MasterBot:
         # --- end Offer gate ---
 
         await self.cmd_add_bot(message, user_id=user_id)
-
 
     async def cmd_add_bot(self, message: Message, user_id: int):
         """Handle add bot command (общая логика)"""
@@ -1103,7 +1131,7 @@ class MasterBot:
         else:
             lang_code = (callback.from_user.language_code or "ru").split("-")[0]
 
-        texts = get_texts(lang_code)
+        texts = LANGS.get(lang_code, LANGS["ru"])
 
         # Single-tenant режим: доступ только владельцу
         if not await self._is_master_allowed_user(user_id):
@@ -1180,15 +1208,11 @@ class MasterBot:
                 try:
                     await self.webhook_manager.remove_webhook(token)
                 except Exception as e:
-                    logger.warning(
-                        f"Failed to remove webhook for {instance_id} on resume: {e}"
-                    )
+                    logger.warning(f"Failed to remove webhook for {instance_id} on resume: {e}")
                 try:
                     self.spawn_worker(instance_id, token)
                 except Exception as e:
-                    logger.error(
-                        f"Failed to spawn worker for {instance_id} on resume: {e}"
-                    )
+                    logger.error(f"Failed to spawn worker for {instance_id} on resume: {e}")
                     await callback.answer("❌ Ошибка при запуске бота", show_alert=True)
                     return
 
@@ -1273,7 +1297,6 @@ class MasterBot:
         keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
         await message.answer(text, reply_markup=keyboard)
 
-
     async def handle_instance_callback(self, callback: CallbackQuery, instance_id: str):
         """Обработка колбэка для управления инстансом"""
         instance = await self.db.get_instance(instance_id)
@@ -1291,7 +1314,8 @@ class MasterBot:
             f"{texts.master_instance_actions_label}"
         )
 
-        miniapp_url = self._build_miniapp_url(instance, user_id)
+        # miniapp_url можно вообще не вычислять, раз кнопка панели не нужна
+        # miniapp_url = self._build_miniapp_url(instance, user_id)
 
         if instance.status == InstanceStatus.RUNNING:
             toggle_text = texts.master_instance_pause_button
@@ -1316,25 +1340,15 @@ class MasterBot:
                     callback_data=f"remove_confirm_{instance_id}",
                 )
             ],
+            [
+                InlineKeyboardButton(
+                    text=texts.master_instance_back_button,
+                    callback_data="list_bots",
+                )
+            ],
         ]
 
-        if miniapp_url and callback.message.chat.type == ChatType.PRIVATE:
-            keyboard_rows.insert(
-                1,
-                [
-                    InlineKeyboardButton(
-                        text=texts.master_instance_panel_button,
-                        web_app=WebAppInfo(url=miniapp_url),
-                    )
-                ],
-            )
-
-        keyboard_rows.append(
-            [InlineKeyboardButton(text=texts.master_instance_back_button, callback_data="list_bots")]
-        )
-
         keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
-
         await callback.message.edit_text(text, reply_markup=keyboard)
 
     async def handle_pause_instance(self, callback: CallbackQuery):
@@ -1378,16 +1392,12 @@ class MasterBot:
             try:
                 await self.webhook_manager.remove_webhook(token)
             except Exception as e:
-                logger.warning(
-                    f"Failed to remove webhook for {instance_id} on resume: {e}"
-                )
+                logger.warning(f"Failed to remove webhook for {instance_id} on resume: {e}")
 
             try:
                 self.spawn_worker(instance_id, token)
             except Exception as e:
-                logger.error(
-                    f"Failed to spawn worker for {instance_id} on resume: {e}"
-                )
+                logger.error(f"Failed to spawn worker for {instance_id} on resume: {e}")
                 await callback.answer("❌ Ошибка при запуске бота")
                 return
 
@@ -1416,9 +1426,7 @@ class MasterBot:
             try:
                 await self.webhook_manager.remove_webhook(token)
             except Exception as e:
-                logger.warning(
-                    f"Failed to remove webhook for {instance_id} on delete: {e}"
-                )
+                logger.warning(f"Failed to remove webhook for {instance_id} on delete: {e}")
 
         # Останавливаем polling-воркер
         self.stop_worker(instance_id)
@@ -1455,7 +1463,6 @@ class MasterBot:
         _, _, instance_id = callback.data.split("_", 2)
         # просто возвращаемся в меню инстанса
         await self.handle_instance_callback(callback, instance_id)
-
 
     # ====================== ОБРАБОТКА ТЕКСТА (ТОКЕНЫ) ======================
 
@@ -1497,7 +1504,6 @@ class MasterBot:
                 reply_markup=self.get_main_menu_for_lang(texts),
             )
 
-
     async def process_bot_token(self, message: Message, token: str):
         """Process provided bot token"""
         user_id = message.from_user.id
@@ -1515,9 +1521,7 @@ class MasterBot:
             await test_bot.session.close()
 
             # Check if bot already exists
-            existing = await self.db.get_instance_by_token_hash(
-                self.security.hash_token(token)
-            )
+            existing = await self.db.get_instance_by_token_hash(self.security.hash_token(token))
             if existing:
                 # 1-е сообщение — ошибка
                 await message.answer(texts.master_token_already_exists)
@@ -1559,12 +1563,9 @@ class MasterBot:
 
             await worker.bot.get_me()  # Health check
             logger.info(f"Bot.get_me() successful for new instance {instance.instance_id}")
-
             # === КОНЕЦ ДОБАВЛЕНИЯ ===
 
             await self.db.clear_user_state(user_id)
-
-            miniapp_url = self._build_miniapp_url(instance, user_id)
 
             text_lines = [
                 f"{texts.master_bot_added_title}\n",
@@ -1574,13 +1575,6 @@ class MasterBot:
                 f"{texts.master_bot_added_webhook_label}: <code>{instance.webhook_url}</code>\n\n",
                 texts.master_bot_added_status_starting,
             ]
-
-            if miniapp_url:
-                text_lines.append(
-                    "\n\n"
-                    f"{texts.master_bot_added_panel_hint}\n"
-                    f"<code>{miniapp_url}</code>"
-                )
 
             text_resp = "".join(text_lines)
 
@@ -1599,37 +1593,17 @@ class MasterBot:
                 ],
             ]
 
-            # Инлайн-кнопка открытия мини‑аппы сразу после добавления (только в приват)
-            if miniapp_url and message.chat.type == ChatType.PRIVATE:
-                keyboard_rows.insert(
-                    1,
-                    [
-                        InlineKeyboardButton(
-                            text=texts.master_bot_open_panel_button,
-                            web_app=WebAppInfo(url=miniapp_url),
-                        )
-                    ],
-                )
-
             keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
-
             await message.answer(text_resp, reply_markup=keyboard)
-
-            # Дополнительно шлём персональную ссылку в приват
-            await self._send_personal_miniapp_link(
-                instance=instance,
-                admin_user_id=user_id,
-                admin_chat_id=message.chat.id if message.chat.type == ChatType.PRIVATE else None,
-            )
 
         except Exception as e:
             logger.error(f"Error processing token: {e}")
-            await message.answer(
-                texts.master_token_generic_error.format(error=str(e))
-            )
+            await message.answer(texts.master_token_generic_error.format(error=str(e)))
             await self.db.clear_user_state(user_id)
 
-    async def check_worker_token_health(self, instance_id: str, auto_remove_webhook: bool = False) -> tuple[bool, str]:
+    async def check_worker_token_health(
+        self, instance_id: str, auto_remove_webhook: bool = False
+    ) -> tuple[bool, str]:
         """
         Проверяет, что токен воркера валиден и бот отвечает.
         Возвращает (ok, reason).
@@ -1652,23 +1626,19 @@ class MasterBot:
 
         test_bot = Bot(token=token)
         try:
-            me = await test_bot.get_me()
+            await test_bot.get_me()
         except TelegramUnauthorizedError:
-            # токен сменили / отозвали
             reason = "unauthorized"
             if auto_remove_webhook:
                 await self._safe_remove_webhook(instance_id, token)
             return False, reason
         except TelegramAPIError:
-            # Telegram временно лежит / сетевые проблемы
             return False, "telegram_error"
         except Exception:
-            # что-то ещё странное
             return False, "unknown_error"
         finally:
             await test_bot.session.close()
 
-        # если дошли сюда — токен живой и getMe отвечает
         return True, "ok"
 
     async def _safe_remove_webhook(self, instance_id: str, token: str | None) -> None:
@@ -1700,7 +1670,6 @@ class MasterBot:
             "token_reason": token_reason,
         }
 
-
     async def create_bot_instance(
         self, user_id: int, token: str, bot_username: str, bot_name: str
     ) -> BotInstance:
@@ -1724,7 +1693,7 @@ class MasterBot:
             webhook_secret=webhook_secret,
             status=InstanceStatus.STARTING,
             created_at=datetime.now(timezone.utc),
-            owner_user_id=user_id,           # фиксируем владельца-интегратора
+            owner_user_id=user_id,  # фиксируем владельца-интегратора
             admin_private_chat_id=None,
         )
 
@@ -1790,7 +1759,6 @@ class MasterBot:
 
         await self.cmd_list_bots(message, user_id=user_id)
 
-
     async def cmd_list_bots(self, message: Message, user_id: int):
         """List user's bots"""
         # Single-tenant mode: access only to allowed users
@@ -1834,17 +1802,6 @@ class MasterBot:
                 )
             ]
 
-            # web_app‑кнопка только в приватных чатах
-            if message.chat.type == ChatType.PRIVATE:
-                miniapp_url = self._build_miniapp_url(instance, user_id)
-                if miniapp_url:
-                    row.append(
-                        InlineKeyboardButton(
-                            text=texts.master_list_bots_panel_button,
-                            web_app=WebAppInfo(url=miniapp_url),
-                        )
-                    )
-
             keyboard_buttons.append(row)
 
         keyboard_buttons.append(
@@ -1862,7 +1819,6 @@ class MasterBot:
 
         keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
         await message.answer(text, reply_markup=keyboard)
-
 
     def get_main_menu_for_lang(self, texts) -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup(
@@ -1891,7 +1847,6 @@ class MasterBot:
                 ],
             ]
         )
-
 
     def validate_token_format(self, token: str) -> bool:
         """Validate bot token format"""
@@ -1928,51 +1883,64 @@ class MasterBot:
         logger.info(f"Webhook server started on port {self.webhook_port}")
 
     async def handle_worker_webhook(self, request: web.Request) -> web.Response:
-        path = request.path  # e.g., /webhook/abc123
-        instance_id = self.webhook_manager.extract_instance_id(path)
+        # 1) Parse instance_id from URL
+        instance_id = self.webhook_manager.extract_instance_id(request.path)
         if not instance_id:
             return web.Response(status=400, text="Invalid webhook path")
 
-        # === ЛОГИ ДЛЯ ОТЛАДКИ ===
-        logger.info(f"Incoming webhook request for instance_id: {instance_id}")
-        logger.info(f"Full request headers: {dict(request.headers)}")
-        received_secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "(missing)")
-        logger.info(f"Received X-Telegram-Bot-Api-Secret-Token: {received_secret}")
-
+        # 2) Ensure instance exists in memory (routing)
         instance = self.instances.get(instance_id)
         if not instance:
-            logger.warning(f"Instance {instance_id} not found in memory")
+            logger.warning("Webhook: instance not found in memory: %s", instance_id)
             return web.Response(status=404, text="Instance not found")
 
-        expected_secret = instance.webhook_secret or "(none in DB)"
-        logger.info(f"Expected webhook_secret from DB: {expected_secret}")
-
-        # === НОВАЯ ПРОВЕРКА (plain comparison по Telegram docs) ===
+        # 3) Verify secret token (if configured)
         signature = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
-        # Temporarily disabled for testing to bypass mismatch
-        # if signature != instance.webhook_secret:
-        #     logger.warning(f"Invalid secret token for {instance_id} (received: {received_secret}, expected: {expected_secret})")
-        #     return web.Response(status=403, text="Invalid secret token")
+        expected = instance.webhook_secret or ""
 
-        # === КОНЕЦ ПРОВЕРКИ ===
+        # Debug logs without leaking secrets
+        logger.info(
+            "Webhook: instance_id=%s signature_present=%s expected_present=%s signature_prefix=%s",
+            instance_id,
+            bool(signature),
+            bool(expected),
+            signature[:6] if signature else "",
+        )
 
-        data = await request.read()  # bytes
+        # If you set secret_token in setWebhook, Telegram will include the header.
+        # Treat mismatch as forbidden.
+        if expected and signature != expected:
+            logger.warning("Webhook: secret mismatch for instance_id=%s", instance_id)
+            return web.Response(status=403, text="Invalid secret token")
+
+        # 4) Read and parse update payload
+        try:
+            raw = await request.read()
+        except Exception:
+            logger.exception("Webhook: failed to read request body (instance_id=%s)", instance_id)
+            return web.Response(status=400, text="Invalid body")
 
         try:
-            update_data = json.loads(data.decode("utf-8"))
-            update = Update(**update_data)
-            worker = self.workers.get(instance_id)
-            if worker:
-                await worker.process_update(update)
-            else:
-                logger.warning(f"No worker for {instance_id}")
-                return web.Response(status=404)
-            return web.Response(status=200, text="OK")
+            update_data = json.loads(raw.decode("utf-8"))
         except json.JSONDecodeError:
+            logger.warning("Webhook: invalid JSON (instance_id=%s)", instance_id)
             return web.Response(status=400, text="Invalid JSON")
+
+        # 5) Dispatch to worker
+        worker = self.workers.get(instance_id)
+        if not worker:
+            logger.warning("Webhook: no worker for instance_id=%s", instance_id)
+            return web.Response(status=404, text="Worker not found")
+
+        try:
+            update = Update(**update_data)
+            await worker.process_update(update)
+            return web.Response(status=200, text="OK")
         except Exception as e:
-            logger.error(f"Error processing webhook for {instance_id}: {e}")
-            return web.Response(status=500)
+            logger.exception(
+                "Webhook: error processing update (instance_id=%s): %s", instance_id, e
+            )
+            return web.Response(status=500, text="Internal error")
 
     async def handle_master_webhook(self, request):
         """Handle webhook for master bot"""
@@ -2010,18 +1978,17 @@ class MasterBot:
 
                 logger.info(
                     "monitor_workers: %s status=%s token_ok=%s reason=%s",
-                    instance_id, instance.status, token_ok, token_reason,
+                    instance_id,
+                    instance.status,
+                    token_ok,
+                    token_reason,
                 )
 
                 # проблемы с токеном
                 if not token_ok and token_reason in ("bad_format", "unauthorized", "no_token"):
-                    logger.error(
-                        "Worker %s token problem: %s", instance_id, token_reason
-                    )
+                    logger.error("Worker %s token problem: %s", instance_id, token_reason)
 
-                    await self.db.update_instance_status(
-                        instance_id, InstanceStatus.ERROR
-                    )
+                    await self.db.update_instance_status(instance_id, InstanceStatus.ERROR)
 
                     try:
                         owner_id = instance.owner_user_id
@@ -2057,9 +2024,7 @@ class MasterBot:
 
                         token = await self.db.get_decrypted_token(instance_id)
                         if not token:
-                            logger.error(
-                                "Cannot restore worker %s: no token in DB", instance_id
-                            )
+                            logger.error("Cannot restore worker %s: no token in DB", instance_id)
                             continue
 
                         try:
@@ -2083,25 +2048,36 @@ class MasterBot:
                             await self.remove_worker_webhook(instance_id, token)
                         except Exception as e:
                             logger.error(
-                                "Failed to restore worker %s: %s", instance_id, e,
-                                exc_info=True  # Полный traceback для отладки
+                                "Failed to restore worker %s: %s",
+                                instance_id,
+                                e,
+                                exc_info=True,  # Полный traceback для отладки
                             )
 
             await asyncio.sleep(interval)
-            
+
     # ====================== ЗАПУСК МАСТЕРА ======================
 
     async def run(self) -> None:
         logger.info("Starting GraceHub Platform Master Bot...")
 
-        await self.db.init()
+        # --- Startup DB check (fail fast) ---
+        try:
+            await self.db.init()
+        except Exception as e:
+            reason = self._format_db_startup_error(e)
+            logger.critical(
+                f"Database connection check failed on startup: {reason}",
+                exc_info=True,
+            )
+            raise SystemExit(2)
+        # --- end Startup DB check ---
+
         await self.load_existing_instances()
 
         # Монитор воркеров
         logger.info("Worker monitor interval = %s", settings.WORKER_MONITOR_INTERVAL)
-        asyncio.create_task(
-            self.monitor_workers(interval=settings.WORKER_MONITOR_INTERVAL)
-        )
+        asyncio.create_task(self.monitor_workers(interval=settings.WORKER_MONITOR_INTERVAL))
 
         # Биллинг‑крон
         logger.info("Billing cron interval = %s", settings.BILLING_CRON_INTERVAL)
@@ -2153,8 +2129,14 @@ class MasterBot:
         webhook_path = f"webhook/{instance_id}"
         webhook_url = self.webhook_manager.generate_webhook_url(instance_id)
 
-        webhook_secret = instance.webhook_secret if instance and instance.webhook_secret else self.security.generate_webhook_secret()
-        logger.info(f"{'Reusing' if instance and instance.webhook_secret else 'Generated new'} webhook_secret for {instance_id}")
+        webhook_secret = (
+            instance.webhook_secret
+            if instance and instance.webhook_secret
+            else self.security.generate_webhook_secret()
+        )
+        logger.info(
+            f"{'Reusing' if instance and instance.webhook_secret else 'Generated new'} webhook_secret for {instance_id}"
+        )
 
         bot = Bot(token=token)
         try:
@@ -2164,13 +2146,17 @@ class MasterBot:
 
                 await asyncio.sleep(1)  # Delay for Telegram processing
 
-                success, reason = await self.webhook_manager.setup_webhook(token, webhook_url, webhook_secret)
+                success, reason = await self.webhook_manager.setup_webhook(
+                    token, webhook_url, webhook_secret
+                )
                 if not success:
                     logger.warning(f"Setup failed on attempt {attempt}: {reason}")
                     continue
 
                 logger.info(f"Webhook set successful on attempt {attempt} for {instance_id}")
-                await self.db.update_instance_webhook(instance_id, webhook_url, webhook_path, webhook_secret)
+                await self.db.update_instance_webhook(
+                    instance_id, webhook_url, webhook_path, webhook_secret
+                )
                 if instance:
                     instance.webhook_url = webhook_url
                     instance.webhook_path = webhook_path
@@ -2205,10 +2191,14 @@ async def main():
 
     try:
         await master_bot.run()
+    except SystemExit as e:
+        # Controlled shutdown (e.g. DB startup check failed in run())
+        logger.error(f"Master bot stopped during startup (exit code {e.code}).")
+        raise
     except KeyboardInterrupt:
         logger.info("Master bot stopped by user")
     except Exception as e:
-        logger.error(f"Master bot crashed: {e}")
+        logger.error(f"Master bot crashed: {e}", exc_info=True)
     finally:
         await master_bot.bot.session.close()
 

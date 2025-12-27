@@ -102,7 +102,9 @@
     "payment_success_body": "Тариф {{name}} на {{months}} мес. успешно оплачен.",
     "payment_success_ok": "Ок",
     "payment_failed": "Не удалось подтвердить оплату. Попробуйте ещё раз.",
-    "payments_disabled_by_admin": "Методы оплаты отключены Суперадминистратором."
+    "payments_disabled_by_admin": "Методы оплаты отключены Суперадминистратором.",
+    "valid_until": "До",
+    "days_left": "Осталось дней"
   },
   "firstLaunch": {
     "welcome": "Добро пожаловать в платформу управления ботами GraceHub!",
@@ -208,7 +210,7 @@
     "restart_required_title": "Требуется перезапуск",
     "restart_required_text": "Язык был изменён. Чтобы изменения применились везде, перезапустите приложение.",
     "restart_now": "Перезапустить сейчас",
-    "restart_later": "Позже",
+    "restart_later": "Отмена",
     "restart_hint": "Если не перезапускать, часть интерфейса может остаться на старом языке."
   },
   "common": {
@@ -239,6 +241,7 @@
   },
   "instances": {
     "select_instance_title": "Выберите инстанс",
-    "available_count": "{{count}} доступных"
+    "available_count": "{{count}} доступных",
+    "bot": "Бот"
   }
 }
