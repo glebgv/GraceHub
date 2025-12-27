@@ -607,13 +607,13 @@ const App: React.FC<AppProps> = ({
                   {!billing?.unlimited && (
                     <>
                       <div className="tariff-row">
-                        <span className="tariff-label">До:</span>
+                        <span className="tariff-label">{t("billing.valid_until")}:</span>
                         <span className="tariff-value">
                           {billing ? new Date(billing.periodEnd).toLocaleDateString() : '—'}
                         </span>
                       </div>
                       <div className="tariff-row">
-                        <span className="tariff-label">Осталось дней:</span>
+                        <span className="tariff-label">{t("billing.days_left")}:</span>
                         <span className="tariff-value">{billing ? billing.daysLeft : '—'}</span>
                       </div>
                     </>

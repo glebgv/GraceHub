@@ -101,7 +101,9 @@
     "payment_success_title": "Pago exitoso",
     "payment_success_body": "El plan {{name}} por {{months}} mes(es) se activó correctamente.",
     "payment_success_ok": "OK",
-    "payment_failed": "No se pudo verificar el pago. Intente nuevamente."
+    "payment_failed": "No se pudo verificar el pago. Intente nuevamente.",
+    "valid_until": "Válido hasta",
+    "days_left": "Días restantes"
   },
   "firstLaunch": {
     "welcome": "¡Bienvenido a la plataforma de administración de bots GraceHub!",
@@ -239,6 +241,7 @@
   },
   "instances": {
     "select_instance_title": "Elige una instancia",
-    "available_count": "{{count}} disponibles"
+    "available_count": "{{count}} disponibles",
+    "bot": "Bot"
   }
 }

@@ -101,7 +101,9 @@
     "payment_success_title": "支付成功",
     "payment_success_body": "套餐 {{name}}（{{months}} 个月）已成功激活。",
     "payment_success_ok": "确定",
-    "payment_failed": "无法验证付款。请重试。"
+    "payment_failed": "无法验证付款。请重试。",
+    "valid_until": "有效期至",
+    "days_left": "剩余天数"
   },
   "firstLaunch": {
     "welcome": "欢迎使用 GraceHub 机器人管理平台！",
@@ -239,6 +241,7 @@
   },
   "instances": {
     "select_instance_title": "选择一个实例",
-    "available_count": "可用：{{count}}"
+    "available_count": "可用：{{count}}",
+    "bot": "机器人"
   }
 }

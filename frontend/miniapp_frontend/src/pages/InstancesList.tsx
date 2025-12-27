@@ -257,7 +257,7 @@ const InstancesList: React.FC<InstancesListProps> = ({
                 disabled={addBotDisabled}
                 title={addBotDisabled ? 'Недоступно во время операции' : undefined}
               >
-                <span aria-hidden>➕</span> <span>Бот</span>
+                <span aria-hidden>➕</span> <span>{t("instances.bot")}</span>
               </button>
             )}
           </div>
@@ -467,7 +467,7 @@ const InstancesList: React.FC<InstancesListProps> = ({
               style={{ opacity: addBotDisabled ? 0.7 : 1 }}
             >
               <span aria-hidden>➕</span>
-              <span>Бот</span>
+              <span>{t("instances.bot")}</span>
             </button>
           )}
         </div>

@@ -250,7 +250,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
   const paymentMethods: Array<{ value: PaymentMethod; label: string }> = useMemo(() => {
     const out: Array<{ value: PaymentMethod; label: string }> = [];
 
-    if (paymentsEnabled.telegramStars) out.push({ value: 'telegramstars', label: t('billing.payment_method_stars') });
+    if (paymentsEnabled.telegramStars) out.push({ value: 'telegram_stars', label: t('billing.payment_method_stars') });
     if (paymentsEnabled.ton) out.push({ value: 'ton', label: t('billing.payment_method_ton') });
     if (paymentsEnabled.yookassa) out.push({ value: 'yookassa', label: t('billing.payment_method_yookassa') });
     if (paymentsEnabled.stripe) out.push({ value: 'stripe', label: t('billing.payment_method_stripe') });
@@ -653,7 +653,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
       });
 
       // Stars
-      if (paymentMethod === 'telegramstars') {
+      if (paymentMethod === 'telegram_stars') {
         const tg = (window as any).Telegram?.WebApp;
 
         if (tg?.openInvoice) {
@@ -1154,8 +1154,8 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
                   <div style={{ marginTop: 4, fontSize: 13 }}>
                     {(() => {
                       const enabled = paymentMethods.map((m) => m.value); // already filtered by paymentsEnabled [file:4]
-                      const hasStars = enabled.includes('telegramstars');
-                      const hasOther = enabled.some((v) => v !== 'telegramstars');
+                      const hasStars = enabled.includes('telegram_stars');
+                      const hasOther = enabled.some((v) => v !== 'telegram_stars');
 
                       if (hasStars && !hasOther) {
                         return (
@@ -1190,7 +1190,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
                           lineHeight: 1,
                         }}
                       >
-                        {m.value === 'telegramstars' ? '⭐ ' : ''}
+                        {m.value === 'telegram_stars' ? '⭐ ' : ''}
                         {m.label}
                       </span>
                     ))}
@@ -1415,7 +1415,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
 
                       // Currency-specific formatting
                       switch (paymentMethod) {
-                        case 'telegramstars':
+                        case 'telegram_stars':
                           return `${selectedPlan.priceStars * periods} ⭐`; // Existing
                         case 'ton':
                           return `${formatted} TON`;
