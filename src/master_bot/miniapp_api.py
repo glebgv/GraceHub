@@ -180,7 +180,12 @@ class AddOperatorRequest(BaseModel):
 
 
 class ResolveInstanceRequest(BaseModel):
-    instance_id: Optional[StrictStr] = None
+    instance_id: Optional[StrictStr] = Field(
+        default=None,
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    )
     admin_id: Optional[StrictInt] = None
 
 
@@ -284,7 +289,7 @@ class StripeInvoiceStatusResponse(BaseModel):
 
 class StripeInvoiceCancelResponse(BaseModel):
     invoice_id: int
-    status: str  # canceled
+    status: str
 
 
 class TonInvoiceStatusResponse(BaseModel):
@@ -296,7 +301,7 @@ class TonInvoiceStatusResponse(BaseModel):
 
 class TonInvoiceCancelResponse(BaseModel):
     invoice_id: int
-    status: str  # cancelled
+    status: str
 
 
 class UpdateTicketStatusRequest(BaseModel):
@@ -335,7 +340,7 @@ class OfferSettingsOut(BaseModel):
 class OfferStatusOut(BaseModel):
     enabled: bool = False
     url: str = ""
-    accepted: bool = True  # если оферта выключена — считаем accepted=True
+    accepted: bool = True
     acceptedAt: Optional[str] = None
 
 
