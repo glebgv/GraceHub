@@ -649,7 +649,7 @@ class GraceHubWorker:
         row = await self.db.fetchone(
             """
             SELECT 1
-            FROM autoreply_log
+            FROM blacklist
             WHERE instance_id = $1 AND user_id = $2
             LIMIT 1
             """,
@@ -1998,7 +1998,7 @@ class GraceHubWorker:
     async def handle_ticket_callback(self, cb: CallbackQuery) -> None:
         """
         Обработка callback'ов от клавиатуры тикетов:
-        меню / Себе / Назначить / Спам / Не спам / Закрыть / Переоткрыть.
+        меню / Себе / Назначить / Спам(+подтверждение блокировки) / Не спам / Закрыть / Переоткрыть.
         """
         data = cb.data or ""
         if not data.startswith("ticket:"):
@@ -2010,6 +2010,31 @@ class GraceHubWorker:
             return
 
         action = parts[1]
+
+        # --- helpers (локально, чтобы не разносить по классу) ---
+        def _spam_confirm_kb(ticket_id: int):
+            return InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text=self.texts.spam_confirm_only_spam,
+                            callback_data=f"ticket:spam_only:{ticket_id}",
+                        )
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            text=self.texts.spam_confirm_spam_and_block,
+                            callback_data=f"ticket:spam_block:{ticket_id}",
+                        )
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            text=self.texts.spam_confirm_cancel,
+                            callback_data=f"ticket:menu:{ticket_id}",
+                        )
+                    ],
+                ]
+            )
 
         # Открыть полное меню из компактной кнопки 🖲
         if action == "menu":
@@ -2118,7 +2143,6 @@ class GraceHubWorker:
 
         # 2) "Назначить" — показать список операторов из БД
         if action == "assign":
-            # строим клавиатуру на основе таблицы operators
             kb = await self.get_operators_keyboard(ticket_id, page=0)
             if not kb.inline_keyboard:
                 await cb.answer(self.texts.ticket_no_assignees, show_alert=True)
@@ -2152,14 +2176,12 @@ class GraceHubWorker:
                 await cb.answer()
                 return
 
-            # раньше тут был get_chat_member, теперь берём только username/id для записи
             target_username = f"id{assignee_id}"
             try:
                 member = await self.bot.get_chat_member(ticket["chat_id"], assignee_id)
                 if member and member.user:
                     target_username = member.user.username or f"id{member.user.id}"
             except Exception:
-                # если не удалось получить из TG — оставляем id
                 pass
 
             current_status = ticket.get("status") or "new"
@@ -2183,8 +2205,30 @@ class GraceHubWorker:
             await cb.answer(self.texts.ticket_assignment_cancelled)
             return
 
-        # 3) "Спам"
+        # 3) "Спам" -> показать подтверждение (блокировать ли пользователя)
         if action == "spam":
+            kb = _spam_confirm_kb(ticket_id)
+            try:
+                await message.edit_reply_markup(reply_markup=kb)
+            except TelegramBadRequest:
+                # сообщение протухло → шлём новое
+                try:
+                    await self._send_safe_message(
+                        chat_id=message.chat.id,
+                        text=self.texts.ticket_admin_prompt,
+                        reply_markup=kb,
+                    )
+                except Exception as e2:
+                    logger.error(
+                        "Failed to send fallback spam confirm keyboard for ticket %s: %s",
+                        ticket_id,
+                        e2,
+                    )
+            await cb.answer()
+            return
+
+        # 3.1) "Только спам" (без блокировки)
+        if action == "spam_only":
             await self.set_ticket_status(
                 ticket_id,
                 "spam",
@@ -2193,6 +2237,19 @@ class GraceHubWorker:
             )
             await self.put_ticket_keyboard(ticket_id, message.message_id, compact=True)
             await cb.answer(self.texts.ticket_marked_spam)
+            return
+
+        # 3.2) "Спам + блокировка"
+        if action == "spam_block":
+            # В твоём коде add_to_blacklist() уже помечает все тикеты пользователя как spam.
+            target_user_id = ticket.get("userid") or ticket.get("user_id")
+            target_username = ticket.get("username") or ""
+
+            if target_user_id:
+                await self.add_to_blacklist(int(target_user_id), str(target_username))
+
+            await self.put_ticket_keyboard(ticket_id, message.message_id, compact=True)
+            await cb.answer("Пользователь заблокирован")
             return
 
         # 3a) "Не спам"

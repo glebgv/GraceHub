@@ -57,6 +57,10 @@ class Texts:
     ticket_restored_from_spam: str
     ticket_closed: str
     ticket_reopened: str
+    ticket_unspammed: str
+    spam_confirm_only_spam: str
+    spam_confirm_spam_and_block: str
+    spam_confirm_cancel: str
 
     ticket_closed_rating_request: str
     rating_topic_message: str
