@@ -1,6 +1,7 @@
 # src/languages/base.py
 from dataclasses import dataclass
 
+
 @dataclass
 class Texts:
     access_denied: str
@@ -192,9 +193,9 @@ class Texts:
     billing_need_instance_first: str
     billing_invoice_create_error: str
 
-    billing_confirm_title: str    
-    billing_confirm_periods: str    
-    billing_confirm_total: str         
+    billing_confirm_title: str
+    billing_confirm_periods: str
+    billing_confirm_total: str
     billing_confirm_pay_hint: str
     billing_confirm_after_pay: str
 
@@ -207,12 +208,11 @@ class Texts:
     billing_expiring_title: str
     billing_expiring_body: str
 
-
     master_remove_owner_only: str
     master_remove_not_yours: str
     master_remove_confirm_title: str
-    master_remove_confirm_question: str 
-    master_remove_confirm_irreversible: str  
+    master_remove_confirm_question: str
+    master_remove_confirm_irreversible: str
     master_remove_confirm_yes: str
     master_remove_confirm_cancel: str
     attachment_too_big: str

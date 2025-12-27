@@ -1,9 +1,10 @@
+import asyncio
 import logging
 from typing import Optional, Tuple
 from urllib.parse import urljoin
 
 from aiogram import Bot
-from aiogram.exceptions import TelegramUnauthorizedError, TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramUnauthorizedError
 
 logger = logging.getLogger(__name__)
 
@@ -40,10 +41,12 @@ class WebhookManager:
         if webhookpath.startswith("/"):
             webhookpath = webhookpath[1:]
         if webhookpath.startswith("webhook/"):
-            return webhookpath[len("webhook/"):]
+            return webhookpath[len("webhook/") :]
         return None
 
-    async def setup_webhook(self, bottoken: str, webhookurl: str, secrettoken: str) -> Tuple[bool, str]:
+    async def setup_webhook(
+        self, bottoken: str, webhookurl: str, secrettoken: str
+    ) -> Tuple[bool, str]:
         """
         Setup webhook for bot.
 
@@ -64,10 +67,14 @@ class WebhookManager:
                     logger.info(f"Webhook setup successful {webhookurl} on attempt {attempt}")
                     return True, "ok"
                 except TelegramUnauthorizedError as e:
-                    logger.error(f"Failed to setup webhook {webhookurl} on attempt {attempt}: unauthorized - {e}")
+                    logger.error(
+                        f"Failed to setup webhook {webhookurl} on attempt {attempt}: unauthorized - {e}"
+                    )
                     return False, "unauthorized"
                 except TelegramBadRequest as e:
-                    logger.error(f"Failed to setup webhook {webhookurl} on attempt {attempt}: bad request - {e}")
+                    logger.error(
+                        f"Failed to setup webhook {webhookurl} on attempt {attempt}: bad request - {e}"
+                    )
                     return False, "bad_request"
                 except Exception as e:
                     logger.error(f"Failed to setup webhook {webhookurl} on attempt {attempt}: {e}")
@@ -93,4 +100,3 @@ class WebhookManager:
             return False
         finally:
             await bot.session.close()
-

@@ -1,10 +1,11 @@
-
 import asyncio
-import time
 import logging
+import time
 from collections import defaultdict, deque
-from typing import Dict, List, Optional
 from datetime import datetime, timedelta
+from typing import Awaitable, Callable, Dict, Optional
+
+from aiogram import types
 
 from .models import UpdateQueueItem
 
@@ -28,10 +29,7 @@ class TokenBucket:
 
             # Refill tokens
             time_passed = now - self.last_refill
-            self.tokens = min(
-                self.capacity,
-                self.tokens + (time_passed * self.refill_rate)
-            )
+            self.tokens = min(self.capacity, self.tokens + (time_passed * self.refill_rate))
             self.last_refill = now
 
             # Check if we have enough tokens
@@ -117,11 +115,17 @@ class BotRateLimiter:
                 self.backoff_until = now + timedelta(seconds=retry_after + 1)
             else:
                 # Exponential backoff based on recent errors
-                recent_errors = sum(1 for t, c, _ in self.error_history if (now - t).seconds < 60 and c == 429)
-                backoff_seconds = min(60, 2 ** recent_errors)
+                recent_errors = sum(
+                    1 for t, c, _ in self.error_history if (now - t).seconds < 60 and c == 429
+                )
+                backoff_seconds = min(60, 2**recent_errors)
                 self.backoff_until = now + timedelta(seconds=backoff_seconds)
 
-            logger.warning(f"Rate limit hit for {self.bot_token[:10]}..., backing off until {self.backoff_until}")
+            logger.warning(
+                "Rate limit hit for %s..., backing off until %s",
+                self.bot_token[:10],
+                self.backoff_until,
+            )
 
     def record_success(self):
         """Record successful request"""
@@ -130,12 +134,19 @@ class BotRateLimiter:
             self.error_history.popleft()
 
 
+OnUpdateCallable = Callable[[str, types.Update], Awaitable[None]]
+
+
 class RateLimiter:
     """Main rate limiter managing all bot instances"""
 
-    def __init__(self):
+    def __init__(self, on_update: Optional[OnUpdateCallable] = None):
+        self.on_update = on_update
+
         self.bot_limiters: Dict[str, BotRateLimiter] = {}
-        self.update_queues: Dict[str, asyncio.Queue] = defaultdict(lambda: asyncio.Queue(maxsize=1000))
+        self.update_queues: Dict[str, asyncio.Queue[UpdateQueueItem]] = defaultdict(
+            lambda: asyncio.Queue(maxsize=1000)
+        )
         self.processing_tasks: Dict[str, asyncio.Task] = {}
         self.shutdown_event = asyncio.Event()
 
@@ -153,7 +164,7 @@ class RateLimiter:
             item = UpdateQueueItem(
                 instance_id=instance_id,
                 update_data=update_data,
-                priority=priority
+                priority=priority,
             )
             await queue.put(item)
 
@@ -163,7 +174,7 @@ class RateLimiter:
                     self.process_queue(instance_id)
                 )
         except asyncio.QueueFull:
-            logger.warning(f"Update queue full for instance {instance_id}, dropping update")
+            logger.warning("Update queue full for instance %s, dropping update", instance_id)
 
     async def process_queue(self, instance_id: str):
         """Process updates for specific instance"""
@@ -171,10 +182,10 @@ class RateLimiter:
         limiter = self.bot_limiters.get(instance_id)
 
         if not limiter:
-            logger.error(f"No rate limiter found for instance {instance_id}")
+            logger.error("No rate limiter found for instance %s", instance_id)
             return
 
-        logger.info(f"Started processing queue for instance {instance_id}")
+        logger.info("Started processing queue for instance %s", instance_id)
 
         try:
             while not self.shutdown_event.is_set():
@@ -188,7 +199,11 @@ class RateLimiter:
                     if not await limiter.can_send(chat_id):
                         wait_time = await limiter.wait_for_send(chat_id)
                         if wait_time > 0:
-                            logger.debug(f"Rate limiting instance {instance_id}, waiting {wait_time:.2f}s")
+                            logger.debug(
+                                "Rate limiting instance %s, waiting %.2fs",
+                                instance_id,
+                                wait_time,
+                            )
                             await asyncio.sleep(wait_time)
 
                     # Process the update
@@ -200,36 +215,42 @@ class RateLimiter:
                 except asyncio.TimeoutError:
                     continue  # Check shutdown event
                 except Exception as e:
-                    logger.error(f"Error processing update for {instance_id}: {e}")
+                    logger.exception("Error processing update for %s: %s", instance_id, e)
                     limiter.record_error(500)  # Generic error
 
         except asyncio.CancelledError:
-            logger.info(f"Processing task cancelled for instance {instance_id}")
+            logger.info("Processing task cancelled for instance %s", instance_id)
         finally:
             # Clean up
-            if instance_id in self.processing_tasks:
-                del self.processing_tasks[instance_id]
+            self.processing_tasks.pop(instance_id, None)
 
     def extract_chat_id(self, update_data: dict) -> Optional[int]:
         """Extract chat ID from update for per-chat rate limiting"""
         try:
-            if 'message' in update_data:
-                return update_data['message']['chat']['id']
-            elif 'callback_query' in update_data:
-                return update_data['callback_query']['message']['chat']['id']
-            elif 'edited_message' in update_data:
-                return update_data['edited_message']['chat']['id']
+            if "message" in update_data:
+                return update_data["message"]["chat"]["id"]
+            if "callback_query" in update_data:
+                return update_data["callback_query"]["message"]["chat"]["id"]
+            if "edited_message" in update_data:
+                return update_data["edited_message"]["chat"]["id"]
         except (KeyError, TypeError):
             pass
         return None
 
-    async def process_update(self, instance_id: str, item: UpdateQueueItem):
-        """Process single update - override this method in subclasses or callers"""
-        from aiogram import types
-        logger.debug(f"Processing update for instance {instance_id}")
+    async def process_update(self, instance_id: str, item: UpdateQueueItem) -> None:
+        """
+        Parse update and dispatch to injected handler.
+
+        NOTE: If on_update is not configured, this is a configuration error.
+        """
+        logger.debug("Processing update for instance %s", instance_id)
+
         update = types.Update(**item.update_data)
-        # Placeholder: in master_bot/main.py, override to use self.workers[instance_id].process_update(update)
-        raise NotImplementedError("Override process_update in the caller (e.g., master_bot)")
+
+        if not self.on_update:
+            raise RuntimeError("RateLimiter.on_update is not configured")
+
+        await self.on_update(instance_id, update)
 
     async def process_updates_loop(self):
         """Main processing loop"""
@@ -241,7 +262,7 @@ class RateLimiter:
             pass
         finally:
             # Cancel all processing tasks
-            for task in self.processing_tasks.values():
+            for task in list(self.processing_tasks.values()):
                 task.cancel()
 
             # Wait for tasks to complete
@@ -269,7 +290,7 @@ class RateLimiter:
         self.bot_limiters.pop(instance_id, None)
         self.update_queues.pop(instance_id, None)
 
-        logger.info(f"Removed instance {instance_id} from rate limiter")
+        logger.info("Removed instance %s from rate limiter", instance_id)
 
     def get_stats(self, instance_id: str) -> dict:
         """Get rate limiting stats for instance"""
@@ -280,10 +301,9 @@ class RateLimiter:
             return {}
 
         return {
-            'global_tokens': limiter.global_bucket.tokens,
-            'chat_buckets': len(limiter.chat_buckets),
-            'queue_size': queue.qsize(),
-            'error_count': len(limiter.error_history),
-            'backoff_until': limiter.backoff_until.isoformat() if limiter.backoff_until else None
+            "global_tokens": limiter.global_bucket.tokens,
+            "chat_buckets": len(limiter.chat_buckets),
+            "queue_size": queue.qsize(),
+            "error_count": len(limiter.error_history),
+            "backoff_until": limiter.backoff_until.isoformat() if limiter.backoff_until else None,
         }
-

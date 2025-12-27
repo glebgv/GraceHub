@@ -1,14 +1,17 @@
 # src/master_bot/routers/test_auth.py
 import os
+
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 router = APIRouter()
 
+
 class TestLoginRequest(BaseModel):
     secret: str
     user_id: int = 1
     username: str | None = "ci"
+
 
 @router.post("/__test__/login", include_in_schema=False)
 async def test_login(req: TestLoginRequest, request: Request):

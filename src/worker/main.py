@@ -1,38 +1,38 @@
 import asyncio
 import logging
 import os
+import sys
+from collections import deque
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from datetime import datetime, timezone, timedelta
-from typing import Optional, Dict, Any, List
+from typing import Any, Dict, List, Optional
 
 from aiogram import Bot, Dispatcher, F
-from aiogram.enums import ParseMode, ChatType
 from aiogram.client.default import DefaultBotProperties
-from aiogram.types import (
-    Message,
-    CallbackQuery,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-    Update,
-    MessageEntity,
-    BufferedInputFile,
-)
+from aiogram.enums import ChatType, ParseMode
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.filters import CommandStart, Command, StateFilter
-from aiogram.fsm.state import State, StatesGroup
+from aiogram.filters import Command, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
-from collections import deque
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import (
+    BufferedInputFile,
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+    MessageEntity,
+    Update,
+)
 
-import sys
+from languages import LANGS
+from shared import settings
+from shared.database import MasterDatabase
+from shared.rate_limiter import BotRateLimiter
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]  # /root/gracehub
 SRC_DIR = PROJECT_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
-
-from shared import settings
-from shared.database import MasterDatabase
-from shared.rate_limiter import BotRateLimiter
-from languages import LANGS
 
 logger = logging.getLogger("worker")
 
@@ -41,9 +41,8 @@ def setup_logging() -> None:
     """
     Логируем в отдельный файл на инстанс, либо в общий logs/worker.log.
     """
-    instance_id = (
-        getattr(settings, "WORKER_INSTANCE_ID", None)
-        or os.getenv("WORKER_INSTANCE_ID", "unknown")
+    instance_id = getattr(settings, "WORKER_INSTANCE_ID", None) or os.getenv(
+        "WORKER_INSTANCE_ID", "unknown"
     )
     default_path = Path("logs") / f"worker_{instance_id}.log"
 
@@ -108,9 +107,7 @@ class PlatformInstanceDefaultsCache:
             or 0
         )
         max_file_mb = int(
-            instance_defaults.get("workerMaxFileMb")
-            or instance_defaults.get("max_file_mb")
-            or 10
+            instance_defaults.get("workerMaxFileMb") or instance_defaults.get("max_file_mb") or 10
         )
 
         self._cached_at = now
@@ -173,17 +170,18 @@ class GraceHubWorker:
         self.user_session_messages: Dict[int, int] = {}
 
         self.register_handlers()
-        
-    async def initialize(self) -> None:
-            """
-            Асинхронная инициализация worker'а: вызов init_database и другие async-операции.
-            """
-            await self.init_database()  # Ваш существующий метод
-            logger.info(f"Worker initialized for instance {self.instance_id}")
 
+    async def initialize(self) -> None:
+        """
+        Асинхронная инициализация worker'а: вызов init_database и другие async-операции.
+        """
+        await self.init_database()  # Ваш существующий метод
+        logger.info(f"Worker initialized for instance {self.instance_id}")
 
     async def _is_attachment_too_big(self, message: Message) -> bool:
-        await self.refresh_limits_from_db()  # если у тебя так называется; у тебя есть refreshlimitsfromdb [file:4]
+        await (
+            self.refresh_limits_from_db()
+        )  # если у тебя так называется; у тебя есть refreshlimitsfromdb [file:4]
         maxbytes = self.maxfilebytes
 
         # Собираем file_id для всех поддерживаемых типов
@@ -231,7 +229,6 @@ class GraceHubWorker:
             return not ok
 
         return False
-
 
     async def _refresh_limits_from_db(self) -> None:
         antiflood, max_file_mb = await self._platform_defaults.get()
@@ -331,27 +328,30 @@ class GraceHubWorker:
             uid = r["user_id"]
             uname = r["username"] or ""
             label = f"@{uname}" if uname else f"id{uid}"
-            buttons.append([
-                InlineKeyboardButton(
-                    text=label,
-                    callback_data=f"ticket:assign_to:{ticket_id}:{uid}",
-                )
-            ])
+            buttons.append(
+                [
+                    InlineKeyboardButton(
+                        text=label,
+                        callback_data=f"ticket:assign_to:{ticket_id}:{uid}",
+                    )
+                ]
+            )
 
         # Если пусто — вернём пустую клаву, выше ты это проверяешь и шлёшь ticket_no_assignees
         if not buttons:
             return InlineKeyboardMarkup(inline_keyboard=[])
 
         # Отмена
-        buttons.append([
-            InlineKeyboardButton(
-                text="❌ Отмена",
-                callback_data=f"ticket:cancel_assign:{ticket_id}",
-            )
-        ])
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    text="❌ Отмена",
+                    callback_data=f"ticket:cancel_assign:{ticket_id}",
+                )
+            ]
+        )
 
         return InlineKeyboardMarkup(inline_keyboard=buttons)
-
 
     async def init_database(self) -> None:
         # master_db уже инициализирован и передан в конструктор
@@ -374,9 +374,7 @@ class GraceHubWorker:
         await self.load_language()
 
         # blacklist теперь в общей worker-схеме, отдельного CREATE не нужно
-        logger.info(
-            f"Worker DB initialized in Postgres for instance {self.instance_id}"
-        )
+        logger.info(f"Worker DB initialized in Postgres for instance {self.instance_id}")
 
     def get_rating_keyboard(self, ticket_id: int) -> InlineKeyboardMarkup:
         """
@@ -390,10 +388,7 @@ class GraceHubWorker:
             )
             for e in emojis
         ]
-        return InlineKeyboardMarkup(
-            inline_keyboard=[buttons]
-        )
-
+        return InlineKeyboardMarkup(inline_keyboard=[buttons])
 
     # ====================== УТИЛИТЫ ======================
     async def handle_language_callback(self, cb: CallbackQuery, state: FSMContext) -> None:
@@ -470,8 +465,6 @@ class GraceHubWorker:
             )
             return
 
-
-
     async def handle_forum_service_message(self, message: Message) -> None:
         """
         Удаляет сервисные сообщения вида '... изменил(а) название темы ...',
@@ -503,11 +496,9 @@ class GraceHubWorker:
                 e,
             )
 
-
     async def is_admin(self, user_id: int) -> bool:
         admin = await self.get_setting("admin_user_id")
         return bool(admin) and str(user_id) == admin
-
 
     async def get_setting(self, key: str) -> Optional[str]:
         row = await self.db.fetchone(
@@ -541,7 +532,6 @@ class GraceHubWorker:
     async def is_privacy_enabled(self) -> bool:
         return (await self.get_setting("privacy_mode_enabled")) == "True"
 
-
     # ---------- Чёрный список: утилиты ----------
 
     def get_blacklist_view_menu(self, page: int = 0) -> InlineKeyboardMarkup:
@@ -552,7 +542,7 @@ class GraceHubWorker:
             nav_row.append(
                 InlineKeyboardButton(
                     text=self.texts.blacklist_prev_page_button,
-                    callback_data=f"bl_page:{page-1}",
+                    callback_data=f"bl_page:{page - 1}",
                 )
             )
 
@@ -577,7 +567,6 @@ class GraceHubWorker:
             buttons.insert(0, nav_row)
 
         return InlineKeyboardMarkup(inline_keyboard=buttons)
-
 
     async def render_blacklist_page(
         self,
@@ -621,14 +610,14 @@ class GraceHubWorker:
             nav_row.append(
                 InlineKeyboardButton(
                     text=self.texts.blacklist_prev_page_button,
-                    callback_data=f"bl_page:{page-1}",
+                    callback_data=f"bl_page:{page - 1}",
                 )
             )
         if end < total:
             nav_row.append(
                 InlineKeyboardButton(
                     text=self.texts.blacklist_next_page_button,
-                    callback_data=f"bl_page:{page+1}",
+                    callback_data=f"bl_page:{page + 1}",
                 )
             )
 
@@ -656,8 +645,6 @@ class GraceHubWorker:
         kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
         await cb.message.edit_text(text, reply_markup=kb)
 
-
-
     async def is_user_blacklisted(self, user_id: int) -> bool:
         row = await self.db.fetchone(
             """
@@ -669,7 +656,6 @@ class GraceHubWorker:
             (self.instance_id, user_id),
         )
         return row is not None
-
 
     async def add_to_blacklist(self, user_id: int, username: str) -> None:
         now = datetime.now(timezone.utc)
@@ -709,10 +695,7 @@ class GraceHubWorker:
                 (now, self.instance_id, user_id),
             )
         except Exception as e:
-            logger.error(
-                f"Failed to mark tickets as spam for blacklisted user {user_id}: {e}"
-            )
-
+            logger.error(f"Failed to mark tickets as spam for blacklisted user {user_id}: {e}")
 
     async def remove_from_blacklist(self, user_id: int) -> None:
         if not self.db:
@@ -724,7 +707,6 @@ class GraceHubWorker:
             """,
             (self.instance_id, user_id),
         )
-
 
     async def get_blacklist(self) -> List[Dict[str, Any]]:
         if not self.db:
@@ -750,7 +732,6 @@ class GraceHubWorker:
                 }
             )
         return result
-
 
     async def _send_safe_message(
         self,
@@ -966,7 +947,6 @@ class GraceHubWorker:
             (self.instance_id, chat_id, message_id, target_user_id, now),
         )
 
-
     async def get_target_user_by_admin_message(
         self,
         chat_id: int,
@@ -981,7 +961,6 @@ class GraceHubWorker:
             (self.instance_id, chat_id, admin_message_id),
         )
         return int(row["target_user_id"]) if row else None
-
 
     # ====================== ТИКЕТЫ / OPENCHAT ======================
 
@@ -1001,12 +980,11 @@ class GraceHubWorker:
             return f"{emoji} #{ticket.get('id')} {user_label} • {assignee}"
         return f"{emoji} #{ticket.get('id')} {user_label}"
 
-
     async def update_ticket_topic_title(self, ticket: Dict[str, Any]) -> None:
         """
         Обновляет название форумной темы по данным тикета.
         """
-        thread_id = ticket.get("thread_id")   # было "threadid"
+        thread_id = ticket.get("thread_id")  # было "threadid"
         chat_id = ticket.get("chat_id")
         if not thread_id or not chat_id:
             return
@@ -1024,8 +1002,6 @@ class GraceHubWorker:
                 e,
             )
 
-
-
     async def fetch_ticket(self, ticket_id: int) -> Optional[Dict[str, Any]]:
         row = await self.db.fetchone(
             """
@@ -1036,7 +1012,6 @@ class GraceHubWorker:
             (self.instance_id, ticket_id),
         )
         return dict(row) if row else None
-
 
     async def set_ticket_status(
         self,
@@ -1252,7 +1227,6 @@ class GraceHubWorker:
                 e,
             )
 
-            
     def _build_full_ticket_keyboard(
         self,
         ticket_id: int,
@@ -1327,7 +1301,6 @@ class GraceHubWorker:
 
         return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-
     async def fetch_ticket_by_chat(
         self,
         chat_id: int,
@@ -1364,7 +1337,6 @@ class GraceHubWorker:
 
         # row уже DictCursor, можно просто dict(row)
         return dict(row)
-
 
     async def ensure_ticket_for_user(
         self,
@@ -1461,7 +1433,6 @@ class GraceHubWorker:
 
         return ticket
 
-
     # ====================== НОВАЯ ЛОГИКА: КЛАВА ТОЛЬКО НА ПОСЛЕДНЕМ ======================
 
     async def store_forwarded_message(self, chat_id: int, message: Message, user_id: int) -> None:
@@ -1479,11 +1450,17 @@ class GraceHubWorker:
                 )
                 VALUES ($1, $2, $3, $4, $5, $6)
                 """,
-                (self.instance_id, chat_id, message.message_id, user_id, "user_to_openchat", text_content),
+                (
+                    self.instance_id,
+                    chat_id,
+                    message.message_id,
+                    user_id,
+                    "user_to_openchat",
+                    text_content,
+                ),
             )
         except Exception as e:
             logger.error(f"Failed to insert message into messages table: {e}")
-
 
     async def forward_to_openchat(self, message: Message) -> None:
         """
@@ -1694,9 +1671,11 @@ class GraceHubWorker:
                     )
                     return
 
-            elif "message thread not found" in err_text or "message thread not found" in getattr(
-                getattr(e, "message", ""), "lower", lambda: ""
-            )():
+            elif (
+                "message thread not found" in err_text
+                or "message thread not found"
+                in getattr(getattr(e, "message", ""), "lower", lambda: "")()
+            ):
                 # Топик удалён — создаём новый и обновляем тикет
                 try:
                     ft = await self.bot.create_forum_topic(
@@ -1790,8 +1769,6 @@ class GraceHubWorker:
         except Exception as e:
             logger.error(f"Failed to update ticket timestamps: {e}")
 
-
-
     # ====================== КОМАНДЫ ======================
 
     async def cmd_start(self, message: Message, state: FSMContext) -> None:
@@ -1810,10 +1787,8 @@ class GraceHubWorker:
         oc = await self.get_openchat_settings()
         if oc["enabled"] and oc["chat_id"]:
             status_line_admin = self.texts.openchat_status_line_on
-            status_line_user = self.texts.openchat_status_line_on
         else:
             status_line_admin = self.texts.openchat_status_line_off
-            status_line_user = self.texts.openchat_status_line_off
 
         # Ветка для админа
         if await self.is_admin(user_id):
@@ -1827,9 +1802,7 @@ class GraceHubWorker:
                     text=(
                         f"{status_line_admin}\n"
                         f"{self.texts.menu_you_are_admin}\n\n"
-                        + self.texts.openchat_setup_hint.format(
-                            bot_username=bot_username
-                        )
+                        + self.texts.openchat_setup_hint.format(bot_username=bot_username)
                     ),
                 )
             else:
@@ -1882,7 +1855,6 @@ class GraceHubWorker:
             reply_markup=await self.get_admin_menu(),
         )
 
-
     async def cmd_openchat_off(self, message: Message, state: FSMContext) -> None:
         """
         Отключение OpenChat из приватного чата.
@@ -1922,7 +1894,9 @@ class GraceHubWorker:
                 ),
             )
         except Exception as e:
-            logger.error(f"Failed to update instance_meta (openchat off) for {self.instance_id}: {e}")
+            logger.error(
+                f"Failed to update instance_meta (openchat off) for {self.instance_id}: {e}"
+            )
 
         await self._send_safe_message(
             chat_id=message.chat.id,
@@ -1969,9 +1943,7 @@ class GraceHubWorker:
         if chat.username:
             await self._send_safe_message(
                 chat_id=message.chat.id,
-                text=self.texts.openchat_has_username.format(
-                    chat_username=chat.username
-                ),
+                text=self.texts.openchat_has_username.format(chat_username=chat.username),
             )
             return
 
@@ -2007,16 +1979,14 @@ class GraceHubWorker:
                       updated_at            = NOW()
                 """,
                 (
-                    self.instance_id,           # или self.instanceid, как у тебя реально называется
+                    self.instance_id,  # или self.instanceid, как у тебя реально называется
                     chat.username or None,
                     chat.id,
                     True,
                 ),
             )
         except Exception as e:
-            logger.error(
-                f"Failed to upsert instance_meta for instance {self.instance_id}: {e}"
-            )
+            logger.error(f"Failed to upsert instance_meta for instance {self.instance_id}: {e}")
 
         await self._send_safe_message(
             chat_id=message.chat.id,
@@ -2204,9 +2174,7 @@ class GraceHubWorker:
                 assigned_user_id=assignee_id,
             )
             await self.put_ticket_keyboard(ticket_id, message.message_id, compact=True)
-            await cb.answer(
-                self.texts.ticket_assigned_to.format(username=target_username)
-            )
+            await cb.answer(self.texts.ticket_assigned_to.format(username=target_username))
             return
 
         # 2b) Отмена назначения
@@ -2292,12 +2260,10 @@ class GraceHubWorker:
 
         elif data == "setup_autoreply":
             await state.set_state(AdminStates.wait_autoreply)
-            enabled = (
-                self.texts.autoreply_state_on.format(
-                    state=self.texts.autoreply_enabled_label
-                    if await self.get_setting("autoreply_enabled") == "True"
-                    else self.texts.autoreply_disabled_label
-                )
+            enabled = self.texts.autoreply_state_on.format(
+                state=self.texts.autoreply_enabled_label
+                if await self.get_setting("autoreply_enabled") == "True"
+                else self.texts.autoreply_disabled_label
             )
             await cb.message.edit_text(
                 enabled,
@@ -2322,9 +2288,7 @@ class GraceHubWorker:
             )
 
             if openchat["chat_id"]:
-                current = self.texts.openchat_current_chat_id.format(
-                    chat_id=openchat["chat_id"]
-                )
+                current = self.texts.openchat_current_chat_id.format(chat_id=openchat["chat_id"])
             else:
                 current = self.texts.openchat_not_bound
 
@@ -2376,14 +2340,8 @@ class GraceHubWorker:
 
         elif data == "toggle_privacy":
             current = await self.is_privacy_enabled()
-            await self.set_setting(
-                "privacy_mode_enabled", "False" if current else "True"
-            )
-            new_state = (
-                self.texts.privacy_state_on
-                if not current
-                else self.texts.privacy_state_off
-            )
+            await self.set_setting("privacy_mode_enabled", "False" if current else "True")
+            new_state = self.texts.privacy_state_on if not current else self.texts.privacy_state_off
             await cb.answer(
                 self.texts.privacy_toggled.format(state=new_state),
                 show_alert=False,
@@ -2417,9 +2375,7 @@ class GraceHubWorker:
         elif data == "setup_rating":
             rating_enabled = (await self.get_setting("rating_enabled")) == "True"
             enabled_text = (
-                self.texts.rating_state_on
-                if rating_enabled
-                else self.texts.rating_state_off
+                self.texts.rating_state_on if rating_enabled else self.texts.rating_state_off
             )
             await cb.message.edit_text(
                 self.texts.rating_screen.format(state=enabled_text),
@@ -2455,9 +2411,7 @@ class GraceHubWorker:
 
             rating_enabled = (await self.get_setting("rating_enabled")) == "True"
             enabled_text = (
-                self.texts.rating_state_on
-                if rating_enabled
-                else self.texts.rating_state_off
+                self.texts.rating_state_on if rating_enabled else self.texts.rating_state_off
             )
             await cb.message.edit_text(
                 self.texts.rating_screen.format(state=enabled_text),
@@ -2562,8 +2516,8 @@ class GraceHubWorker:
                 await cb.message.answer(self.texts.export_no_users)
                 return
 
-            import io
             import csv
+            import io
             from datetime import datetime as _dt
 
             buf = io.StringIO()
@@ -2644,11 +2598,7 @@ class GraceHubWorker:
         query = message.text.strip().lstrip("@").lower()
 
         bl = await self.get_blacklist()
-        results = [
-            u
-            for u in bl
-            if (u["username"] or "").lower().find(query) != -1
-        ]
+        results = [u for u in bl if (u["username"] or "").lower().find(query) != -1]
 
         if not results:
             await self._send_safe_message(
@@ -2662,10 +2612,7 @@ class GraceHubWorker:
             label = f"@{u['username']}" if u["username"] else ""
             lines.append(f"<code>{u['user_id']}</code> {label}")
 
-        text = (
-            f"🔍 Результаты поиска по \"{query}\":\n"
-            + "\n".join(lines)
-        )
+        text = f'🔍 Результаты поиска по "{query}":\n' + "\n".join(lines)
         if len(results) > 50:
             text += f"\n\nПоказаны первые 50 из {len(results)} записей."
 
@@ -2675,7 +2622,6 @@ class GraceHubWorker:
             text=text,
             reply_markup=self.get_blacklist_menu(),
         )
-
 
     async def handle_admin_greeting(self, message: Message, state: FSMContext) -> None:
         if not await self.is_admin(message.from_user.id):
@@ -2788,7 +2734,7 @@ class GraceHubWorker:
                 await self._send_safe_message(
                     chat_id=message.chat.id,
                     text=f"Не удалось найти пользователя с username @{username} "
-                         f"среди тикетов. Укажи numeric ID или верный username.",
+                    f"среди тикетов. Укажи numeric ID или верный username.",
                 )
                 return
             user_id = row["user_id"]
@@ -2801,7 +2747,6 @@ class GraceHubWorker:
             text=f"✅ Пользователь <code>{user_id}</code> добавлен в чёрный список.",
             reply_markup=self.get_blacklist_menu(),
         )
-
 
     async def handle_admin_blacklist_remove(self, message: Message, state: FSMContext) -> None:
         if not await self.is_admin(message.from_user.id):
@@ -3005,10 +2950,7 @@ class GraceHubWorker:
             )
             await self._send_safe_message(
                 chat_id=message.chat.id,
-                text=(
-                    "❌ Вложение слишком большое.\n"
-                    "Пожалуйста, отправьте файл меньшего размера."
-                ),
+                text=("❌ Вложение слишком большое.\nПожалуйста, отправьте файл меньшего размера."),
             )
             return
         # ---------------------------------------------------------
@@ -3035,7 +2977,6 @@ class GraceHubWorker:
             chat_id=message.chat.id,
             text=self.texts.support_not_configured,
         )
-
 
     # ====================== OPENCHAT: СОБЩЕНИЯ И РЕПЛАИ ======================
     async def handle_openchat_message(self, message: Message) -> None:
@@ -3173,7 +3114,9 @@ class GraceHubWorker:
                         ),
                     )
                 except Exception as e:
-                    logger.error("Failed to notify user %s about big attachment: %s", target_user_id, e)
+                    logger.error(
+                        "Failed to notify user %s about big attachment: %s", target_user_id, e
+                    )
 
             # 3) (Опционально) сообщаем в топик, чтобы оператор видел причину
             try:
@@ -3189,7 +3132,6 @@ class GraceHubWorker:
         # ------------------------------------------------------------------------------------------
 
         await self.handle_openchat_reply(message, message.reply_to_message, oc)
-
 
     async def handle_openchat_reply(
         self, message: Message, reply_msg: Message, oc: Dict[str, Any]
@@ -3265,22 +3207,16 @@ class GraceHubWorker:
                     text=f"[{message.content_type}]",
                 )
         except Exception as e:
-            logger.error(
-                f"Failed to send OpenChat reply to user {target_user_id}: {e}"
-            )
+            logger.error(f"Failed to send OpenChat reply to user {target_user_id}: {e}")
             return
 
         # Обновляем тайминги/статус тикета
         try:
             now = datetime.now(timezone.utc)
 
-            ticket = await self.fetch_ticket_by_chat(
-                oc["chat_id"], "", target_user_id
-            )
+            ticket = await self.fetch_ticket_by_chat(oc["chat_id"], "", target_user_id)
             if not ticket:
-                ticket = await self.ensure_ticket_for_user(
-                    oc["chat_id"], target_user_id, ""
-                )
+                ticket = await self.ensure_ticket_for_user(oc["chat_id"], target_user_id, "")
 
             # Обновляем временные метки ответа админа
             await self.db.execute(
@@ -3298,7 +3234,6 @@ class GraceHubWorker:
             await self.set_ticket_status(ticket["id"], "answered")
         except Exception as e:
             logger.error(f"Failed to update ticket after admin reply: {e}")
-
 
     # ====================== РЕГИСТРАЦИЯ ХЭНДЛЕРОВ ======================
     def register_handlers(self) -> None:
@@ -3411,14 +3346,23 @@ class GraceHubWorker:
         """
         logger.info(f"Worker {self.instance_id} received update id={update.update_id}")
         if update.message:
-            logger.info(f"Message from user {update.message.from_user.id} ({update.message.from_user.username or 'no username'}): {update.message.text or '[non-text message]'}")
+            logger.info(
+                f"Message from user {update.message.from_user.id} ({update.message.from_user.username or 'no username'}): {update.message.text or '[non-text message]'}"
+            )
         elif update.callback_query:
-            logger.info(f"Callback query from user {update.callback_query.from_user.id}: data={update.callback_query.data}")
+            logger.info(
+                f"Callback query from user {update.callback_query.from_user.id}: data={update.callback_query.data}"
+            )
         else:
             logger.info(f"Other update type: {update}")
 
         try:
             await self.dp.feed_update(self.bot, update)
-            logger.info(f"Update {update.update_id} successfully fed to dispatcher for instance {self.instance_id}")
+            logger.info(
+                f"Update {update.update_id} successfully fed to dispatcher for instance {self.instance_id}"
+            )
         except Exception as e:
-            logger.error(f"Error feeding update {update.update_id} to dispatcher for instance {self.instance_id}: {e}", exc_info=True)
+            logger.error(
+                f"Error feeding update {update.update_id} to dispatcher for instance {self.instance_id}: {e}",
+                exc_info=True,
+            )

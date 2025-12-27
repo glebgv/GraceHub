@@ -1,6 +1,5 @@
 # src/languages/zh.py
 
-from dataclasses import dataclass
 from .base import Texts
 
 TEXTS_ZH = Texts(
@@ -18,7 +17,6 @@ TEXTS_ZH = Texts(
     support_not_configured="❌ 支持未配置。请联系管理员。",
     message_forwarded_to_support="✅ 您的消息已转发给支持团队。",
     you_are_blocked="❌ 您已被屏蔽，无法使用此机器人。",
-
     admin_panel_title="<b>🛠 管理员面板</b>",
     admin_panel_choose_section="选择一个部分：",
     menu_greeting="✏️ 欢迎语",
@@ -27,14 +25,10 @@ TEXTS_ZH = Texts(
     menu_blacklist="🚫 黑名单",
     menu_privacy="🛡 隐私模式",
     menu_language="🌐 语言",
-    greeting_edit_prompt=(
-        "✏️ 发送新的欢迎语文本。\n"
-        "要删除欢迎语，请发送 /clear_greeting"
-    ),
+    greeting_edit_prompt=("✏️ 发送新的欢迎语文本。\n要删除欢迎语，请发送 /clear_greeting"),
     greeting_cleared="✅ 欢迎语已删除。",
     greeting_need_text="需要发送包含欢迎语的文本消息。",
     greeting_saved="✅ 新欢迎语已保存。",
-
     openchat_setup_hint=(
         "💬 要使用此机器人，请配置 OpenChat：\n"
         "1) 创建一个没有 @username 的私有超级群组\n"
@@ -47,13 +41,10 @@ TEXTS_ZH = Texts(
     openchat_off_confirm="✅ OpenChat 已禁用。",
     openchat_bind_only_owner="❌ 只有机器人所有者可以绑定 OpenChat。",
     openchat_bind_usage_error=(
-        "❌ 命令格式必须为：\n"
-        "/bind @{bot_username}\n\n"
-        "指定的机器人与当前机器人不匹配。"
+        "❌ 命令格式必须为：\n/bind @{bot_username}\n\n指定的机器人与当前机器人不匹配。"
     ),
     openchat_not_supergroup=(
-        "❌ 此聊天不是超级群组。\n\n"
-        "在聊天设置中将其转换为超级群组，然后再次调用 /bind。"
+        "❌ 此聊天不是超级群组。\n\n在聊天设置中将其转换为超级群组，然后再次调用 /bind。"
     ),
     openchat_has_username=(
         "❌ 此聊天有公开的 @username（@{chat_username}）。\n\n"
@@ -96,27 +87,20 @@ TEXTS_ZH = Texts(
     ticket_closed="工单已关闭",
     ticket_reopened="工单已重新打开",
     ticket_not_found="未找到工单",
-
     ticket_closed_rating_request="您的请求已关闭。请对专家进行评分：",
     rating_topic_message="用户评分：{emoji}",
     rating_thanks_edit="感谢您的评分！我们很乐意为您服务！",
     rating_thanks_alert="感谢您的评分！",
-
     back="◀️ 返回",
     cancel="取消",
-
     # Auto-reply: status labels
     autoreply_enabled_label="已启用",
     autoreply_disabled_label="已禁用",
-    autoreply_state_on=(
-        "🔄 自动回复当前<b>{state}</b>\n\n"
-        "发送自动回复文本或 /autoreply_off 禁用"
-    ),
+    autoreply_state_on=("🔄 自动回复当前<b>{state}</b>\n\n发送自动回复文本或 /autoreply_off 禁用"),
     autoreply_off_cmd_hint="/autoreply_off",
     autoreply_turned_off="✅ 自动回复已禁用。",
     autoreply_need_text="发送自动回复文本或 /autoreply_off。",
     autoreply_saved_enabled="✅ 自动回复已保存并启用。",
-
     # OpenChat: statuses and labels for menu
     openchat_status_on="已启用",
     openchat_status_off="已禁用",
@@ -126,7 +110,6 @@ TEXTS_ZH = Texts(
     openchat_status_line_off="🔗 状态：🔴关闭 – 在启用话题的超级群组中检查绑定！",
     openchat_setup_button="⚙️ 配置 OpenChat",
     menu_you_are_admin="🕹 您是管理员",
-
     # Privacy Mode: statuses and buttons
     privacy_state_on="已启用",
     privacy_state_off="已禁用",
@@ -137,11 +120,9 @@ TEXTS_ZH = Texts(
         "无法完全防止截屏。"
     ),
     privacy_toggled="隐私模式 {state}",
-
     # Blacklist: search
     blacklist_search_prompt=(
-        "🔍 发送用户名的一部分来在黑名单中搜索。\n"
-        "示例：<code>alex</code> 或 <code>@alex</code>"
+        "🔍 发送用户名的一部分来在黑名单中搜索。\n示例：<code>alex</code> 或 <code>@alex</code>"
     ),
     blacklist_title="<b>🚫 黑名单</b>\n\n选择操作。",
     blacklist_btn_add="➕ 添加",
@@ -163,9 +144,7 @@ TEXTS_ZH = Texts(
     blacklist_remove_bad_format="格式无效。请提供数字用户 ID。",
     blacklist_user_not_found="用户 <code>{user_id}</code> 在黑名单中未找到。",
     blacklist_user_removed="✅ 用户 <code>{user_id}</code> 已从黑名单中删除。",
-    blacklist_remove_prompt=(
-        "✏️ 发送要从黑名单中移除的用户 ID。"
-    ),
+    blacklist_remove_prompt=("✏️ 发送要从黑名单中移除的用户 ID。"),
     blacklist_choose_action="请选择操作。",
     blacklist_add_prompt=(
         "✏️ 发送要加入黑名单的用户 ID。\n"
@@ -177,7 +156,6 @@ TEXTS_ZH = Texts(
     export_preparing="正在准备导出…",
     export_no_users="暂无用户可导出。",
     export_users_caption="用户导出 (CSV)。",
-
     master_title="🤖 <b>GraceHub 平台 - 主控机器人</b>",
     master_start_howto_title="<b>如何开始：</b>",
     master_start_cmd_add_bot="/add_bot - 添加新机器人",
@@ -200,10 +178,7 @@ TEXTS_ZH = Texts(
         "此界面仅用于添加和管理你的客服机器人。"
     ),
     master_unknown_command="未知命令",
-    master_list_bots_empty=(
-        "你还没有任何机器人。\n\n"
-        "使用 /add_bot 来添加你的第一个机器人。"
-    ),
+    master_list_bots_empty=("你还没有任何机器人。\n\n使用 /add_bot 来添加你的第一个机器人。"),
     master_list_bots_title="🤖 <b>你的机器人：</b>",
     master_list_bots_status_label="状态",
     master_list_bots_add_button="➕ 添加机器人",
@@ -249,7 +224,6 @@ TEXTS_ZH = Texts(
         "⚠️ 这个机器人尚未配置有效的客服套餐，因此暂时无法接受新的请求。"
         "请尝试通过其他渠道联系机器人的拥有者。"
     ),
-
     # 给拥有者/运营人员的提示（发送到 General 主题）
     billing_owner_limit_reached_message=(
         "⚠️ 您当前套餐的工单数量已用尽。"
@@ -269,32 +243,21 @@ TEXTS_ZH = Texts(
     master_owner_only="主控机器人仅对所有者可用。",
     billing_owner_only="仅限拥有者访问",
     billing_plan_unavailable="该套餐不可用",
-    billing_need_instance_first=(
-        "请先添加至少一个机器人，然后再购买套餐。"
-    ),
+    billing_need_instance_first=("请先添加至少一个机器人，然后再购买套餐。"),
     billing_invoice_create_error="无法创建 Stars 账单",
-
     billing_confirm_title="账户套餐：<b>{plan_name}</b>",
     billing_confirm_periods="周期数：{periods}",
     billing_confirm_total="应付总额：<b>{total_amount} ⭐</b>",
-    billing_confirm_pay_hint=(
-        "点击下方按钮，通过 Telegram Stars 完成支付。"
-    ),
-    billing_confirm_after_pay=(
-        "支付成功后，您的账户功能使用期限将延长。"
-    ),
-
+    billing_confirm_pay_hint=("点击下方按钮，通过 Telegram Stars 完成支付。"),
+    billing_confirm_after_pay=("支付成功后，您的账户功能使用期限将延长。"),
     billing_button_pay_stars="💳 使用 Stars 支付",
     billing_button_back_plans="⬅️ 返回套餐列表",
-
     billing_expiring_title="🔔 <b>套餐到期提醒</b>\n\n",
     billing_expiring_body=(
         "实例 @{bot_username} 的计费周期还剩 {days_left} 天到期。\n"
         "请及时续费，以保证机器人持续正常运行。"
     ),
-
     master_remove_owner_only="仅限拥有者访问",
-
     master_remove_not_yours="❌ 该机器人不属于你",
     master_remove_confirm_title="🤖 <b>{bot_name}</b> (@{bot_username})",
     master_remove_confirm_question="你确定要删除这个机器人吗？",
@@ -302,28 +265,22 @@ TEXTS_ZH = Texts(
     master_remove_confirm_yes="✅ 是的，删除",
     master_remove_confirm_cancel="❌ 取消",
     master_menu_billing="💳 套餐与支付",
-    attachment_too_big = "文件太大。请发送一个更小的文件。",
+    attachment_too_big="文件太大。请发送一个更小的文件。",
     too_many_messages="⚠️ 消息发送过于频繁，请稍后再试。",
     billing_plans_title="为你的账户选择套餐：",
     billing_plan_line="• <b>{plan_name}</b>: {price_stars} ⭐ / {period_days} 天，限 {tickets_limit} 工单",
-    menu_rating = "工单关闭评分",
-    rating_state_on = "评分请求：已开启",
-    rating_state_off = "评分请求：已关闭",
-
-    rating_screen = (
-        "{state}\n\n"
-        "开启后，在工单关闭后会向用户发送消息，邀请其对支持质量进行评分。"
-    ),
-
-    rating_toggle_btn = "切换评分请求",
-
-    rating_toggled = "评分请求状态已更新。\n\n{state}",
-    master_current_plan_with_expiry = "当前套餐：{plan_name}（至 {date}），剩余 {days_left} 天。",
-    master_current_plan_no_date = "当前套餐：{plan_name}，剩余 {days_left} 天。",
-    master_current_plan_paused = "套餐 {plan_name} 已暂停（至 {date}）。请续费以继续使用。",
-    billing_unknown_plan_name = "未知套餐",
-    ticket_taken_self = "✅ 工单已分配给你",
-    ticket_no_assignees = "没有可分配的客服",
-    first_message_forwarded = "✅ 消息已转发至客服，很快回复！",
-    session_flood_message = "⏳ 您的消息已送达，请等待客服回复！",
+    menu_rating="工单关闭评分",
+    rating_state_on="评分请求：已开启",
+    rating_state_off="评分请求：已关闭",
+    rating_screen=("{state}\n\n开启后，在工单关闭后会向用户发送消息，邀请其对支持质量进行评分。"),
+    rating_toggle_btn="切换评分请求",
+    rating_toggled="评分请求状态已更新。\n\n{state}",
+    master_current_plan_with_expiry="当前套餐：{plan_name}（至 {date}），剩余 {days_left} 天。",
+    master_current_plan_no_date="当前套餐：{plan_name}，剩余 {days_left} 天。",
+    master_current_plan_paused="套餐 {plan_name} 已暂停（至 {date}）。请续费以继续使用。",
+    billing_unknown_plan_name="未知套餐",
+    ticket_taken_self="✅ 工单已分配给你",
+    ticket_no_assignees="没有可分配的客服",
+    first_message_forwarded="✅ 消息已转发至客服，很快回复！",
+    session_flood_message="⏳ 您的消息已送达，请等待客服回复！",
 )

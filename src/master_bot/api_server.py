@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""
-Standalone сервер Mini App API.
-Запускается отдельным процессом на порту 8001.
-"""
-
 import asyncio
 import logging
-import sys
 import os
+import sys
 from pathlib import Path
 
+import uvicorn
 from dotenv import load_dotenv
+
+from master_bot.main import MasterBot
+from master_bot.miniapp_api import create_miniapp_app
+from shared.database import MasterDatabase, get_master_dsn
 
 # Сначала читаем ENV, чтобы в CI не грузить .env вообще
 ENV = (os.getenv("ENV") or "").lower()
@@ -29,12 +29,6 @@ else:
 PROJECT_ROOT = Path(__file__).resolve().parents[2]  # /root/gracehub
 SRC_DIR = PROJECT_ROOT / "src"
 sys.path.insert(0, str(SRC_DIR))
-
-import uvicorn
-
-from shared.database import MasterDatabase, get_master_dsn
-from master_bot.main import MasterBot
-from master_bot.miniapp_api import create_miniapp_app
 
 logging.basicConfig(
     level=logging.INFO,

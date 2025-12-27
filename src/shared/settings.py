@@ -3,7 +3,6 @@ import os
 from pathlib import Path
 from urllib.parse import quote
 
-
 BASE_DIR = Path(os.getenv("APP_BASE_DIR", "/app"))
 DATA_DIR = Path(os.getenv("DATA_DIR", str(BASE_DIR / "data")))
 LOGS_DIR = Path(os.getenv("LOGS_DIR", str(BASE_DIR / "logs")))
@@ -17,13 +16,15 @@ DB_PORT = int(os.getenv("DB_PORT", "5432"))
 DB_NAME = os.getenv("DB_NAME", "gracehub")
 
 # Автоматическое URL-кодирование пароля для безопасности
-_db_password_encoded = quote(DB_PASSWORD, safe='')
+_db_password_encoded = quote(DB_PASSWORD, safe="")
 
 # Полная DATABASE_URL (используется MasterDatabase)
 DATABASE_URL = f"postgresql://{DB_USER}:{_db_password_encoded}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
 # Альтернатива: асинхронный драйвер для FastAPI (если понадобится)
-DATABASE_URL_ASYNC = f"postgresql+asyncpg://{DB_USER}:{_db_password_encoded}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+DATABASE_URL_ASYNC = (
+    f"postgresql+asyncpg://{DB_USER}:{_db_password_encoded}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+)
 
 
 # === КЛЮЧИ ===
