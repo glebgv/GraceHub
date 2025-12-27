@@ -41,6 +41,10 @@ jobs:
           pip install -r requirements.txt
           pip install schemathesis
 
+      # Минимальная правка: чтобы импорт "master_bot" работал при src-layout
+      - name: Set PYTHONPATH
+        run: echo "PYTHONPATH=${{ github.workspace }}/src" >> $GITHUB_ENV
+
       - name: Start API (background)
         env:
           ENV: ci
@@ -53,7 +57,7 @@ jobs:
           WEBHOOK_DOMAIN: ci.local
         run: |
           mkdir -p .ci
-          nohup python src/master_bot/api_server.py > api.log 2>&1 &
+          nohup python -m master_bot.api_server > api.log 2>&1 &
           echo $! > api.pid
           echo "API PID=$(cat api.pid)"
 
