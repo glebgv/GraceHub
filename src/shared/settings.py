@@ -60,34 +60,12 @@ MAX_INSTANCES_PER_USER = int(os.getenv("MAX_INSTANCES_PER_USER", "5"))
 WORKER_MONITOR_INTERVAL = int(os.getenv("WORKER_MONITOR_INTERVAL", "600"))
 BILLING_CRON_INTERVAL = int(os.getenv("BILLING_CRON_INTERVAL", "3600"))
 
-
-WORKER_MAX_FILE_MB: int = int(os.getenv("WORKER_MAX_FILE_MB", 50))
-
-#STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")  # sk_test_...
-#STRIPE_PUBLISHABLE_KEY = os.getenv("STRIPE_PUBLISHABLE_KEY", "")  # pk_test_...
-#STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")  # whsec_... (для валидации сигнатур)
-#STRIPE_CURRENCY = os.getenv("STRIPE_CURRENCY", "usd")  # или "rub"
-
-
-ANTIFLOOD_MAX_USER_MESSAGES_PER_MINUTE = int(os.getenv("ANTIFLOOD_MAX_USER_MESSAGES_PER_MINUTE", "30"))
-
 # === ADMIN / ROLES ===
-# Пример env: GRACEHUB_SUPERADMIN_TELEGRAM_IDS="123456789,987654321"
-_SUPERADMIN_RAW = os.getenv("GRACEHUB_SUPERADMIN_TELEGRAM_IDS", "").strip()
+_SUPERADMIN_RAW = os.getenv("GRACEHUB_SUPERADMIN_TELEGRAM_ID", "").strip()
 
-def _parse_int_list_csv(value: str) -> list[int]:
-    if not value:
-        return []
-    out: list[int] = []
-    for part in value.split(","):
-        part = part.strip()
-        if not part:
-            continue
-        try:
-            out.append(int(part))
-        except ValueError:
-            # игнорируем мусор типа "abc"
-            continue
-    return out
+GRACEHUB_SUPERADMIN_TELEGRAM_ID: int | None = None
 
-SUPERADMIN_TELEGRAM_IDS: list[int] = _parse_int_list_csv(_SUPERADMIN_RAW)
+if _SUPERADMIN_RAW.isdigit():
+    _n = int(_SUPERADMIN_RAW)
+    if _n > 0:
+        GRACEHUB_SUPERADMIN_TELEGRAM_ID = _n

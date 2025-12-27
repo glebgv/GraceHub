@@ -94,6 +94,7 @@ class MasterDatabase:
 
         await self.create_tables()
         await self.ensure_default_platform_settings()
+        await self.ensure_env_superadmin_in_db()
         logger.info(f"Master database (Postgres) initialized: {self.dsn}")
 
     async def count_instances_for_user(self, userid: int) -> int:
@@ -1522,6 +1523,35 @@ class MasterDatabase:
         )
 
     
+    async def ensure_env_superadmin_in_db(self) -> None:
+        env_id = getattr(settings, "GRACEHUB_SUPERADMIN_TELEGRAM_ID", None)
+        if not isinstance(env_id, int) or env_id <= 0:
+            return
+
+        current = await self.get_platform_setting("miniapp_public", default={})
+        if not isinstance(current, dict):
+            current = {}
+
+        raw_ids = current.get("superadmins", [])
+        if not isinstance(raw_ids, list):
+            raw_ids = []
+
+        out: list[int] = []
+        for x in raw_ids:
+            try:
+                n = int(x)
+                if n > 0:
+                    out.append(n)
+            except Exception:
+                continue
+
+        if env_id not in out:
+            out.append(env_id)
+
+        current["superadmins"] = sorted(list(dict.fromkeys(out)))
+
+        await self.set_platform_setting("miniapp_public", current)
+
 
     # === Thin async wrappers for miniapp_api and worker ===
 

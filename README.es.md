@@ -174,17 +174,6 @@ El inicio incluye tres procesos:
 - servidor API REST
 - aplicación frontend
 
-### Ejecución para Uso Personal
-
-Si desea ejecutar el proyecto para usted y su equipo y restringir el acceso externo, especifique 2 parámetros en `.env`:
-
-```bash
-export GRACEHUB_SINGLE_TENANT_OWNER_ONLY=1
-export GRACEHUB_OWNER_TELEGRAM_ID=YOUR_ID
-```
-
-Reemplace `YOUR_ID` con su ID de Telegram.
-
 ## 🔧 Implementación en Producción mediante systemd
 
 ### Configuración Inicial e Implementación

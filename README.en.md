@@ -173,17 +173,6 @@ The startup includes three processes:
 - REST API server
 - frontend application
 
-### Running for Personal Use
-
-If you want to run the project for yourself and your team and restrict external access, specify 2 parameters in `.env`:
-
-```bash
-export GRACEHUB_SINGLE_TENANT_OWNER_ONLY=1
-export GRACEHUB_OWNER_TELEGRAM_ID=YOUR_ID
-```
-
-Replace `YOUR_ID` with your Telegram ID.
-
 ## 🔧 Production Deployment via systemd
 
 ### Initial Setup and Deployment

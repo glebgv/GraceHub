@@ -1242,16 +1242,10 @@ async def lifespan(app: FastAPI):
     yield
     logger.info("Mini App API завершает работу")
 
-def get_global_roles_for_user(user_id: int) -> list[str]:
-    ids = getattr(settings, "SUPERADMIN_TELEGRAM_IDS", None)
-    if not ids:
-        return []
-    # ids может быть list[int] или строка "1,2,3" — приведи к list[int]
-    if isinstance(ids, str):
-        ids_list = [int(x.strip()) for x in ids.split(",") if x.strip().isdigit()]
-    else:
-        ids_list = [int(x) for x in ids]
-    return ["superadmin"] if user_id in ids_list else []
+async def get_global_roles_for_user(user_id: int) -> list[str]:
+    superadmins = await _parse_superadmin_ids()
+    return ["superadmin"] if int(user_id) in superadmins else []
+
 
 async def get_current_user(
     authorization: Optional[str] = Header(None),
@@ -1263,16 +1257,20 @@ async def get_current_user(
     try:
         session = session_manager.validate_session(token)
 
-        # совместимость ключей
-        user_id = session.get("user_id") or session.get("userid")
+        # нормализуем user_id -> int
+        raw_user_id = session.get("user_id") or session.get("userid") or session.get("userId")
+        user_id = int(raw_user_id or 0)
+
+        # оставляем совместимость ключей (как у тебя по проекту)
+        session["userid"] = user_id
         session["user_id"] = user_id
 
-        # роли через нормализатор (поддерживает и "1,2,3", и list[int])
-        session["roles"] = get_global_roles_for_user(user_id) if user_id else []
-
+        session["roles"] = await get_global_roles_for_user(user_id) if user_id else []
         return session
+
     except ValueError as e:
         raise HTTPException(status_code=401, detail=str(e))
+
 
 async def get_single_tenant_config(db) -> SingleTenantConfig:
     # ожидаем, что вся публичная конфигурация miniapp лежит в одном ключе
@@ -2733,7 +2731,7 @@ def create_miniapp_app(
                 len(superadmins),
             )
         except Exception:
-            logger.exception("auth_telegram: failed to evaluate GRACEHUB_SUPERADMIN_TELEGRAM_IDS")
+            logger.exception("auth_telegram: failed to evaluate GRACEHUB_SUPERADMIN_TELEGRAM_ID")
 
         # ------------------------------------------------------------------
         # single-tenant mode (from DB: platform_settings.single_tenant)
