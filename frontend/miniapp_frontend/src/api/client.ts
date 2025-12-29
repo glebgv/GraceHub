@@ -68,8 +68,7 @@ export interface SaasPlanDTO {
 
 // --- Billing invoices ---
 
-// NB: backend принимает paymentmethod значения: telegramstars/ton/yookassa/stripe.
-export type PaymentMethod = 'telegramstars' | 'ton' | 'yookassa' | 'stripe';
+export type PaymentMethod = 'telegram_stars' | 'ton' | 'yookassa' | 'stripe';
 
 // NB: оставляем твой текущий контракт snake_case, чтобы не перепахивать Billing.tsx.
 export interface CreateInvoiceRequest {

@@ -1888,14 +1888,24 @@ class MasterBot:
         if not instance_id:
             return web.Response(status=400, text="Invalid webhook path")
 
-        # 2) Ensure instance exists in memory (routing)
+        signature = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+
+        # 2) Ensure instance exists (prefer memory, fallback to DB)
         instance = self.instances.get(instance_id)
         if not instance:
-            logger.warning("Webhook: instance not found in memory: %s", instance_id)
-            return web.Response(status=404, text="Instance not found")
+            try:
+                instance = await self.db.get_instance(instance_id)
+            except Exception:
+                logger.exception("Webhook: failed to load instance from DB: %s", instance_id)
+                instance = None
 
-        # 3) Verify secret token (if configured)
-        signature = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+            if not instance:
+                logger.warning("Webhook: instance not found (memory+db): %s", instance_id)
+                return web.Response(status=404, text="Instance not found")
+
+            self.instances[instance_id] = instance
+            logger.info("Webhook: loaded instance into memory: %s", instance_id)
+
         expected = instance.webhook_secret or ""
 
         # Debug logs without leaking secrets
@@ -1907,11 +1917,46 @@ class MasterBot:
             signature[:6] if signature else "",
         )
 
-        # If you set secret_token in setWebhook, Telegram will include the header.
-        # Treat mismatch as forbidden.
+        # 3) Verify secret token (self-heal once on mismatch)
         if expected and signature != expected:
-            logger.warning("Webhook: secret mismatch for instance_id=%s", instance_id)
-            return web.Response(status=403, text="Invalid secret token")
+            logger.warning(
+                "Webhook: secret mismatch for instance_id=%s (self-heal attempt)", instance_id
+            )
+
+            token = None
+            try:
+                token = await self.db.get_decrypted_token(instance_id)
+            except Exception:
+                logger.exception(
+                    "Webhook: failed to load token from DB for instance_id=%s", instance_id
+                )
+
+            if not token:
+                return web.Response(status=403, text="Invalid secret token")
+
+            # Попытка починки: переустанавливаем webhook (idempotent) и перечитываем instance
+            try:
+                await self.setup_worker_webhook(instance_id, token, force_new_secret=True)
+
+                refreshed = await self.db.get_instance(instance_id)
+                if refreshed:
+                    self.instances[instance_id] = refreshed
+                    instance = refreshed
+
+                expected2 = instance.webhook_secret or ""
+                if expected2 and signature == expected2:
+                    logger.info("Webhook: secret healed for instance_id=%s", instance_id)
+                else:
+                    logger.warning(
+                        "Webhook: secret still mismatched after heal for instance_id=%s",
+                        instance_id,
+                    )
+                    return web.Response(status=403, text="Invalid secret token")
+            except Exception:
+                logger.exception(
+                    "Webhook: failed to self-heal webhook secret for instance_id=%s", instance_id
+                )
+                return web.Response(status=403, text="Invalid secret token")
 
         # 4) Read and parse update payload
         try:
@@ -1926,12 +1971,32 @@ class MasterBot:
             logger.warning("Webhook: invalid JSON (instance_id=%s)", instance_id)
             return web.Response(status=400, text="Invalid JSON")
 
-        # 5) Dispatch to worker
+        # 5) Ensure worker exists (restore from DB if missing)
         worker = self.workers.get(instance_id)
         if not worker:
-            logger.warning("Webhook: no worker for instance_id=%s", instance_id)
-            return web.Response(status=404, text="Worker not found")
+            logger.warning("Webhook: no worker for instance_id=%s (restoring)", instance_id)
 
+            token = None
+            try:
+                token = await self.db.get_decrypted_token(instance_id)
+            except Exception:
+                logger.exception(
+                    "Webhook: failed to load token from DB for restore (instance_id=%s)",
+                    instance_id,
+                )
+
+            if not token:
+                return web.Response(status=404, text="Worker not found")
+
+            try:
+                worker = GraceHubWorker(instance_id, token, self.db)
+                self.workers[instance_id] = worker
+                logger.info("Webhook: restored worker in memory for instance_id=%s", instance_id)
+            except Exception:
+                logger.exception("Webhook: failed to create worker (instance_id=%s)", instance_id)
+                return web.Response(status=500, text="Internal error")
+
+        # 6) Dispatch to worker
         try:
             update = Update(**update_data)
             await worker.process_update(update)
@@ -2113,38 +2178,58 @@ class MasterBot:
             if not token:
                 continue
 
-            # Создаем worker в памяти
+            # 1) Сначала кладем instance в память (чтобы setup_worker_webhook видел webhook_secret)
+            self.instances[instance.instance_id] = instance
+
+            # 2) Создаем worker в памяти
             worker = GraceHubWorker(instance.instance_id, token, self.db)
             self.workers[instance.instance_id] = worker
-
-            # Setup webhook (если не set)
             await self.setup_worker_webhook(instance.instance_id, token)
 
-            self.instances[instance.instance_id] = instance
             logger.info(f"Loaded instance {instance.instance_id} with webhook")
 
-    async def setup_worker_webhook(self, instance_id: str, token: str) -> bool:
+    async def setup_worker_webhook(
+        self,
+        instance_id: str,
+        token: str,
+        force_new_secret: bool = False,
+        force_reset: bool = False,
+    ) -> bool:
         instance = self.instances.get(instance_id)
 
         webhook_path = f"webhook/{instance_id}"
         webhook_url = self.webhook_manager.generate_webhook_url(instance_id)
 
-        webhook_secret = (
-            instance.webhook_secret
-            if instance and instance.webhook_secret
-            else self.security.generate_webhook_secret()
-        )
-        logger.info(
-            f"{'Reusing' if instance and instance.webhook_secret else 'Generated new'} webhook_secret for {instance_id}"
-        )
+        # 0) If not forcing reset, don't touch webhook if URL already correct
+        if not force_reset and not force_new_secret:
+            try:
+                info = await self.webhook_manager.get_webhook_info(token)
+                current_url = (info.get("url") or "").strip()
+                if current_url == webhook_url:
+                    logger.info(f"Webhook already set for {instance_id}, skipping reset")
+                    # опционально: если в памяти пусто, можно подтянуть secret из БД
+                    return True
+            except Exception:
+                logger.exception(f"Failed to getWebhookInfo for {instance_id}, will proceed")
+
+        # 1) Choose secret
+        if force_new_secret or not (instance and instance.webhook_secret):
+            webhook_secret = self.security.generate_webhook_secret()
+            logger.info(
+                f"{'Rotated' if force_new_secret else 'Generated new'} webhook_secret for {instance_id}"
+            )
+        else:
+            webhook_secret = instance.webhook_secret
+            logger.info(f"Reusing webhook_secret for {instance_id}")
 
         bot = Bot(token=token)
         try:
             for attempt in range(1, 4):
-                await self.webhook_manager.remove_webhook(token)
-                logger.info(f"Removed webhook for {instance_id} (attempt {attempt})")
-
-                await asyncio.sleep(1)  # Delay for Telegram processing
+                # 2) Delete webhook only if explicitly requested
+                if force_reset:
+                    await self.webhook_manager.remove_webhook(token)
+                    logger.info(f"Removed webhook for {instance_id} (attempt {attempt})")
+                    await asyncio.sleep(1)
 
                 success, reason = await self.webhook_manager.setup_webhook(
                     token, webhook_url, webhook_secret
@@ -2170,7 +2255,7 @@ class MasterBot:
 
     async def remove_worker_webhook(self, instance_id: str, token: str) -> bool:
         if await self.webhook_manager.remove_webhook(token):
-            await self.db.update_instance_webhook(instance_id, "", "", "")  # Clear in DB
+            await self.db.update_instance_webhook(instance_id, "", "", "")
             instance = self.instances.get(instance_id)
             if instance:
                 instance.webhook_url = ""

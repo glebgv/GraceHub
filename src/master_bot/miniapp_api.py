@@ -4,7 +4,6 @@ Mini App API для управления инстансами ботов.
 Интегрируется с master‑ботом и SQLite базой.
 """
 
-import asyncio
 import base64
 import binascii
 import hashlib
@@ -3673,7 +3672,9 @@ def create_miniapp_app(
     ):
         """
         Создать новый инстанс по токену бота через MasterBot:
-        - MasterBot проверяет токен, создаёт запись в БД, шифрует токен, запускает воркер.
+        - MasterBot проверяет токен, создаёт запись в БД, шифрует токен.
+        - Miniapp создаёт worker в памяти и настраивает webhook для инстанса.
+        - Auto-close тикетов теперь глобальный цикл в MasterBot, поэтому тут НЕ запускается.
         """
         user_id = current_user["user_id"]
         token = req.token
@@ -3688,6 +3689,7 @@ def create_miniapp_app(
             logger.error("create_instance: master_bot is not initialized")
             raise HTTPException(status_code=500, detail="MasterBot не инициализирован")
 
+        # 1) Создаём инстанс в БД через MasterBot (валидация токена + запись в БД)
         try:
             instance = await master_bot.process_bot_token_from_miniapp(
                 token=token,
@@ -3702,28 +3704,27 @@ def create_miniapp_app(
                 detail="Ошибка при добавлении бота через MasterBot",
             )
 
-        # Новая логика: Создать worker в памяти, настроить webhook и запустить task
         try:
             worker = GraceHubWorker(instance.instance_id, token, master_bot.db)
             master_bot.workers[instance.instance_id] = worker
-            master_bot.instances[instance.instance_id] = (
-                instance  # Если не добавлено в process_bot_token_from_miniapp
-            )
+
+            # На всякий случай гарантируем, что instance доступен в master_bot.instances
+            master_bot.instances[instance.instance_id] = instance
 
             if not await master_bot.setup_worker_webhook(instance.instance_id, token):
                 raise ValueError("Failed to setup webhook")
 
-            master_bot.worker_tasks[instance.instance_id] = asyncio.create_task(
-                worker.auto_close_tickets_loop()
-            )
         except Exception as e:
             logger.error(
-                f"Failed to setup worker/webhook for new instance {instance.instance_id}: {e}"
+                "Failed to setup worker/webhook for new instance %s: %s",
+                instance.instance_id,
+                e,
             )
-            # Опционально: rollback создания инстанса, если нужно
+            # rollback: удаляем созданный инстанс из БД
             await master_bot.db.delete_instance(instance.instance_id)
             raise HTTPException(
-                status_code=500, detail="Ошибка при настройке webhook для нового инстанса"
+                status_code=500,
+                detail="Ошибка при настройке webhook для нового инстанса",
             )
 
         logger.info(

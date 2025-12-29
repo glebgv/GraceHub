@@ -1399,31 +1399,48 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
                 <div style={{ fontSize: 16, fontWeight: 600 }}>
                   {(() => {
                     const getDisplayPrice = () => {
-                      if (!paymentMethod || !paymentPrices) return '—';
-                      const planCode = selectedPlan.planCode.toLowerCase(); // e.g., 'lite'
-                      const periods = selectedPeriod.multiplier;
-                      const methodPrices = paymentPrices[paymentMethod]; // e.g., paymentPrices.ton
+                      console.log('[Billing] getDisplayPrice', {
+                        paymentMethod,
+                        paymentPricesKeys: paymentPrices ? Object.keys(paymentPrices) : null,
+                        selectedPlanPriceStars: selectedPlan?.priceStars,
+                        periods: selectedPeriod?.multiplier,
+                      });
+                      if (!paymentMethod) return '—';
 
+                      const planCode = selectedPlan.planCode.toLowerCase();
+                      const periods = selectedPeriod.multiplier;
+
+                      // ✅ Stars: считаем напрямую из плана, не трогаем paymentPrices
+                      if (paymentMethod === 'telegram_stars') {
+                        return `${selectedPlan.priceStars * periods} ⭐`;
+                      }
+
+                      // остальные методы требуют paymentPrices
+                      if (!paymentPrices) return '—';
+
+                      const methodPrices = paymentPrices[paymentMethod];
                       if (!methodPrices) return t('billing.price_after_invoice');
 
-                      // Map planCode to price field (capitalize first letter for Pro/Enterprise)
-                      const priceField = `price${paymentMethod === 'ton' ? 'PerPeriod' : (paymentMethod === 'yookassa' ? 'Rub' : 'Usd')}${planCode.charAt(0).toUpperCase() + planCode.slice(1)}`;
-                      const basePrice = methodPrices[priceField] || 0; // Fallback to 0 if missing
+                      const priceField =
+                        `price${
+                          paymentMethod === 'ton'
+                            ? 'PerPeriod'
+                            : (paymentMethod === 'yookassa' ? 'Rub' : 'Usd')
+                        }${planCode.charAt(0).toUpperCase() + planCode.slice(1)}`;
 
+                      const basePrice = methodPrices[priceField] || 0;
                       const total = basePrice * periods;
-                      let formatted = total.toFixed(2); // Adjust decimals based on method
+                      const formatted = total.toFixed(2);
 
-                      // Currency-specific formatting
                       switch (paymentMethod) {
-                        case 'telegram_stars':
-                          return `${selectedPlan.priceStars * periods} ⭐`; // Existing
                         case 'ton':
                           return `${formatted} TON`;
                         case 'yookassa':
-                          return `${Math.round(total)} RUB`; // RUB usually whole numbers
-                        case 'stripe':
+                          return `${Math.round(total)} RUB`;
+                        case 'stripe': {
                           const currency = methodPrices.currency?.toUpperCase() || 'USD';
                           return `${formatted} ${currency}`;
+                        }
                         default:
                           return '—';
                       }
