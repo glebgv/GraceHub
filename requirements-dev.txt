@@ -18,6 +18,7 @@ psycopg2-binary
 asyncpg
 cachetools
 stripe
+httpx
 # Опционально для тестов
 schemathesis
 ruff

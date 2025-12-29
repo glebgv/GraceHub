@@ -118,7 +118,6 @@ class PlatformInstanceDefaultsCache:
 class GraceHubWorker:
     """
     Отдельный воркер для одного инстанса бота.
-    Работает через polling, хранит своё состояние в отдельной SQLite-БД.
     """
 
     STATUS_EMOJI: Dict[str, str] = {
@@ -3025,7 +3024,7 @@ class GraceHubWorker:
                     self.user_session_messages[user_id] = 0
 
             except Exception as e:
-                logger.error("Failed to forward to OpenChat: %s", e)
+                logger.exception("Failed to forward to OpenChat")
 
             return
 
@@ -3399,7 +3398,6 @@ class GraceHubWorker:
     async def process_update(self, update: Update) -> None:
         """
         Доп. метод, если вдруг захочется кормить воркер апдейтами вручную.
-        В polling-режиме, по сути, не нужен, но оставлен для совместимости.
         """
         logger.info(f"Worker {self.instance_id} received update id={update.update_id}")
         if update.message:

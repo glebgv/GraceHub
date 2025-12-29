@@ -6,7 +6,7 @@ services:
     environment:
       POSTGRES_DB: gracehub
       POSTGRES_USER: gh_user
-      POSTGRES_PASSWORD: gh_password_change_me
+      POSTGRES_PASSWORD: ghJh56U65ny567uj65656u6
     ports:
       # Публикуем порт только на localhost хоста
       - "127.0.0.1:5432:5432"

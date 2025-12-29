@@ -1919,22 +1919,17 @@ class MasterBot:
 
         # 3) Verify secret token (self-heal once on mismatch)
         if expected and signature != expected:
-            logger.warning(
-                "Webhook: secret mismatch for instance_id=%s (self-heal attempt)", instance_id
-            )
+            logger.warning("Webhook: secret mismatch for instance_id=%s (self-heal attempt)", instance_id)
 
             token = None
             try:
                 token = await self.db.get_decrypted_token(instance_id)
             except Exception:
-                logger.exception(
-                    "Webhook: failed to load token from DB for instance_id=%s", instance_id
-                )
+                logger.exception("Webhook: failed to load token from DB for instance_id=%s", instance_id)
 
             if not token:
                 return web.Response(status=403, text="Invalid secret token")
 
-            # Попытка починки: переустанавливаем webhook (idempotent) и перечитываем instance
             try:
                 await self.setup_worker_webhook(instance_id, token, force_new_secret=True)
 
@@ -1947,15 +1942,10 @@ class MasterBot:
                 if expected2 and signature == expected2:
                     logger.info("Webhook: secret healed for instance_id=%s", instance_id)
                 else:
-                    logger.warning(
-                        "Webhook: secret still mismatched after heal for instance_id=%s",
-                        instance_id,
-                    )
+                    logger.warning("Webhook: secret still mismatched after heal for instance_id=%s", instance_id)
                     return web.Response(status=403, text="Invalid secret token")
             except Exception:
-                logger.exception(
-                    "Webhook: failed to self-heal webhook secret for instance_id=%s", instance_id
-                )
+                logger.exception("Webhook: failed to self-heal webhook secret for instance_id=%s", instance_id)
                 return web.Response(status=403, text="Invalid secret token")
 
         # 4) Read and parse update payload
@@ -1971,41 +1961,35 @@ class MasterBot:
             logger.warning("Webhook: invalid JSON (instance_id=%s)", instance_id)
             return web.Response(status=400, text="Invalid JSON")
 
-        # 5) Ensure worker exists (restore from DB if missing)
-        worker = self.workers.get(instance_id)
-        if not worker:
-            logger.warning("Webhook: no worker for instance_id=%s (restoring)", instance_id)
-
-            token = None
-            try:
-                token = await self.db.get_decrypted_token(instance_id)
-            except Exception:
-                logger.exception(
-                    "Webhook: failed to load token from DB for restore (instance_id=%s)",
-                    instance_id,
-                )
-
-            if not token:
-                return web.Response(status=404, text="Worker not found")
-
-            try:
-                worker = GraceHubWorker(instance_id, token, self.db)
-                self.workers[instance_id] = worker
-                logger.info("Webhook: restored worker in memory for instance_id=%s", instance_id)
-            except Exception:
-                logger.exception("Webhook: failed to create worker (instance_id=%s)", instance_id)
-                return web.Response(status=500, text="Internal error")
-
-        # 6) Dispatch to worker
+        # 5) Enqueue to Postgres queue and ACK Telegram immediately
         try:
-            update = Update(**update_data)
-            await worker.process_update(update)
-            return web.Response(status=200, text="OK")
-        except Exception as e:
-            logger.exception(
-                "Webhook: error processing update (instance_id=%s): %s", instance_id, e
+            update_id = int(update_data.get("update_id") or 0)
+            if update_id <= 0:
+                logger.warning("Webhook: missing/invalid update_id (instance_id=%s)", instance_id)
+                return web.Response(status=400, text="Invalid update_id")
+
+            payload_json = json.dumps(update_data, ensure_ascii=False, separators=(",", ":"))
+
+            inserted = await self.db.enqueue_tg_update(
+                instance_id=instance_id,
+                update_id=update_id,
+                payload=payload_json,  # <-- важно: в БД ожидается str
             )
+
+            # inserted=False = дубликат (например, Telegram ретраил); это ОК — всё равно 200
+            logger.info(
+                "Webhook: enqueued instance_id=%s update_id=%s inserted=%s",
+                instance_id,
+                update_id,
+                inserted,
+            )
+
+            return web.Response(status=200, text="OK")
+
+        except Exception:
+            logger.exception("Webhook: failed to enqueue update (instance_id=%s)", instance_id)
             return web.Response(status=500, text="Internal error")
+
 
     async def handle_master_webhook(self, request):
         """Handle webhook for master bot"""
