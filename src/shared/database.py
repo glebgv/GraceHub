@@ -2202,7 +2202,7 @@ class MasterDatabase:
 
 
     async def requeue_stuck_tg_updates(self, *, stuck_seconds: int = 300) -> int:
-        row = await self.fetchone(
+        rows = await self.fetchall(
             """
             UPDATE tg_update_queue
             SET status = 'retry',
@@ -2210,20 +2210,17 @@ class MasterDatabase:
                 locked_at = NULL,
                 locked_by = NULL,
                 updated_at = NOW(),
-                last_error = COALESCE(last_error, '') || CASE WHEN last_error IS NULL OR last_error = '' THEN '' ELSE E'\n' END
-                            || 'stuck requeued'
+                last_error = COALESCE(last_error, '') ||
+                            CASE WHEN last_error IS NULL OR last_error = '' THEN '' ELSE E'\n' END ||
+                            'stuck requeued'
             WHERE status = 'processing'
             AND locked_at IS NOT NULL
-            AND locked_at < NOW() - ($1::text || ' seconds')::interval
-            RETURNING COUNT(*)
+            AND locked_at < NOW() - ($1 * INTERVAL '1 second')
+            RETURNING 1
             """,
             (int(stuck_seconds),),
         )
-        # asyncpg fetchone + RETURNING COUNT(*) так не сработает как ожидается;
-        # проще сделать execute() и вернуть количество через conn.execute парсинг,
-        # или сделать SELECT count(*) после UPDATE. (Скажи — сделаю аккуратно под asyncpg.)
-        return 0
-
+        return len(rows)
 
     async def get_all_active_instances(self) -> List[BotInstance]:
         rows = await self.fetchall(
