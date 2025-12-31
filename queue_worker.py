@@ -48,25 +48,34 @@ async def _get_or_create_worker(
     db: MasterDatabase,
     instance_id: str,
 ) -> Optional[GraceHubWorker]:
+    """
+    Получает или создаёт worker для instance_id.
+    Возвращает None, если токен отсутствует или инициализация провалилась.
+    """
     w = cache.get(instance_id)
     if w:
         return w
 
     token = await db.get_decrypted_token(instance_id)
     if not token:
+        logger.warning(f"No token found for instance {instance_id}")
         return None
 
-    w = GraceHubWorker(instance_id, token, db)
+    # ❗ ВАЖНО: правильный порядок аргументов GraceHubWorker(instance_id, db, token=...)
+    w = GraceHubWorker(instance_id=instance_id, db=db, token=token)
 
-    # у тебя в worker есть initialize() (или может отличаться)
     try:
         await w.initialize()
-    except AttributeError:
-        pass
+        logger.info(f"✅ Worker {instance_id} initialized successfully (bot: {w.bot_username})")
+    except Exception as e:
+        logger.error(
+            f"❌ Failed to initialize worker {instance_id}: {type(e).__name__}: {e}",
+            exc_info=True
+        )
+        return None
 
     cache[instance_id] = w
     return w
-
 
 async def stuck_requeue_loop(
     db: MasterDatabase,

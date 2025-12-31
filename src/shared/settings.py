@@ -31,7 +31,7 @@ DATABASE_URL_ASYNC = (
 ENCRYPTION_KEY_FILE = Path(
     os.getenv(
         "ENCRYPTION_KEY_FILE",
-        os.getenv("ENCRYPTIONKEYFILE", str(DATA_DIR / "master_key.key")),
+        os.getenv("ENCRYPTION_KEY_FILE", str(DATA_DIR / "master_key.key")),
     )
 )
 
@@ -48,8 +48,8 @@ WEBHOOK_PORT = int(os.getenv("WEBHOOK_PORT", os.getenv("WEBHOOKPORT", "9443")))
 
 
 # === WORKER ===
-WORKER_INSTANCE_ID = os.getenv("WORKER_INSTANCE_ID")
-WORKER_TOKEN = os.getenv("WORKER_TOKEN")
+#WORKER_INSTANCE_ID = os.getenv("WORKER_INSTANCE_ID")
+#WORKER_TOKEN = os.getenv("WORKER_TOKEN")
 
 
 # === ОБЩИЕ НАСТРОЙКИ ===

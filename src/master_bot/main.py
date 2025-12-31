@@ -31,6 +31,7 @@ from shared.database import MasterDatabase
 from shared.models import BotInstance, InstanceStatus
 from shared.security import SecurityManager
 from shared.webhook_manager import WebhookManager
+from shared.worker_manager import worker_manager
 from worker.main import GraceHubWorker
 
 # Абсолютный путь к src
@@ -90,6 +91,7 @@ class MasterBot:
 
         self.webhook_manager = WebhookManager(webhook_domain, use_https=True)
         self.security = SecurityManager()
+        self.worker_manager = worker_manager
 
         self.instances: Dict[str, BotInstance] = {}
         self.worker_procs: Dict[str, subprocess.Popen] = {}
@@ -367,70 +369,31 @@ class MasterBot:
 
     # ====================== УПРАВЛЕНИЕ ВОРКЕРАМИ ======================
 
-    def is_worker_process_alive(self, instance_id: str) -> bool:
-        proc = self.worker_procs.get(instance_id)
-        if not proc:
-            return False
-        return proc.poll() is None
 
-    def spawn_worker(self, instance_id: str, token: str) -> None:
-        """
-        Запускает отдельный процесс воркера для указанного инстанса.
-        Воркеры работают через polling (src/worker/main.py).
-        """
-        # Если процесс уже жив — не дублируем
-        proc = self.worker_procs.get(instance_id)
-        if proc is not None and proc.poll() is None:
-            return
+    async def spawn_worker(self, instance_id: str, db: MasterDatabase):  # 🔥 Только db!
+        """Спавним worker через DockerWorkerManager (БЕЗ token!)"""
+        try:
+            await self.worker_manager.spawn_worker(instance_id, db)
+            logger.info(f"✅ Worker spawned for instance {instance_id} (Docker)")
+            await self.db.update_instance_status(instance_id, InstanceStatus.RUNNING)
+        except Exception as e:
+            logger.error(f"❌ Failed to spawn worker for {instance_id}: {e}")
+            await self.db.update_instance_status(instance_id, InstanceStatus.ERROR)
+            raise
 
-        env = os.environ.copy()
-        env["WORKER_INSTANCE_ID"] = instance_id
-        env["WORKER_TOKEN"] = token
+    async def stop_worker(self, instance_id: str):
+        """Останавливаем Docker worker"""
+        try:
+            await self.worker_manager.stop_worker(instance_id)
+            logger.info(f"✅ Docker worker stopped for {instance_id}")
+        except Exception as e:
+            logger.warning(f"Docker stop failed {instance_id}: {e}")
+        
+        # Очищаем память
+        self.workers.pop(instance_id, None)
+        self.worker_procs.pop(instance_id, None)
 
-        worker_path = Path(__file__).resolve().parent.parent / "worker" / "main.py"
 
-        proc = subprocess.Popen(
-            [sys.executable, str(worker_path)],
-            env=env,
-            stdout=None,  # или subprocess.PIPE, но тогда надо читать
-            stderr=None,
-        )
-        self.worker_procs[instance_id] = proc
-        logger.info(f"Spawned worker process for instance {instance_id} (pid={proc.pid})")
-
-    async def stop_worker(self, instance_id: str) -> None:
-        """
-        Останавливает worker для инстанса: отменяет tasks, удаляет из памяти и снимает webhook.
-        """
-        # Cancel the worker's background tasks (e.g., auto_close_tickets_loop)
-        task = self.worker_tasks.pop(instance_id, None)
-        if task:
-            task.cancel()
-            try:
-                await task  # Wait for cancellation to complete gracefully
-            except asyncio.CancelledError:
-                pass  # Expected
-            logger.info(f"Cancelled task for worker {instance_id}")
-
-        # Remove the worker object from memory
-        worker = self.workers.pop(instance_id, None)
-        if worker:
-            # Optional: Close any worker-specific resources, e.g., bot session if needed
-            await worker.bot.session.close()
-            logger.info(f"Removed worker object for {instance_id}")
-
-        # Remove webhook if set
-        instance = self.instances.get(instance_id)
-        if instance and instance.webhook_url:
-            token = await self.db.get_decrypted_token(instance_id)
-            if token:
-                if await self.remove_worker_webhook(instance_id, token):
-                    logger.info(f"Removed webhook for {instance_id}")
-                else:
-                    logger.warning(f"Failed to remove webhook for {instance_id}")
-
-        # Update status in DB if necessary (e.g., to STOPPED)
-        await self.db.update_instance_status(instance_id, InstanceStatus.STOPPED)
 
     # ====================== МИНИ-APПА: УТИЛИТЫ ======================
 
@@ -634,7 +597,7 @@ class MasterBot:
         """
         Упрощённый вариант process_bot_token для mini app:
         - без Message/ответов в Telegram,
-        - та же логика проверки/создания инстанса и запуска воркера.
+        - создаёт инстанс + webhook + Docker worker с race condition fix.
         Возвращает BotInstance.
         """
 
@@ -645,7 +608,7 @@ class MasterBot:
             if current >= limit:
                 raise ValueError(f"Достигнут лимит подключаемых ботов: {current}/{limit}")
 
-        # 1) Проверка формата токена (как в process_bot_token)
+        # 1) Проверка формата токена
         if not self.validate_token_format(token):
             raise ValueError("Неверный формат токена")
 
@@ -661,15 +624,40 @@ class MasterBot:
         if existing:
             raise ValueError("Этот бот уже добавлен в систему")
 
-        # 4) Создание инстанса + запуск воркера (ровно как в create_bot_instance)
+        # 🔥 4) Создание инстанса
         instance = await self.create_bot_instance(
             user_id=owner_user_id,
             token=token,
             bot_username=me.username,
             bot_name=me.first_name,
         )
+        logger.info(f"✅ Miniapp: Created instance '{instance.instance_id}' in DB")
+
+        # 🔥 ЖДЁМ сохранения в БД (race condition fix!)
+        logger.info(f"⏳ Miniapp: Waiting 3s for DB replication...")
+        await asyncio.sleep(3)
+
+        # 🔥 Verify instance exists
+        verify_instance = await self.db.get_instance(instance.instance_id)
+        if not verify_instance:
+            logger.error(f"❌ Miniapp: Instance '{instance.instance_id}' not found after sleep!")
+            raise RuntimeError(f"DB replication failed for {instance.instance_id}")
+
+        logger.info(f"✅ Miniapp: Verified instance '{instance.instance_id}' exists")
+
+        # 🔥 5) Setup webhook ПЕРЕД Docker spawn!
+        await self.setup_worker_webhook(instance.instance_id, token)
+        logger.info(f"✅ Miniapp: Webhook setup for {instance.instance_id}")
+
+        # 🔥 6) Спавним Docker worker
+        await self.spawn_worker(instance.instance_id, self.db)
+        logger.info(f"✅ Miniapp: Docker worker spawned for {instance.instance_id}")
+
+        # 🔥 7) Update status
+        await self.db.update_instance_status(instance.instance_id, InstanceStatus.RUNNING)
 
         return instance
+
 
     async def _send_personal_miniapp_link(
         self,
@@ -1196,7 +1184,7 @@ class MasterBot:
                 except Exception as e:
                     logger.warning(f"Failed to remove webhook for {instance_id}: {e}")
 
-            self.stop_worker(instance_id)
+            await self.stop_worker(instance_id)
             await self.db.update_instance_status(instance_id, InstanceStatus.PAUSED)
             instance.status = InstanceStatus.PAUSED
 
@@ -1210,7 +1198,7 @@ class MasterBot:
                 except Exception as e:
                     logger.warning(f"Failed to remove webhook for {instance_id} on resume: {e}")
                 try:
-                    self.spawn_worker(instance_id, token)
+                    await self.spawn_worker(instance_id, self.db)
                 except Exception as e:
                     logger.error(f"Failed to spawn worker for {instance_id} on resume: {e}")
                     await callback.answer("❌ Ошибка при запуске бота", show_alert=True)
@@ -1368,7 +1356,7 @@ class MasterBot:
             except Exception as e:
                 logger.warning(f"Failed to remove webhook for {instance_id}: {e}")
 
-        self.stop_worker(instance_id)
+        await self.stop_worker(instance_id)
 
         await self.db.update_instance_status(instance_id, InstanceStatus.PAUSED)
         instance.status = InstanceStatus.PAUSED
@@ -1395,7 +1383,7 @@ class MasterBot:
                 logger.warning(f"Failed to remove webhook for {instance_id} on resume: {e}")
 
             try:
-                self.spawn_worker(instance_id, token)
+                await self.spawn_worker(instance_id, self.db)
             except Exception as e:
                 logger.error(f"Failed to spawn worker for {instance_id} on resume: {e}")
                 await callback.answer("❌ Ошибка при запуске бота")
@@ -1428,8 +1416,7 @@ class MasterBot:
             except Exception as e:
                 logger.warning(f"Failed to remove webhook for {instance_id} on delete: {e}")
 
-        # Останавливаем polling-воркер
-        self.stop_worker(instance_id)
+        await self.stop_worker(instance_id)
 
         # Удаление инстанса
         await self.db.delete_instance(instance_id)
@@ -1505,7 +1492,7 @@ class MasterBot:
             )
 
     async def process_bot_token(self, message: Message, token: str):
-        """Process provided bot token"""
+        """Process provided bot token — создаёт Docker worker + webhook"""
         user_id = message.from_user.id
         texts = await self.t(user_id)
 
@@ -1523,12 +1510,9 @@ class MasterBot:
             # Check if bot already exists
             existing = await self.db.get_instance_by_token_hash(self.security.hash_token(token))
             if existing:
-                # 1-е сообщение — ошибка
                 await message.answer(texts.master_token_already_exists)
-                # чистим состояние
                 await self.db.clear_user_state(user_id)
-
-                # 2-е сообщение — сразу главное меню на текущем языке
+                
                 start_text = (
                     f"{texts.master_title}\n\n"
                     f"{texts.admin_panel_title}\n\n"
@@ -1545,25 +1529,35 @@ class MasterBot:
                 )
                 return
 
-            # Create bot instance
+            # 🔥 1. Create bot instance + store token
             instance = await self.create_bot_instance(
                 user_id=user_id,
                 token=token,
                 bot_username=me.username,
                 bot_name=me.first_name,
             )
+            logger.info(f"✅ Created instance '{instance.instance_id}' in DB")
 
-            # === ДОБАВЛЕНИЕ: Создаём in-memory worker сразу, как в restore ===
-            worker = GraceHubWorker(instance.instance_id, token, self.db)
-            self.workers[instance.instance_id] = worker
-            logger.info(f"Created in-memory worker for new instance {instance.instance_id}")
+            # 🔥 ЖДЁМ сохранения в БД (race condition fix!)
+            logger.info(f"⏳ Waiting 3s for DB replication...")
+            await asyncio.sleep(3)
 
+            # 🔥 2. Verify instance exists
+            verify_instance = await self.db.get_instance(instance.instance_id)
+            if not verify_instance:
+                logger.error(f"❌ Instance '{instance.instance_id}' not found after sleep!")
+                raise RuntimeError(f"DB replication failed for {instance.instance_id}")
+
+            # 🔥 3. Setup webhook
             await self.setup_worker_webhook(instance.instance_id, token)
-            logger.info(f"Webhook setup completed for new instance {instance.instance_id}")
+            logger.info(f"✅ Webhook setup completed for {instance.instance_id}")
 
-            await worker.bot.get_me()  # Health check
-            logger.info(f"Bot.get_me() successful for new instance {instance.instance_id}")
-            # === КОНЕЦ ДОБАВЛЕНИЯ ===
+            # 🔥 4. Спавним Docker worker
+            await self.spawn_worker(instance.instance_id, self.db)
+            logger.info(f"✅ Docker worker spawned for {instance.instance_id}")
+
+            # 🔥 5. Update status
+            await self.db.update_instance_status(instance.instance_id, InstanceStatus.RUNNING)
 
             await self.db.clear_user_state(user_id)
 
@@ -1597,9 +1591,10 @@ class MasterBot:
             await message.answer(text_resp, reply_markup=keyboard)
 
         except Exception as e:
-            logger.error(f"Error processing token: {e}")
+            logger.error(f"Error processing token: {e}", exc_info=True)
             await message.answer(texts.master_token_generic_error.format(error=str(e)))
             await self.db.clear_user_state(user_id)
+
 
     async def check_worker_token_health(
         self, instance_id: str, auto_remove_webhook: bool = False
@@ -1708,7 +1703,7 @@ class MasterBot:
 
         # Сразу запускаем отдельный воркер-процесс (polling)
         try:
-            self.spawn_worker(instance_id, token)
+            await self.spawn_worker(instance_id, self.db)
             instance.status = InstanceStatus.RUNNING
             await self.db.update_instance_status(instance_id, InstanceStatus.RUNNING)
         except Exception as e:
@@ -2078,9 +2073,10 @@ class MasterBot:
 
                         try:
                             # Пересоздаем worker
-                            worker = GraceHubWorker(instance_id, token, self.db)
+                            worker = GraceHubWorker(instance_id=instance_id, db=db, token=token)
+                            await worker.initialize()
                             self.workers[instance_id] = worker
-                            logger.info(f"Successfully created GraceHubWorker for {instance_id}")
+                            logger.info(f"✅ Restored GraceHubWorker for {instance_id}")
 
                             # Setup webhook (idempotent)
                             await self.setup_worker_webhook(instance_id, token)
@@ -2108,11 +2104,13 @@ class MasterBot:
     # ====================== ЗАПУСК МАСТЕРА ======================
 
     async def run(self) -> None:
+        """🔥 Главный цикл Master Bot с автозапуском всех workers!"""
         logger.info("Starting GraceHub Platform Master Bot...")
 
         # --- Startup DB check (fail fast) ---
         try:
             await self.db.init()
+            logger.info("✅ MasterDatabase инициализирована")
         except Exception as e:
             reason = self._format_db_startup_error(e)
             logger.critical(
@@ -2122,7 +2120,9 @@ class MasterBot:
             raise SystemExit(2)
         # --- end Startup DB check ---
 
+        # 🔥 АВТОЗАПУСК ВСЕХ инстансов из БД при старте!
         await self.load_existing_instances()
+        logger.info("🚀 All existing workers restored from database!")
 
         # Монитор воркеров
         logger.info("Worker monitor interval = %s", settings.WORKER_MONITOR_INTERVAL)
@@ -2137,40 +2137,56 @@ class MasterBot:
         # Глобальный loop для автозакрытия тикетов
         asyncio.create_task(self.auto_close_tickets_loop())
 
+        # Webhook сервер (БЕЗ API!)
         await self.start_webhook_server()
 
+        # Master bot webhook
         master_webhook_url = f"https://{self.webhook_domain}/master_webhook"
         await self.bot.set_webhook(
             url=master_webhook_url,
             allowed_updates=[
                 "message",
-                "callback_query",
+                "callback_query", 
                 "pre_checkout_query",
                 "successful_payment",
             ],
             drop_pending_updates=True,
         )
-        logger.info(f"Master bot webhook set to {master_webhook_url}")
+        logger.info(f"✅ Master bot webhook set to {master_webhook_url}")
 
+        logger.info("🎉 GraceHub Master Bot FULLY STARTED!")
+        logger.info("📊 Active instances: %d", len(self.instances))
+        
+        # 🔥 Бесконечный цикл
         while True:
             await asyncio.sleep(1)
+
+
 
     async def load_existing_instances(self):
         instances = await self.db.get_all_active_instances()
         for instance in instances:
             token = await self.db.get_decrypted_token(instance.instance_id)
             if not token:
+                logger.warning(f"⚠️ No token for {instance.instance_id} - skipping")
                 continue
 
-            # 1) Сначала кладем instance в память (чтобы setup_worker_webhook видел webhook_secret)
+            # 1) Кладем данные инстанса в кеш мастера
             self.instances[instance.instance_id] = instance
 
-            # 2) Создаем worker в памяти
-            worker = GraceHubWorker(instance.instance_id, token, self.db)
-            self.workers[instance.instance_id] = worker
-            await self.setup_worker_webhook(instance.instance_id, token)
+            try:
+                # 2) Настраиваем вебхук (чтобы Telegram знал, куда слать апдейты)
+                await self.setup_worker_webhook(instance.instance_id, token)
+                
+                # 🔥 3) ЗАПУСКАЕМ КОНТЕЙНЕР вместо создания объекта GraceHubWorker
+                # Этот метод использует ваш worker_manager.py и Docker API
+                await self.spawn_worker(instance.instance_id, self.db)
+                
+                logger.info(f"✅ Docker container started & webhook set for {instance.instance_id}")
 
-            logger.info(f"Loaded instance {instance.instance_id} with webhook")
+            except Exception as e:
+                logger.error(f"❌ Failed to restore instance {instance.instance_id}: {e}", exc_info=True)
+                await self.db.update_instance_status(instance.instance_id, InstanceStatus.ERROR)
 
     async def setup_worker_webhook(
         self,

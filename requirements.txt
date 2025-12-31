@@ -19,3 +19,4 @@ asyncpg
 cachetools
 stripe
 httpx
+docker==7.1.0
