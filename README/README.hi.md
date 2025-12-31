@@ -1,5 +1,5 @@
 <div align="right">
-  <a href="README.md">🇷🇺 Русский</a> •
+  <a href="../README.md">🇷🇺 Русский</a> •
   <a href="README.en.md">🇬🇧 English</a> •
   <a href="README.es.md">🇪🇸 Español</a> •
   <a href="README.hi.md">🇮🇳 हिन्दी</a> •

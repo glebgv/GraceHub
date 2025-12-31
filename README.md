@@ -34,15 +34,15 @@ GraceHub — это SaaS платформа, которая позволяет �
 **🌐 Сайт:** [gracehub.ru](https://gracehub.ru)  
 **📢 Telegram канал:** [@gracehubru](https://t.me/gracehubru)  
 **👨‍💻 Разработчик:** [@Gribson_Micro](https://t.me/Gribson_Micro)  
-**🗺️ Roadmap:** [ROADMAP.md](./ROADMAP.md)
+**🗺️ Roadmap:** [README/ROADMAP.md](./ROADMAP.md)
 
 <div align="center">
   <h3>📱 Скриншоты</h3>
   <table>
     <tr>
-      <td align="center"><img src="./images/gracehub1.png" width="180" alt="Стартовая"></td>
-      <td align="center"><img src="./images/gracehub2.png" width="180" alt="Дашборд"></td>
-      <td align="center"><img src="./images/gracehub3.png" width="180" alt="Добавление бота"></td>
+      <td align="center"><img src="./README/images/gracehub1.png" width="180" alt="Стартовая"></td>
+      <td align="center"><img src="./README/images/gracehub2.png" width="180" alt="Дашборд"></td>
+      <td align="center"><img src="./README/images/gracehub3.png" width="180" alt="Добавление бота"></td>
     </tr>
     <tr>
       <td align="center"><em>Стартовая страница</em></td>
@@ -50,9 +50,9 @@ GraceHub — это SaaS платформа, которая позволяет �
       <td align="center"><em>Добавление бота</em></td>
     </tr>
     <tr>
-      <td align="center"><img src="./images/gracehub4.png" width="180" alt="Раздел оплаты"></td>
-      <td align="center"><img src="./images/gracehub5.png" width="180" alt="Скриншот 5"></td>
-      <td align="center"><img src="./images/gracehub6.png" width="180" alt="Скриншот 6"></td>
+      <td align="center"><img src="./README/images/gracehub4.png" width="180" alt="Раздел оплаты"></td>
+      <td align="center"><img src="./README/images/gracehub5.png" width="180" alt="Скриншот 5"></td>
+      <td align="center"><img src="./README/images/gracehub6.png" width="180" alt="Скриншот 6"></td>
     </tr>
     <tr>
       <td align="center"><em>Раздел оплаты, в котором было убито много времени</em></td>
@@ -60,9 +60,9 @@ GraceHub — это SaaS платформа, которая позволяет �
       <td align="center"><em>Меню админа бота поддержки пользователей</em></td>
     </tr>
     <tr>
-      <td align="center"><img src="./images/gracehub7.png" width="180" alt="Скриншот 7"></td>
-      <td align="center"><img src="./images/gracehub8.png" width="180" alt="Скриншот 8"></td>
-      <td align="center"><img src="./images/gracehub9.png" width="180" alt="Скриншот 9"></td>
+      <td align="center"><img src="./README/images/gracehub7.png" width="180" alt="Скриншот 7"></td>
+      <td align="center"><img src="./README/images/gracehub8.png" width="180" alt="Скриншот 8"></td>
+      <td align="center"><img src="./README/images/gracehub9.png" width="180" alt="Скриншот 9"></td>
     </tr>
     <tr>
       <td align="center"><em>Приходит месседж от клиента</em></td>
