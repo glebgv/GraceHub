@@ -2,11 +2,11 @@ FROM node:22-alpine AS builder
 WORKDIR /app
 
 # Полные зависимости (vite нужен!)
-COPY frontend/miniapp_frontend/package*.json ./
+COPY frontend/package*.json ./
 RUN npm ci
 
 # Код
-COPY frontend/miniapp_frontend/ ./
+COPY frontend/ ./
 
 # Vite ENV
 ARG VITE_API_BASE_URL=http://api:8001

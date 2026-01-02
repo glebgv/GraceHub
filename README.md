@@ -97,7 +97,7 @@ gracehub/
 │       ├── main.py                 # Точка входа мастер‑бота
 │       ├── api_server.py           # REST API сервер
 │       └── worker/                 # Воркеры для инстансов
-├── frontend/miniapp_frontend/      # React приложение
+├── frontend/                       # React приложение
 ├── config/                         # Конфигурационные файлы
 ├── scripts/
 │   └── launch.sh                   # Скрипт запуска

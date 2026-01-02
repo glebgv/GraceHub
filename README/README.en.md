@@ -107,7 +107,7 @@ gracehub/
 │       ├── main.py                 # Master bot entry point
 │       ├── api_server.py           # REST API server
 │       └── worker/                 # Instance workers
-├── frontend/miniapp_frontend/      # React application
+├── frontend/                       # React application
 ├── config/                         # Configuration files
 ├── scripts/
 │   └── launch.sh                   # Launch script

@@ -3,11 +3,11 @@ name: Frontend CI
 on:
   push:
     paths:
-      - "frontend/miniapp_frontend/**"
+      - "frontend/**"
       - ".github/workflows/frontend-ci.yml"
   pull_request:
     paths:
-      - "frontend/miniapp_frontend/**"
+      - "frontend/**"
 
 jobs:
   frontend:
@@ -15,7 +15,7 @@ jobs:
 
     defaults:
       run:
-        working-directory: frontend/miniapp_frontend
+        working-directory: frontend/
 
     steps:
       - uses: actions/checkout@v4
@@ -24,7 +24,7 @@ jobs:
         with:
           node-version: "22"
           cache: "npm"
-          cache-dependency-path: "frontend/miniapp_frontend/package-lock.json"
+          cache-dependency-path: "frontend/package-lock.json"
 
       - name: Install deps
         run: npm ci

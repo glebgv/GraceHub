@@ -107,7 +107,7 @@ gracehub/
 │       ├── main.py                 # 主机器人入口点
 │       ├── api_server.py           # REST API 服务器
 │       └── worker/                 # 实例工作程序
-├── frontend/miniapp_frontend/      # React 应用程序
+├── frontend/                       # React 应用程序
 ├── config/                         # 配置文件
 ├── scripts/
 │   └── launch.sh                   # 启动脚本

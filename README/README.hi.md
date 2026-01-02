@@ -107,7 +107,7 @@ gracehub/
 │       ├── main.py                 # मास्टर बॉट प्रवेश बिंदु
 │       ├── api_server.py           # REST API सर्वर
 │       └── worker/                 # उदाहरण कार्यकर्ता
-├── frontend/miniapp_frontend/      # React एप्लिकेशन
+├── frontend/                       # React एप्लिकेशन
 ├── config/                         # कॉन्फ़िगरेशन फ़ाइलें
 ├── scripts/
 │   └── launch.sh                   # लॉन्च स्क्रिप्ट
