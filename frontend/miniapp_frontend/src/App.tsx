@@ -16,12 +16,14 @@ import AddBotModal from './components/AddBotModal';
 import 'flag-icons/css/flag-icons.min.css';
 import { Drawer } from 'vaul';
 
+
 interface AppProps {
   instanceIdFromUrl: string | null;
   adminIdFromUrl: string | null;
   currentUserId: number | null;
   initDataRaw: string | null;
 }
+
 
 type Page =
   | 'instances'
@@ -32,6 +34,7 @@ type Page =
   | 'billing'
   | 'superadmin';
 
+
 type Instance = {
   instanceid: string;
   botusername: string;
@@ -40,6 +43,7 @@ type Instance = {
   openchatusername?: string | null;
   generalpanelchatid?: number | null;
 };
+
 
 type BillingState = {
   planCode: string;
@@ -53,7 +57,9 @@ type BillingState = {
   unlimited: boolean;
 };
 
+
 type PlatformSettings = Record<string, any>;
+
 
 const App: React.FC<AppProps> = ({
   instanceIdFromUrl,
@@ -63,42 +69,54 @@ const App: React.FC<AppProps> = ({
 }) => {
   const { t } = useTranslation();
 
+
   const [user, setUser] = useState<any | null>(null);
   const [instances, setInstances] = useState<Instance[]>([]);
   const [selectedInstance, setSelectedInstance] = useState<Instance | null>(null);
 
+
   // ✅ Always start from InstancesList screen
   const [currentPage, setCurrentPage] = useState<Page>('instances');
+
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+
   const [isFirstLaunch, setIsFirstLaunch] = useState(false);
+
 
   const [chatInfo, setChatInfo] = useState<{
     id: number | null;
     username: string | null;
   } | null>(null);
 
+
   const [showAddModal, setShowAddModal] = useState(false);
   const [showBindHelpModal, setShowBindHelpModal] = useState(false);
 
+
   const [billing, setBilling] = useState<BillingState | null>(null);
+
 
   // NEW: platform settings (platform_settings["miniapp_public"])
   const [platformSettings, setPlatformSettings] = useState<PlatformSettings>({});
   const [platformSettingsLoaded, setPlatformSettingsLoaded] = useState(false);
 
+
   // NEW: отдельное состояние под "лимит инстансов", чтобы не уводить в глобальный error-screen
   const [limitMessage, setLimitMessage] = useState<string | null>(null);
 
+
   // ✨ NEW: page animation trigger
   const [pageAnim, setPageAnim] = useState(false);
+
 
   const isSuperadmin = useMemo(() => {
     const roles = user?.roles || [];
     return Array.isArray(roles) && roles.includes('superadmin');
   }, [user]);
+
 
   // ---- derived helpers from platform settings ----
   const maintenance = useMemo(() => {
@@ -108,12 +126,14 @@ const App: React.FC<AppProps> = ({
     return { enabled, message };
   }, [platformSettings]);
 
+
   // ✨ NEW: page transition animation
   useEffect(() => {
     setPageAnim(true);
     const timeoutId = window.setTimeout(() => setPageAnim(false), 260);
     return () => window.clearTimeout(timeoutId);
   }, [currentPage]);
+
 
   useEffect(() => {
     const initApp = async () => {
@@ -125,11 +145,14 @@ const App: React.FC<AppProps> = ({
         initDataPreview: initDataRaw?.slice(0, 80),
       });
 
+
       try {
         setLoading(true);
         setError(null);
 
+
         const initData = initDataRaw || '';
+
 
         if (!initData) {
           console.warn('[App.initApp] initData отсутствует или пуста');
@@ -138,16 +161,21 @@ const App: React.FC<AppProps> = ({
           return;
         }
 
+
         apiClient.setInitData(initData);
+
 
         const startParam = '';
 
+
         console.log('[App.initApp] calling authTelegram', { startParam });
+
 
         const authResponse = await apiClient.authTelegram({
           initData,
           start_param: startParam,
         });
+
 
         console.log('[App.initApp] authResponse:', {
           user: authResponse.user,
@@ -155,18 +183,23 @@ const App: React.FC<AppProps> = ({
           instancesCount: authResponse.user?.instances?.length,
         });
 
+
         apiClient.setToken(authResponse.token);
         setUser(authResponse.user);
+
 
         let resolvedInstance: Instance | null = null;
         let linkForbidden = false;
 
+
         try {
           const payload: any = {};
+
 
           if (instanceIdFromUrl) {
             payload.instance_id = instanceIdFromUrl;
           }
+
 
           if (adminIdFromUrl) {
             const adminNum = Number(adminIdFromUrl);
@@ -175,12 +208,16 @@ const App: React.FC<AppProps> = ({
             }
           }
 
+
           console.log('[App.initApp] resolveInstance payload:', payload);
+
 
           if (payload.instance_id || payload.admin_id) {
             const resolveResp = await apiClient.resolveInstance(payload);
 
+
             console.log('[App.initApp] resolveInstance response:', resolveResp);
+
 
             if (resolveResp.link_forbidden) {
               linkForbidden = true;
@@ -206,6 +243,7 @@ const App: React.FC<AppProps> = ({
           );
         }
 
+
         if (linkForbidden) {
           setSelectedInstance(null);
           setError(t('app.owner_only'));
@@ -213,9 +251,11 @@ const App: React.FC<AppProps> = ({
           return;
         }
 
+
         console.log('[App.initApp] fallback instance selection', {
           instancesCount: authResponse.user.instances?.length,
         });
+
 
         const userInstancesRaw = authResponse.user.instances || [];
         const normalizedList: Instance[] = userInstancesRaw.map((src: any): Instance => ({
@@ -227,7 +267,9 @@ const App: React.FC<AppProps> = ({
           generalpanelchatid: src.generalpanelchatid || src.general_panel_chat_id || null,
         }));
 
+
         setInstances(normalizedList);
+
 
         if (normalizedList.length === 0) {
           console.log(
@@ -240,11 +282,13 @@ const App: React.FC<AppProps> = ({
           return;
         }
 
+
         if (resolvedInstance) {
           setSelectedInstance(resolvedInstance);
         } else {
           setSelectedInstance((prev) => {
             if (prev) return prev;
+
 
             const defId = authResponse.default_instance_id;
             if (defId) {
@@ -252,12 +296,15 @@ const App: React.FC<AppProps> = ({
               if (fromList) return fromList;
             }
 
+
             return normalizedList[0] ?? null;
           });
         }
 
+
         // ✅ Always land on InstancesList after init
         setCurrentPage('instances');
+
 
         setLoading(false);
         console.log('[App.initApp] done (resolvedInstance) =', resolvedInstance);
@@ -266,6 +313,7 @@ const App: React.FC<AppProps> = ({
           message: err?.message,
           stack: err?.stack,
         });
+
 
         if (
           typeof err?.message === 'string' &&
@@ -276,18 +324,22 @@ const App: React.FC<AppProps> = ({
           setError(t('app.open_from_telegram'));
         }
 
+
         setLoading(false);
       }
     };
 
+
     initApp();
   }, [instanceIdFromUrl, adminIdFromUrl, initDataRaw, currentUserId, t]);
+
 
   // NEW: load platform settings once token is set (after initApp)
   useEffect(() => {
     const loadPlatformSettings = async () => {
       if (!user) return;
       if (platformSettingsLoaded) return;
+
 
       try {
         const res = await apiClient.getPlatformSettings();
@@ -300,8 +352,10 @@ const App: React.FC<AppProps> = ({
       }
     };
 
+
     loadPlatformSettings();
   }, [user, platformSettingsLoaded]);
+
 
   useEffect(() => {
     const loadSettings = async () => {
@@ -312,16 +366,20 @@ const App: React.FC<AppProps> = ({
       try {
         const s = await apiClient.getSettings(selectedInstance.instanceid);
 
+
         const lang = (s as any).language as string | undefined;
         if (lang && ['ru', 'en', 'es', 'hi', 'zh'].includes(lang)) {
           i18n.changeLanguage(lang);
         }
 
+
         const openchat = (s as any).openchat || {};
         const id = openchat.general_panel_chat_id ?? (s as any).generalpanelchatid ?? null;
         const username = openchat.openchat_username ?? (s as any).openchatusername ?? null;
 
+
         console.log('[App] settings for header:', { openchat, id, username, lang });
+
 
         setChatInfo({ id, username });
       } catch (e) {
@@ -330,8 +388,10 @@ const App: React.FC<AppProps> = ({
       }
     };
 
+
     loadSettings();
   }, [selectedInstance?.instanceid]);
+
 
   useEffect(() => {
     const loadBilling = async () => {
@@ -358,8 +418,10 @@ const App: React.FC<AppProps> = ({
       }
     };
 
+
     loadBilling();
   }, [selectedInstance?.instanceid]);
+
 
   const handleCreateInstanceByToken = async (token: string) => {
     try {
@@ -367,11 +429,15 @@ const App: React.FC<AppProps> = ({
       setError(null);
       setLimitMessage(null);
 
+
       console.log('[App] createInstanceByToken, preview:', token.slice(0, 10));
+
 
       const created = await apiClient.createInstanceByToken({ token });
 
+
       console.log('[App] created instance', created);
+
 
       const normalized: Instance = {
         instanceid: created.instanceid,
@@ -382,25 +448,32 @@ const App: React.FC<AppProps> = ({
         generalpanelchatid: (created as any).generalpanelchatid ?? null,
       };
 
+
       setInstances((prev) => [...prev, normalized]);
       setSelectedInstance(normalized);
       setIsFirstLaunch(false);
 
+
       setCurrentPage('dashboard');
+
 
       if (!normalized.generalpanelchatid) {
         setShowBindHelpModal(true);
       }
 
+
       setShowAddModal(false);
     } catch (err: any) {
       console.error('[App] createInstanceByToken error', err);
 
+
       const fallback = t('firstLaunch.create_error_fallback');
+
 
       if (err instanceof ApiError) {
         const msg = typeof err?.message === 'string' ? err.message.trim() : '';
         const text = msg.length ? msg : fallback;
+
 
         const lower = text.toLowerCase();
         const looksLikeLimit =
@@ -409,6 +482,7 @@ const App: React.FC<AppProps> = ({
           lower.includes('maximum') ||
           lower.includes('max') ||
           lower.includes('instances');
+
 
         if (err.status === 400 || err.status === 403) {
           if (looksLikeLimit) {
@@ -420,10 +494,12 @@ const App: React.FC<AppProps> = ({
         }
       }
 
+
       const message =
         typeof err?.message === 'string' && err.message.trim().length > 0
           ? err.message
           : fallback;
+
 
       setError(message);
     } finally {
@@ -431,16 +507,20 @@ const App: React.FC<AppProps> = ({
     }
   };
 
+
   const handleDeleteInstance = async (inst: Instance) => {
     try {
       console.log('[App] delete instance', inst);
       setLoading(true);
       setError(null);
 
+
       await apiClient.deleteInstance(inst.instanceid);
+
 
       setInstances((prev) => {
         const filtered = prev.filter((i) => i.instanceid !== inst.instanceid);
+
 
         if (selectedInstance?.instanceid === inst.instanceid) {
           if (filtered.length > 0) {
@@ -452,6 +532,7 @@ const App: React.FC<AppProps> = ({
             setCurrentPage('instances');
           }
         }
+
 
         return filtered;
       });
@@ -468,6 +549,14 @@ const App: React.FC<AppProps> = ({
     }
   };
 
+
+  const handleOpenBot = () => {
+    if (!selectedInstance?.botusername) return;
+    const botUrl = `https://t.me/${selectedInstance.botusername}?start=help`;
+    window.open(botUrl, '_blank');
+  };
+
+
   const footerBranding = (
     <div className="app-footer">
       <a
@@ -482,14 +571,15 @@ const App: React.FC<AppProps> = ({
     </div>
   );
 
+
   if (loading) {
     return (
       <div className="app-container app-loading">
-        <div className="loading-spinner" />
-        <p>{t('app.loading_app')}</p>
+        {/* Пустой или минималистичный placeholder */}
       </div>
     );
   }
+
 
   if (error) {
     return (
@@ -502,6 +592,7 @@ const App: React.FC<AppProps> = ({
       </div>
     );
   }
+
 
   if (
     isFirstLaunch &&
@@ -524,29 +615,37 @@ const App: React.FC<AppProps> = ({
     );
   }
 
+
   const showInstancesPage = currentPage === 'instances';
   const showSuperAdminPage = currentPage === 'superadmin';
 
+
   const hasChat = !!chatInfo?.id;
+
 
   const planLabel =
     billing && (billing.planName || billing.planCode)
       ? billing.planName || billing.planCode
       : '—';
 
+
   const displayPlanLabel = billing?.unlimited ? t('app.tariff_private_mode') : planLabel;
 
+
   const headerMode: 'list' | 'instance' = currentPage === 'instances' ? 'list' : 'instance';
+
 
   const showGlobalHeader =
     !showSuperAdminPage &&
     (currentPage === 'instances' || currentPage === 'dashboard' || currentPage === 'billing');
+
 
   const showBottomNav =
     !showInstancesPage &&
     !showSuperAdminPage &&
     currentPage !== 'billing' &&
     !!selectedInstance;
+
 
   return (
     <div className="app-container">
@@ -560,6 +659,7 @@ const App: React.FC<AppProps> = ({
           </div>
         </div>
       )}
+
 
       {showGlobalHeader && (
         <header className="app-header">
@@ -578,6 +678,7 @@ const App: React.FC<AppProps> = ({
                     </span>
                   </div>
 
+
                   {!billing?.unlimited && (
                     <>
                       <div className="tariff-row">
@@ -595,6 +696,7 @@ const App: React.FC<AppProps> = ({
                 </div>
               </div>
 
+
               <div className="header-right">
                 <button
                   type="button"
@@ -611,10 +713,12 @@ const App: React.FC<AppProps> = ({
             </div>
           )}
 
+
           {headerMode === 'instance' && selectedInstance && (
             <div className="header-content">
               <div className="header-info">
                 <h1 className="header-title">{selectedInstance.botname || t('app.default_title')}</h1>
+
 
                 <div className="instance-badge">
                   {selectedInstance.botusername ? (
@@ -635,6 +739,7 @@ const App: React.FC<AppProps> = ({
                   )}
                 </div>
 
+
                 {hasChat ? (
                   <div className="chat-status chat-connected">
                     {t('app.chat_connected', { id: chatInfo?.id })}
@@ -653,6 +758,7 @@ const App: React.FC<AppProps> = ({
                 )}
               </div>
 
+
               <button
                 type="button"
                 className="btn-back"
@@ -666,6 +772,7 @@ const App: React.FC<AppProps> = ({
           )}
         </header>
       )}
+
 
       <main className={`main-content ${pageAnim ? 'gh-page-animating' : ''}`}>
         {currentPage === 'instances' && (
@@ -690,25 +797,31 @@ const App: React.FC<AppProps> = ({
           />
         )}
 
+
         {currentPage === 'dashboard' && selectedInstance && (
           <Dashboard instanceId={selectedInstance.instanceid} />
         )}
+
 
         {currentPage === 'tickets' && selectedInstance && (
           <Tickets instanceId={selectedInstance.instanceid} />
         )}
 
+
         {currentPage === 'operators' && selectedInstance && selectedInstance.role === 'owner' && (
           <Operators instanceId={selectedInstance.instanceid} />
         )}
+
 
         {currentPage === 'settings' && selectedInstance && selectedInstance.role === 'owner' && (
           <Settings instanceId={selectedInstance.instanceid} />
         )}
 
+
         {currentPage === 'billing' && selectedInstance && (
           <Billing instanceId={selectedInstance.instanceid} />
         )}
+
 
         {currentPage === 'superadmin' && isSuperadmin && (
           <SuperAdmin
@@ -719,7 +832,9 @@ const App: React.FC<AppProps> = ({
         )}
       </main>
 
+
       {footerBranding}
+
 
       {showBottomNav && (
         <nav className="app-nav">
@@ -732,6 +847,7 @@ const App: React.FC<AppProps> = ({
               <span className="nav-label">{t('nav.dashboard')}</span>
             </button>
 
+
             <button
               className={`nav-button ${currentPage === 'tickets' ? 'active' : ''}`}
               onClick={() => setCurrentPage('tickets')}
@@ -739,6 +855,7 @@ const App: React.FC<AppProps> = ({
               <span className="nav-icon">🎫</span>
               <span className="nav-label">{t('nav.tickets')}</span>
             </button>
+
 
             {selectedInstance?.role === 'owner' && (
               <>
@@ -749,6 +866,7 @@ const App: React.FC<AppProps> = ({
                   <span className="nav-icon">👥</span>
                   <span className="nav-label">{t('nav.operators')}</span>
                 </button>
+
 
                 <button
                   className={`nav-button ${currentPage === 'settings' ? 'active' : ''}`}
@@ -763,12 +881,14 @@ const App: React.FC<AppProps> = ({
         </nav>
       )}
 
+
       {showAddModal && (
         <AddBotModal
           onClose={() => setShowAddModal(false)}
           onSubmitToken={handleCreateInstanceByToken}
         />
       )}
+
 
       {/* bindHelp Bottom Sheet */}
       <Drawer.Root
@@ -784,6 +904,7 @@ const App: React.FC<AppProps> = ({
             <div className="drawer-body">
               <div className="drawer-handle" />
 
+
               <div className="drawer-header">
                 <h3 className="drawer-title">{t('bindHelp.title')}</h3>
                 <button
@@ -796,6 +917,7 @@ const App: React.FC<AppProps> = ({
                 </button>
               </div>
 
+
               <div className="bind-help-content">
                 <p className="bind-help-paragraph">{t('bindHelp.paragraph1')}</p>
                 <p className="bind-help-paragraph">{t('bindHelp.paragraph2')}</p>
@@ -806,7 +928,15 @@ const App: React.FC<AppProps> = ({
                 </p>
               </div>
 
-              <div className="drawer-footer drawer-footer-end">
+
+              <div className="drawer-footer">
+                <button
+                  type="button"
+                  className="btn btn--primary"
+                  onClick={handleOpenBot}
+                >
+                  {t('bindHelp.openBot', 'Открыть бот')}
+                </button>
                 <button
                   type="button"
                   className="btn btn--secondary"
@@ -822,5 +952,6 @@ const App: React.FC<AppProps> = ({
     </div>
   );
 };
+
 
 export default App;

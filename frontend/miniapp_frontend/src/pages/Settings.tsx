@@ -1,9 +1,7 @@
 // src/pages/Settings.tsx
 import React, { useEffect, useState } from 'react';
 import { Drawer } from 'vaul';
-
 import { apiClient } from '../api/client';
-
 import { useTranslation } from 'react-i18next';
 
 interface SettingsProps {
@@ -23,8 +21,15 @@ const Settings: React.FC<SettingsProps> = ({ instanceId }) => {
   const [defaultAnswer, setDefaultAnswer] = useState('');
 
   const [autoReplyEnabled, setAutoReplyEnabled] = useState(false);
-  const [openChatEnabled, setOpenChatEnabled] = useState(false);
   const [privacyEnabled, setPrivacyEnabled] = useState(false);
+
+  const [original, setOriginal] = useState({
+    autoCloseHours: 12,
+    greeting: '',
+    defaultAnswer: '',
+    autoReplyEnabled: false,
+    privacyEnabled: false,
+  });
 
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -41,14 +46,25 @@ const Settings: React.FC<SettingsProps> = ({ instanceId }) => {
 
         if (isCancelled) return;
 
-        setAutoCloseHours(data.autoclose_hours ?? 12);
+        const loadedAutoCloseHours = data.autoclose_hours ?? 12;
+        const loadedGreeting = data.autoreply?.greeting ?? '';
+        const loadedDefaultAnswer = data.autoreply?.defaultanswer ?? '';
+        const loadedAutoReplyEnabled = !!data.autoreply?.enabled;
+        const loadedPrivacyEnabled = !!data.privacymodeenabled;
 
-        setGreeting(data.autoreply?.greeting ?? '');
-        setDefaultAnswer(data.autoreply?.defaultanswer ?? '');
+        setAutoCloseHours(loadedAutoCloseHours);
+        setGreeting(loadedGreeting);
+        setDefaultAnswer(loadedDefaultAnswer);
+        setAutoReplyEnabled(loadedAutoReplyEnabled);
+        setPrivacyEnabled(loadedPrivacyEnabled);
 
-        setAutoReplyEnabled(!!data.autoreply?.enabled);
-        setOpenChatEnabled(!!data.openchatenabled);
-        setPrivacyEnabled(!!data.privacymodeenabled);
+        setOriginal({
+          autoCloseHours: loadedAutoCloseHours,
+          greeting: loadedGreeting,
+          defaultAnswer: loadedDefaultAnswer,
+          autoReplyEnabled: loadedAutoReplyEnabled,
+          privacyEnabled: loadedPrivacyEnabled,
+        });
 
         setDirty(false);
       } catch (err: any) {
@@ -69,6 +85,15 @@ const Settings: React.FC<SettingsProps> = ({ instanceId }) => {
     };
   }, [instanceId]);
 
+  const resetToOriginal = () => {
+    setAutoCloseHours(original.autoCloseHours);
+    setGreeting(original.greeting);
+    setDefaultAnswer(original.defaultAnswer);
+    setAutoReplyEnabled(original.autoReplyEnabled);
+    setPrivacyEnabled(original.privacyEnabled);
+    setDirty(false);
+  };
+
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -84,8 +109,15 @@ const Settings: React.FC<SettingsProps> = ({ instanceId }) => {
           greeting: greeting || null,
           defaultanswer: defaultAnswer || null,
         },
-        openchatenabled: openChatEnabled,
         privacymodeenabled: privacyEnabled,
+      });
+
+      setOriginal({
+        autoCloseHours,
+        greeting,
+        defaultAnswer,
+        autoReplyEnabled,
+        privacyEnabled,
       });
 
       setSuccess(t('settings.save_success'));
@@ -116,7 +148,6 @@ const Settings: React.FC<SettingsProps> = ({ instanceId }) => {
           <h2 style={{ margin: 0 }}>⚙️ {t('settings.title')}</h2>
         </div>
 
-        {/* Липкое сообщение об успехе */}
         {success && (
           <div
             className="card"
@@ -283,44 +314,20 @@ const Settings: React.FC<SettingsProps> = ({ instanceId }) => {
             </label>
           </div>
         </div>
-
-        {/* Open Chat */}
-        <div className="card" style={{ marginTop: 12 }}>
-          <h3 style={{ margin: '0 0 12px 0', fontSize: 14 }}>💬 Open Chat</h3>
-
-          <div
-            className="form-group"
-            style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
-          >
-            <label className="form-label" style={{ marginBottom: 0 }}>
-              Open Chat
-            </label>
-
-            <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <input
-                type="checkbox"
-                checked={openChatEnabled}
-                onChange={(e) => {
-                  setOpenChatEnabled(e.target.checked);
-                  setDirty(true);
-                }}
-              />
-              <span>{openChatEnabled ? t('settings.toggle_on') : t('settings.toggle_off')}</span>
-            </label>
-          </div>
-        </div>
-
-        {/* обычная кнопка сохранения (если не нужна липкая) */}
-        <div className="card" style={{ marginTop: 12 }}>
-          <button type="submit" className="btn btn-primary btn-block">
-            {t('settings.save')}
-          </button>
-        </div>
       </form>
 
       {/* Premium Sticky Save Button - Vaul Drawer Style */}
       {dirty && (
-        <Drawer.Root open={true} modal={false} dismissible={false}>
+        <Drawer.Root
+          open={dirty}
+          onOpenChange={(isOpen) => {
+            if (!isOpen) {
+              resetToOriginal();
+            }
+          }}
+          modal={true}
+          dismissible={true}
+        >
           <Drawer.Portal>
             <Drawer.Content
               style={{
@@ -335,7 +342,8 @@ const Settings: React.FC<SettingsProps> = ({ instanceId }) => {
             >
               <div
                 style={{
-                  background: 'linear-gradient(180deg, rgba(var(--tg-theme-bg-color-rgb, 255, 255, 255), 0) 0%, rgba(var(--tg-theme-bg-color-rgb, 255, 255, 255), 0.8) 20%, var(--tg-theme-bg-color, #fff) 40%)',
+                  background:
+                    'linear-gradient(180deg, rgba(var(--tg-theme-bg-color-rgb, 255, 255, 255), 0) 0%, rgba(var(--tg-theme-bg-color-rgb, 255, 255, 255), 0.8) 20%, var(--tg-theme-bg-color, #fff) 40%)',
                   backdropFilter: 'blur(12px)',
                   WebkitBackdropFilter: 'blur(12px)',
                   paddingTop: 24,
@@ -355,7 +363,6 @@ const Settings: React.FC<SettingsProps> = ({ instanceId }) => {
                     gap: 10,
                   }}
                 >
-                  {/* Индикатор несохраненных изменений */}
                   <div
                     style={{
                       display: 'flex',
@@ -381,7 +388,6 @@ const Settings: React.FC<SettingsProps> = ({ instanceId }) => {
                     <span>Несохраненные изменения</span>
                   </div>
 
-                  {/* Основная кнопка Save */}
                   <button
                     type="submit"
                     disabled={saving}

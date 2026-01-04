@@ -1,15 +1,14 @@
 // src/pages/SuperAdmin.tsx
 //
-// NEW (FirstLaunch offer gating):
-// - Добавлен блок настроек "Offer (FirstLaunch)" -> miniapp_public.offer.enabled + miniapp_public.offer.url
-// - URL валидируется как https://
-// - В save() проходит через нормализацию mergeDefaults/normalizeIds, как и остальная форма
-// - Модальные окна переработаны на Vaul Drawer
-// - Premium sticky Save button через Vaul Drawer
-// - Полностью переработано на Telegram-идентичность с классами из App.css
+// UPDATED: Admin Panel with Navigation Menu
+// - Dashboard with client metrics widgets
+// - Clients section (stub for future backend)
+// - Settings sections: Offer, Single-Tenant, Superadmins, Instance Defaults, Payments
+// - All existing logic preserved
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { Drawer } from 'vaul';
+import { FaChartBar, FaUsers, FaFileAlt, FaLock, FaUserShield, FaCogs, FaCreditCard } from 'react-icons/fa'; // Added for tab bar icons
 
 import { apiClient } from '../api/client';
 import type { MiniappPublicSettings } from '../api/client';
@@ -397,6 +396,8 @@ const MiniSwitch: React.FC<{
   );
 };
 
+type MenuSection = 'dashboard' | 'clients' | 'offer' | 'single-tenant' | 'superadmins' | 'instance-defaults' | 'payments';
+
 const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
   const { t } = useTranslation();
   const [loading, setLoading] = useState(true);
@@ -424,6 +425,8 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
   const [pendingDelete, setPendingDelete] = useState<
     null | { kind: 'superadmin'; id: number } | { kind: 'owner'; id: number }
   >(null);
+
+  const [activeSection, setActiveSection] = useState<MenuSection>('dashboard');
 
   const isSuperadmin = useMemo(() => {
     const roles = me?.roles || [];
@@ -734,10 +737,1167 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
   return (
     <div className="superadmin-page">
       {/* Header */}
-      <div className="card superadmin-header">
-        <div className="superadmin-header-content">
-          <img src={logoRed} alt="GraceHub" className="superadmin-logo" />
-          <span className="superadmin-title">GraceHub Admin Panel</span>
+      <div className="card superadmin-header flex items-center justify-between">
+        <div className="superadmin-header-content flex items-center gap-2">
+          <img src={logoRed} alt="GraceHub" className="superadmin-logo w-8 h-8" />
+          <span className="superadmin-title text-lg">GraceHub Admin</span>
+        </div>
+        {onBack && (
+          <button
+            type="button"
+            className="btn btn--secondary btn--sm"
+            onClick={handleBack}
+            disabled={saving}
+          >
+            ← Назад
+          </button>
+        )}
+      </div>
+
+      {/* Main Content */}
+      <div className="superadmin-content p-4 pb-20"> {/* Added pb-20 for tab bar height */}
+        {error && (
+          <div className="card error-card superadmin-error">
+            <p className="error-text">{error}</p>
+          </div>
+        )}
+
+        {/* Dashboard Section */}
+        {activeSection === 'dashboard' && (
+          <div className="card superadmin-main">
+            <div className="card-header">
+              <div className="card-title">Дашборд GraceHub Platform</div>
+            </div>
+
+            <div className="superadmin-dashboard">
+              <div className="dashboard-widget">
+                <div className="widget-icon">👥</div>
+                <div className="widget-content">
+                  <div className="widget-value">-</div>
+                  <div className="widget-label">Всего клиентов</div>
+                </div>
+              </div>
+
+              <div className="dashboard-widget">
+                <div className="widget-icon">🤖</div>
+                <div className="widget-content">
+                  <div className="widget-value">-</div>
+                  <div className="widget-label">Активных ботов</div>
+                </div>
+              </div>
+
+              <div className="dashboard-widget">
+                <div className="widget-icon">🎫</div>
+                <div className="widget-content">
+                  <div className="widget-value">-</div>
+                  <div className="widget-label">Тикетов за месяц</div>
+                </div>
+              </div>
+
+              <div className="dashboard-widget">
+                <div className="widget-icon">💰</div>
+                <div className="widget-content">
+                  <div className="widget-value">-</div>
+                  <div className="widget-label">Платные подписки</div>
+                </div>
+              </div>
+            </div>
+
+            <div className="info-banner" style={{ marginTop: '20px' }}>
+              📈 Backend для метрик в разработке. Здесь будут отображаться статистика клиентов, активность ботов и аналитика платформы.
+            </div>
+          </div>
+        )}
+
+        {/* Clients Section */}
+        {activeSection === 'clients' && (
+          <div className="card superadmin-main">
+            <div className="card-header">
+              <div className="card-title">Клиенты платформы</div>
+            </div>
+
+            <div className="info-banner">
+              🚧 Раздел в разработке. Здесь будет список всех клиентов GraceHub с информацией о:
+              <ul style={{ marginTop: '10px', paddingLeft: '20px' }}>
+                <li>Telegram user_id и username клиентов</li>
+                <li>Количество созданных инстансов ботов</li>
+                <li>Статус подписки (Free/Lite/Pro/Enterprise)</li>
+                <li>Дата регистрации и последней активности</li>
+                <li>Управление доступом и ограничениями</li>
+              </ul>
+            </div>
+
+            <div className="superadmin-section" style={{ marginTop: '20px' }}>
+              <h3 className="superadmin-section-title">Заглушка списка клиентов</h3>
+              
+              <div className="superadmin-list">
+                <div className="superadmin-list-item">
+                  <div className="superadmin-list-item-text">
+                    <strong>User ID:</strong> 123456789 | <strong>Username:</strong> @example_user | <strong>Боты:</strong> 2 | <strong>План:</strong> Pro
+                  </div>
+                  <button type="button" className="btn btn--outline btn--sm" disabled>
+                    Управление
+                  </button>
+                </div>
+                <div className="superadmin-list-item">
+                  <div className="superadmin-list-item-text">
+                    <strong>User ID:</strong> 987654321 | <strong>Username:</strong> @demo_client | <strong>Боты:</strong> 1 | <strong>План:</strong> Lite
+                  </div>
+                  <button type="button" className="btn btn--outline btn--sm" disabled>
+                    Управление
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Offer Section */}
+        {activeSection === 'offer' && (
+          <div className="card superadmin-main">
+            <div className="card-header">
+              <div className="card-title">Оферта (FirstLaunch)</div>
+            </div>
+
+            <div className="card superadmin-section">
+              <div className="form-group form-group-row">
+                <label className="form-label">Требовать принятие оферты</label>
+                <MiniSwitch
+                  checked={!!form.offer?.enabled}
+                  disabled={saving}
+                  ariaLabel="Toggle offer gating"
+                  onChange={(checked) => {
+                    setForm((p) => ({
+                      ...p,
+                      offer: {
+                        enabled: checked,
+                        url: String(p.offer?.url ?? ''),
+                      },
+                    }));
+                    setOfferErrors((prev) => ({ ...prev, offer_url: '' }));
+                  }}
+                />
+              </div>
+
+              {form.offer?.enabled && (
+                <div className="superadmin-subsection">
+                  <div className="form-group">
+                    <label className="form-label">Offer URL (https)</label>
+                    <input
+                      className="form-input"
+                      value={form.offer?.url ?? ''}
+                      placeholder="https://your-domain/offer"
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setForm((p) => ({
+                          ...p,
+                          offer: { enabled: !!p.offer?.enabled, url: v },
+                        }));
+                        setOfferErrors((prev) => ({ ...prev, offer_url: '' }));
+                      }}
+                      onBlur={() => {
+                        const v = String(form.offer?.url ?? '').trim();
+                        setOfferErrors((prev) => ({
+                          ...prev,
+                          offer_url: !v
+                            ? 'URL оферты обязателен.'
+                            : isHttpsUrl(v)
+                              ? ''
+                              : 'URL оферты должен начинаться с https://',
+                        }));
+                      }}
+                    />
+                    {offerErrors.offer_url ? (
+                      <small className="form-error">{offerErrors.offer_url}</small>
+                    ) : null}
+                  </div>
+
+                  <div className="form-hint">{t('superAdmin.firstLaunch_offer_block_hint')}</div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Single-tenant Section */}
+        {activeSection === 'single-tenant' && (
+          <div className="card superadmin-main">
+            <div className="card-header">
+              <div className="card-title">Single-tenant режим</div>
+            </div>
+
+            <div className="card superadmin-section">
+              <div className="form-group form-group-row">
+                <label className="form-label">Включить single-tenant</label>
+                <MiniSwitch
+                  checked={form.singleTenant.enabled}
+                  disabled={saving}
+                  ariaLabel="Toggle single-tenant"
+                  onChange={(checked) => {
+                    setForm((p) => {
+                      if (checked) {
+                        return {
+                          ...p,
+                          singleTenant: { ...p.singleTenant, enabled: true },
+                          payments: {
+                            ...p.payments,
+                            enabled: {
+                              telegramStars: false,
+                              ton: false,
+                              yookassa: false,
+                              stripe: false,
+                            },
+                          },
+                        };
+                      }
+                      return {
+                        ...p,
+                        singleTenant: { ...p.singleTenant, enabled: false },
+                      };
+                    });
+                    setPaymentErrors({});
+                  }}
+                />
+              </div>
+
+              {form.singleTenant.enabled && (
+                <>
+                  <div className="form-group">
+                    <label className="form-label">Owner Telegram IDs</label>
+                    <button
+                      className="btn btn--secondary"
+                      type="button"
+                      onClick={openAddOwner}
+                      disabled={saving}
+                    >
+                      Add
+                    </button>
+
+                    <div className="superadmin-list">
+                      {(form.singleTenant.allowedUserIds || []).length === 0 ? (
+                        <div className="superadmin-list-empty">No IDs configured.</div>
+                      ) : (
+                        (form.singleTenant.allowedUserIds || []).map((id) => (
+                          <div key={id} className="superadmin-list-item">
+                            <div className="superadmin-list-item-text">{id}</div>
+                            <button
+                              type="button"
+                              className="btn btn--outline btn--sm"
+                              onClick={() => requestDeleteOwner(id)}
+                              title={`Удалить ${id}`}
+                              aria-label={`Удалить ${id}`}
+                            >
+                              <TrashIcon />
+                            </button>
+                          </div>
+                        ))
+                      )}
+                    </div>
+
+                    <div className="form-hint">{t('superAdmin.single_tenant_allowlist_hint')}</div>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Superadmins Section */}
+        {activeSection === 'superadmins' && (
+          <div className="card superadmin-main">
+            <div className="card-header">
+              <div className="card-title">Superadmins управление</div>
+            </div>
+
+            <div className="card superadmin-section">
+              <button
+                className="btn btn--secondary"
+                onClick={openAddSuperadmin}
+                type="button"
+                disabled={saving}
+              >
+                Добавить superadmin
+              </button>
+
+              <div className="superadmin-list">
+                {(form.superadmins || []).length === 0 ? (
+                  <div className="superadmin-list-empty">
+                    No superadmins configured in DB settings.
+                  </div>
+                ) : (
+                  (form.superadmins || []).map((id) => (
+                    <div key={id} className="superadmin-list-item">
+                      <div className="superadmin-list-item-text">{id}</div>
+                      <button
+                        type="button"
+                        className="btn btn--outline btn--sm"
+                        onClick={() => requestDeleteSuperadmin(id)}
+                        title={`Удалить ${id}`}
+                        aria-label={`Удалить ${id}`}
+                      >
+                        <TrashIcon />
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Instance Defaults Section */}
+        {activeSection === 'instance-defaults' && (
+          <div className="card superadmin-main">
+            <div className="card-header">
+              <div className="card-title">Дефолтные настройки инстансов</div>
+            </div>
+
+            <div className="card superadmin-section">
+              <div className="form-group">
+                <label className="form-label">{t('superAdmin.antiflood_limit_hint')}</label>
+                <input
+                  className="form-input"
+                  type="number"
+                  value={form.instanceDefaults.antifloodMaxUserMessagesPerMinute}
+                  onChange={(e) =>
+                    setForm((p) => ({
+                      ...p,
+                      instanceDefaults: {
+                        ...p.instanceDefaults,
+                        antifloodMaxUserMessagesPerMinute: Number(e.target.value),
+                      },
+                    }))
+                  }
+                />
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">{t('superAdmin.attachments_limit_mb_hint')}</label>
+                <input
+                  className="form-input"
+                  type="number"
+                  value={form.instanceDefaults.workerMaxFileMb}
+                  onChange={(e) =>
+                    setForm((p) => ({
+                      ...p,
+                      instanceDefaults: { ...p.instanceDefaults, workerMaxFileMb: Number(e.target.value) },
+                    }))
+                  }
+                />
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">{t('superAdmin.bots_limit_hint')}</label>
+                <input
+                  className="form-input"
+                  type="number"
+                  disabled={form.singleTenant.enabled}
+                  value={form.instanceDefaults.maxInstancesPerUser}
+                  onChange={(e) =>
+                    setForm((p) => ({
+                      ...p,
+                      instanceDefaults: {
+                        ...p.instanceDefaults,
+                        maxInstancesPerUser: Number(e.target.value),
+                      },
+                    }))
+                  }
+                />
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Payments Section */}
+        {activeSection === 'payments' && (
+          <div className="card superadmin-main">
+            <div className="card-header">
+              <div className="card-title">Настройки платежей</div>
+            </div>
+
+            <div className="card superadmin-section">
+              {form.singleTenant.enabled ? (
+                <div className="info-banner">
+                  {t('superAdmin.single_tenant_payments_disabled_hint')}
+                </div>
+              ) : (
+                <>
+                  {/* Telegram Stars */}
+                  <div className="form-group form-group-row">
+                    <label className="form-label">Telegram Stars</label>
+                    <MiniSwitch
+                      checked={form.payments.enabled.telegramStars}
+                      disabled={saving}
+                      ariaLabel="Toggle Telegram Stars"
+                      onChange={(checked) =>
+                        setForm((p) => ({
+                          ...p,
+                          payments: {
+                            ...p.payments,
+                            enabled: { ...p.payments.enabled, telegramStars: checked },
+                          },
+                        }))
+                      }
+                    />
+                  </div>
+
+                  {form.payments.enabled.telegramStars && (
+                    <div className="superadmin-subsection">
+                      <div className="form-group">
+                        <label className="form-label">Price Lite (Stars)</label>
+                        <input
+                          className="form-input"
+                          type="number"
+                          min={0}
+                          value={form.payments.telegramStars.priceStarsLite}
+                          onChange={(e) =>
+                            setForm((p) => ({
+                              ...p,
+                              payments: {
+                                ...p.payments,
+                                telegramStars: {
+                                  ...p.payments.telegramStars,
+                                  priceStarsLite: Number(e.target.value),
+                                },
+                              },
+                            }))
+                          }
+                        />
+                      </div>
+
+                      <div className="form-group">
+                        <label className="form-label">Price Pro (Stars)</label>
+                        <input
+                          className="form-input"
+                          type="number"
+                          min={0}
+                          value={form.payments.telegramStars.priceStarsPro}
+                          onChange={(e) =>
+                            setForm((p) => ({
+                              ...p,
+                              payments: {
+                                ...p.payments,
+                                telegramStars: {
+                                  ...p.payments.telegramStars,
+                                  priceStarsPro: Number(e.target.value),
+                                },
+                              },
+                            }))
+                          }
+                        />
+                      </div>
+
+                      <div className="form-group">
+                        <label className="form-label">Price Ent (Stars)</label>
+                        <input
+                          className="form-input"
+                          type="number"
+                          min={0}
+                          value={form.payments.telegramStars.priceStarsEnterprise}
+                          onChange={(e) =>
+                            setForm((p) => ({
+                              ...p,
+                              payments: {
+                                ...p.payments,
+                                telegramStars: {
+                                  ...p.payments.telegramStars,
+                                  priceStarsEnterprise: Number(e.target.value),
+                                },
+                              },
+                            }))
+                          }
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {/* TON */}
+                  <div className="form-group form-group-row">
+                    <label className="form-label">TON</label>
+                    <MiniSwitch
+                      checked={form.payments.enabled.ton}
+                      disabled={saving}
+                      ariaLabel="Toggle TON payments"
+                      onChange={(checked) => {
+                        setForm((p) => ({
+                          ...p,
+                          payments: { ...p.payments, enabled: { ...p.payments.enabled, ton: checked } },
+                        }));
+                        setPaymentErrors((prev) => {
+                          const n = { ...prev };
+                          Object.keys(n)
+                            .filter((k) => k.startsWith('ton_'))
+                            .forEach((k) => delete n[k]);
+                          return n;
+                        });
+                      }}
+                    />
+                  </div>
+
+                  {form.payments.enabled.ton && (
+                    <div className="superadmin-subsection">
+                      <div className="form-group">
+                        <label className="form-label">Network</label>
+                        <select
+                          className="form-select"
+                          value={form.payments.ton.network}
+                          onChange={(e) => {
+                            const next = e.target.value as any;
+                            setForm((p) => {
+                              const prevNet = p.payments.ton.network;
+                              const prevApi = (p.payments.ton.apiBaseUrl || '').trim();
+                              const shouldAutoSwitchApi =
+                                (prevNet === 'testnet' && prevApi === TON_TESTNET_DEFAULT_API) ||
+                                (prevNet === 'mainnet' && prevApi === TON_MAINNET_DEFAULT_API);
+
+                              return {
+                                ...p,
+                                payments: {
+                                  ...p.payments,
+                                  ton: {
+                                    ...p.payments.ton,
+                                    network: next,
+                                    apiBaseUrl: shouldAutoSwitchApi
+                                      ? next === 'mainnet'
+                                        ? TON_MAINNET_DEFAULT_API
+                                        : TON_TESTNET_DEFAULT_API
+                                      : p.payments.ton.apiBaseUrl,
+                                  },
+                                },
+                              };
+                            });
+
+                            setPaymentErrors((prev) => ({ ...prev, ton_api: '' }));
+                          }}
+                        >
+                          <option value="testnet">Testnet</option>
+                          <option value="mainnet">Mainnet</option>
+                        </select>
+                      </div>
+
+                      <div className="form-group">
+                        <label className="form-label">Wallet</label>
+                        <input
+                          className="form-input"
+                          value={form.payments.ton.walletAddress}
+                          placeholder="0QC3VqDed0SODLgoelsv0oV3iBjUOKJuQjXdWhDENohmtW"
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            setForm((p) => ({
+                              ...p,
+                              payments: { ...p.payments, ton: { ...p.payments.ton, walletAddress: v } },
+                            }));
+                            setPaymentErrors((prev) => ({ ...prev, ton_wallet: '' }));
+                          }}
+                          onBlur={() => {
+                            const v = (form.payments.ton.walletAddress || '').trim();
+                            setPaymentErrors((prev) => ({
+                              ...prev,
+                              ton_wallet: isTonFriendlyAddressLike(v)
+                                ? ''
+                                : 'Некорректный TON-адрес (friendly).',
+                            }));
+                          }}
+                        />
+                        {paymentErrors.ton_wallet ? (
+                          <small className="form-error">{paymentErrors.ton_wallet}</small>
+                        ) : null}
+                      </div>
+
+                      <div className="form-group">
+                        <label className="form-label">API URL</label>
+                        <input
+                          className="form-input"
+                          value={form.payments.ton.apiBaseUrl}
+                          placeholder="https://testnet.toncenter.com/api/v2"
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            setForm((p) => ({
+                              ...p,
+                              payments: { ...p.payments, ton: { ...p.payments.ton, apiBaseUrl: v } },
+                            }));
+                            setPaymentErrors((prev) => ({ ...prev, ton_api: '' }));
+                          }}
+                          onBlur={() => {
+                            const v = (form.payments.ton.apiBaseUrl || '').trim();
+                            setPaymentErrors((prev) => ({
+                              ...prev,
+                              ton_api: isHttpsUrl(v) ? '' : 'TON API URL должен начинаться с https://',
+                            }));
+                          }}
+                        />
+                        {paymentErrors.ton_api ? (
+                          <small className="form-error">{paymentErrors.ton_api}</small>
+                        ) : null}
+                      </div>
+
+                      <div className="form-group">
+                        <label className="form-label">
+                          API key <small className="form-label-optional">(необязательно)</small>
+                        </label>
+                        <input
+                          className="form-input"
+                          value={form.payments.ton.apiKey}
+                          onChange={(e) =>
+                            setForm((p) => ({
+                              ...p,
+                              payments: { ...p.payments, ton: { ...p.payments.ton, apiKey: e.target.value } },
+                            }))
+                          }
+                        />
+                      </div>
+
+                      <div className="form-group">
+                        <label className="form-label">Delay (sec)</label>
+                        <input
+                          className="form-input"
+                          type="number"
+                          min={1}
+                          value={form.payments.ton.checkDelaySeconds}
+                          onChange={(e) => {
+                            const n = Number(e.target.value);
+                            setForm((p) => ({
+                              ...p,
+                              payments: {
+                                ...p.payments,
+                                ton: { ...p.payments.ton, checkDelaySeconds: n },
+                              },
+                            }));
+                            setPaymentErrors((prev) => ({ ...prev, ton_delay: '' }));
+                          }}
+                          onBlur={() => {
+                            const n = Number(form.payments.ton.checkDelaySeconds);
+                            setPaymentErrors((prev) => ({
+                              ...prev,
+                              ton_delay: Number.isFinite(n) && n >= 1 ? '' : 'Delay ≥ 1 сек.',
+                            }));
+                          }}
+                        />
+                        {paymentErrors.ton_delay ? (
+                          <small className="form-error">{paymentErrors.ton_delay}</small>
+                        ) : null}
+                      </div>
+
+                      <div className="form-group">
+                        <label className="form-label">Confirmations</label>
+                        <input
+                          className="form-input"
+                          type="number"
+                          min={1}
+                          value={form.payments.ton.confirmationsRequired}
+                          onChange={(e) => {
+                            const n = Number(e.target.value);
+                            setForm((p) => ({
+                              ...p,
+                              payments: {
+                                ...p.payments,
+                                ton: { ...p.payments.ton, confirmationsRequired: n },
+                              },
+                            }));
+                            setPaymentErrors((prev) => ({ ...prev, ton_confirmations: '' }));
+                          }}
+                          onBlur={() => {
+                            const n = Number(form.payments.ton.confirmationsRequired);
+                            setPaymentErrors((prev) => ({
+                              ...prev,
+                              ton_confirmations: Number.isFinite(n) && n >= 1 ? '' : 'Confirmations ≥ 1.',
+                            }));
+                          }}
+                        />
+                        {paymentErrors.ton_confirmations ? (
+                          <small className="form-error">{paymentErrors.ton_confirmations}</small>
+                        ) : null}
+                      </div>
+
+                      <div className="form-group">
+                        <label className="form-label">Price Lite (TON)</label>
+                        <input
+                          className="form-input"
+                          type="number"
+                          value={form.payments.ton.pricePerPeriodLite}
+                          onChange={(e) =>
+                            setForm((p) => ({
+                              ...p,
+                              payments: {
+                                ...p.payments,
+                                ton: { ...p.payments.ton, pricePerPeriodLite: Number(e.target.value) },
+                              },
+                            }))
+                          }
+                        />
+                      </div>
+
+                      <div className="form-group">
+                        <label className="form-label">Price Pro (TON)</label>
+                        <input
+                          className="form-input"
+                          type="number"
+                          value={form.payments.ton.pricePerPeriodPro}
+                          onChange={(e) =>
+                            setForm((p) => ({
+                              ...p,
+                              payments: {
+                                ...p.payments,
+                                ton: { ...p.payments.ton, pricePerPeriodPro: Number(e.target.value) },
+                              },
+                            }))
+                          }
+                        />
+                      </div>
+
+                      <div className="form-group">
+                        <label className="form-label">Price Ent (TON)</label>
+                        <input
+                          className="form-input"
+                          type="number"
+                          value={form.payments.ton.pricePerPeriodEnterprise}
+                          onChange={(e) =>
+                            setForm((p) => ({
+                              ...p,
+                              payments: {
+                                ...p.payments,
+                                ton: { ...p.payments.ton, pricePerPeriodEnterprise: Number(e.target.value) },
+                              },
+                            }))
+                          }
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {/* YooKassa */}
+                  <div className="form-group form-group-row">
+                    <label className="form-label">YooKassa</label>
+                    <MiniSwitch
+                      checked={form.payments.enabled.yookassa}
+                      disabled={saving}
+                      ariaLabel="Toggle YooKassa payments"
+                      onChange={(checked) =>
+                        setForm((p) => ({
+                          ...p,
+                          payments: {
+                            ...p.payments,
+                            enabled: { ...p.payments.enabled, yookassa: checked },
+                          },
+                        }))
+                      }
+                    />
+                  </div>
+
+                  {form.payments.enabled.yookassa && (
+                    <div className="superadmin-subsection">
+                      <div className="form-group">
+                        <label className="form-label">Shop ID</label>
+                        <input
+                          className="form-input"
+                          value={form.payments.yookassa.shopId}
+                          onChange={(e) =>
+                            setForm((p) => ({
+                              ...p,
+                              payments: {
+                                ...p.payments,
+                                yookassa: { ...p.payments.yookassa, shopId: e.target.value },
+                              },
+                            }))
+                          }
+                        />
+                      </div>
+
+                      <div className="form-group">
+                        <label className="form-label">Secret</label>
+                        <input
+                          className="form-input"
+                          value={form.payments.yookassa.secretKey}
+                          onChange={(e) =>
+                            setForm((p) => ({
+                              ...p,
+                              payments: {
+                                ...p.payments,
+                                yookassa: { ...p.payments.yookassa, secretKey: e.target.value },
+                              },
+                            }))
+                          }
+                        />
+                      </div>
+
+                      <div className="form-group">
+                        <label className="form-label">Return URL</label>
+                        <input
+                          className="form-input"
+                          value={form.payments.yookassa.returnUrl}
+                          placeholder="https://..."
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            setForm((p) => ({
+                              ...p,
+                              payments: {
+                                ...p.payments,
+                                yookassa: { ...p.payments.yookassa, returnUrl: v },
+                              },
+                            }));
+                            setPaymentErrors((prev) => ({ ...prev, yk_return: '' }));
+                          }}
+                          onBlur={() => {
+                            const v = (form.payments.yookassa.returnUrl || '').trim();
+                            setPaymentErrors((prev) => ({
+                              ...prev,
+                              yk_return: isHttpsUrl(v)
+                                ? ''
+                                : 'Return URL должен начинаться с https://',
+                            }));
+                          }}
+                        />
+                        {paymentErrors.yk_return ? (
+                          <small className="form-error">{paymentErrors.yk_return}</small>
+                        ) : null}
+                      </div>
+
+                      <div className="form-group">
+                        <label className="form-label">Price Lite (RUB)</label>
+                        <input
+                          className="form-input"
+                          type="number"
+                          value={form.payments.yookassa.priceRubLite}
+                          onChange={(e) =>
+                            setForm((p) => ({
+                              ...p,
+                              payments: {
+                                ...p.payments,
+                                yookassa: {
+                                  ...p.payments.yookassa,
+                                  priceRubLite: Number(e.target.value),
+                                },
+                              },
+                            }))
+                          }
+                        />
+                      </div>
+
+                      <div className="form-group">
+                        <label className="form-label">Price Pro (RUB)</label>
+                        <input
+                          className="form-input"
+                          type="number"
+                          value={form.payments.yookassa.priceRubPro}
+                          onChange={(e) =>
+                            setForm((p) => ({
+                              ...p,
+                              payments: {
+                                ...p.payments,
+                                yookassa: { ...p.payments.yookassa, priceRubPro: Number(e.target.value) },
+                              },
+                            }))
+                          }
+                        />
+                      </div>
+
+                      <div className="form-group">
+                        <label className="form-label">Price Ent (RUB)</label>
+                        <input
+                          className="form-input"
+                          type="number"
+                          value={form.payments.yookassa.priceRubEnterprise}
+                          onChange={(e) =>
+                            setForm((p) => ({
+                              ...p,
+                              payments: {
+                                ...p.payments,
+                                yookassa: {
+                                  ...p.payments.yookassa,
+                                  priceRubEnterprise: Number(e.target.value),
+                                },
+                              },
+                            }))
+                          }
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Stripe */}
+                  <div className="form-group form-group-row">
+                    <label className="form-label">Stripe</label>
+                    <MiniSwitch
+                      checked={form.payments.enabled.stripe}
+                      disabled={saving}
+                      ariaLabel="Toggle Stripe payments"
+                      onChange={(checked) => {
+                        setForm((p) => ({
+                          ...p,
+                          payments: {
+                            ...p.payments,
+                            enabled: { ...p.payments.enabled, stripe: checked },
+                          },
+                        }));
+                        setPaymentErrors((prev) => {
+                          const n = { ...prev };
+                          Object.keys(n)
+                            .filter((k) => k.startsWith('stripe_'))
+                            .forEach((k) => delete n[k]);
+                          return n;
+                        });
+                      }}
+                    />
+                  </div>
+
+                  {form.payments.enabled.stripe && (
+                    <div className="superadmin-subsection">
+                      <div className="form-group">
+                        <label className="form-label">Secret Key</label>
+                        <input
+                          className="form-input"
+                          value={form.payments.stripe.secretKey}
+                          onChange={(e) =>
+                            setForm((p) => ({
+                              ...p,
+                              payments: {
+                                ...p.payments,
+                                stripe: { ...p.payments.stripe, secretKey: e.target.value },
+                              },
+                            }))
+                          }
+                        />
+                      </div>
+
+                      <div className="form-group">
+                        <label className="form-label">Publishable Key</label>
+                        <input
+                          className="form-input"
+                          value={form.payments.stripe.publishableKey}
+                          onChange={(e) =>
+                            setForm((p) => ({
+                              ...p,
+                              payments: {
+                                ...p.payments,
+                                stripe: { ...p.payments.stripe, publishableKey: e.target.value },
+                              },
+                            }))
+                          }
+                        />
+                      </div>
+
+                      <div className="form-group">
+                        <label className="form-label">Webhook Secret</label>
+                        <input
+                          className="form-input"
+                          value={form.payments.stripe.webhookSecret}
+                          onChange={(e) =>
+                            setForm((p) => ({
+                              ...p,
+                              payments: {
+                                ...p.payments,
+                                stripe: { ...p.payments.stripe, webhookSecret: e.target.value },
+                              },
+                            }))
+                          }
+                        />
+                      </div>
+
+                      <div className="form-group">
+                        <label className="form-label">Currency (e.g., usd)</label>
+                        <input
+                          className="form-input"
+                          value={form.payments.stripe.currency}
+                          onChange={(e) =>
+                            setForm((p) => ({
+                              ...p,
+                              payments: {
+                                ...p.payments,
+                                stripe: { ...p.payments.stripe, currency: e.target.value.toLowerCase() },
+                              },
+                            }))
+                          }
+                        />
+                      </div>
+
+                      <div className="form-group">
+                        <label className="form-label">Success URL</label>
+                        <input
+                          className="form-input"
+                          value={form.payments.stripe.successUrl || ''}
+                          placeholder="https://your-domain/miniapp/billing/success"
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            setForm((p) => ({
+                              ...p,
+                              payments: {
+                                ...p.payments,
+                                stripe: { ...p.payments.stripe, successUrl: v },
+                              },
+                            }));
+                            setPaymentErrors((prev) => ({ ...prev, stripe_success_url: '' }));
+                          }}
+                          onBlur={() => {
+                            const v = (form.payments.stripe.successUrl || '').trim();
+                            setPaymentErrors((prev) => ({
+                              ...prev,
+                              stripe_success_url: !v
+                                ? 'Stripe successUrl обязателен.'
+                                : isHttpsUrl(v)
+                                  ? ''
+                                  : 'Stripe successUrl должен начинаться с https://',
+                            }));
+                          }}
+                        />
+                        {paymentErrors.stripe_success_url ? (
+                          <small className="form-error">{paymentErrors.stripe_success_url}</small>
+                        ) : null}
+                      </div>
+
+                      <div className="form-group">
+                        <label className="form-label">Cancel URL</label>
+                        <input
+                          className="form-input"
+                          value={form.payments.stripe.cancelUrl || ''}
+                          placeholder="https://your-domain/miniapp/billing/cancel"
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            setForm((p) => ({
+                              ...p,
+                              payments: {
+                                ...p.payments,
+                                stripe: { ...p.payments.stripe, cancelUrl: v },
+                              },
+                            }));
+                            setPaymentErrors((prev) => ({ ...prev, stripe_cancel_url: '' }));
+                          }}
+                          onBlur={() => {
+                            const v = (form.payments.stripe.cancelUrl || '').trim();
+                            setPaymentErrors((prev) => ({
+                              ...prev,
+                              stripe_cancel_url: !v
+                                ? 'Stripe cancelUrl обязателен.'
+                                : isHttpsUrl(v)
+                                  ? ''
+                                  : 'Stripe cancelUrl должен начинаться с https://',
+                            }));
+                          }}
+                        />
+                        {paymentErrors.stripe_cancel_url ? (
+                          <small className="form-error">{paymentErrors.stripe_cancel_url}</small>
+                        ) : null}
+                      </div>
+
+                      <div className="form-group">
+                        <label className="form-label">Price Lite (USD)</label>
+                        <input
+                          className="form-input"
+                          type="number"
+                          step="0.01"
+                          value={form.payments.stripe.priceUsdLite}
+                          onChange={(e) =>
+                            setForm((p) => ({
+                              ...p,
+                              payments: {
+                                ...p.payments,
+                                stripe: { ...p.payments.stripe, priceUsdLite: Number(e.target.value) },
+                              },
+                            }))
+                          }
+                        />
+                      </div>
+
+                      <div className="form-group">
+                        <label className="form-label">Price Pro (USD)</label>
+                        <input
+                          className="form-input"
+                          type="number"
+                          step="0.01"
+                          value={form.payments.stripe.priceUsdPro}
+                          onChange={(e) =>
+                            setForm((p) => ({
+                              ...p,
+                              payments: {
+                                ...p.payments,
+                                stripe: { ...p.payments.stripe, priceUsdPro: Number(e.target.value) },
+                              },
+                            }))
+                          }
+                        />
+                      </div>
+
+                      <div className="form-group">
+                        <label className="form-label">Price Ent (USD)</label>
+                        <input
+                          className="form-input"
+                          type="number"
+                          step="0.01"
+                          value={form.payments.stripe.priceUsdEnterprise}
+                          onChange={(e) =>
+                            setForm((p) => ({
+                              ...p,
+                              payments: {
+                                ...p.payments,
+                                stripe: {
+                                  ...p.payments.stripe,
+                                  priceUsdEnterprise: Number(e.target.value),
+                                },
+                              },
+                            }))
+                          }
+                        />
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Bottom Tab Bar */}
+      <div className="app-nav">
+        <div className="app-nav-inner">
+          <button
+            className={`nav-button ${activeSection === 'dashboard' ? 'active' : ''}`}
+            onClick={() => setActiveSection('dashboard')}
+          >
+            <FaChartBar className="nav-icon" />
+            <span className="nav-label">Дашборд</span>
+          </button>
+          <button
+            className={`nav-button ${activeSection === 'clients' ? 'active' : ''}`}
+            onClick={() => setActiveSection('clients')}
+          >
+            <FaUsers className="nav-icon" />
+            <span className="nav-label">Клиенты</span>
+          </button>
+          <button
+            className={`nav-button ${activeSection === 'offer' ? 'active' : ''}`}
+            onClick={() => setActiveSection('offer')}
+          >
+            <FaFileAlt className="nav-icon" />
+            <span className="nav-label">Оферта</span>
+          </button>
+          <button
+            className={`nav-button ${activeSection === 'single-tenant' ? 'active' : ''}`}
+            onClick={() => setActiveSection('single-tenant')}
+          >
+            <FaLock className="nav-icon" />
+            <span className="nav-label">Single</span>
+          </button>
+          <button
+            className={`nav-button ${activeSection === 'superadmins' ? 'active' : ''}`}
+            onClick={() => setActiveSection('superadmins')}
+          >
+            <FaUserShield className="nav-icon" />
+            <span className="nav-label">Админы</span>
+          </button>
+          <button
+            className={`nav-button ${activeSection === 'instance-defaults' ? 'active' : ''}`}
+            onClick={() => setActiveSection('instance-defaults')}
+          >
+            <FaCogs className="nav-icon" />
+            <span className="nav-label">Дефолты</span>
+          </button>
+          <button
+            className={`nav-button ${activeSection === 'payments' ? 'active' : ''}`}
+            onClick={() => setActiveSection('payments')}
+          >
+            <FaCreditCard className="nav-icon" />
+            <span className="nav-label">Платежи</span>
+          </button>
         </div>
       </div>
 
@@ -792,7 +1952,6 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
             placeholder={t('superAdmin.owner_user_id_placeholder')}
           />
         </div>
-
         <div className="drawer-footer">
           <button
             type="button"
@@ -841,993 +2000,6 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
           </button>
         </div>
       </BaseDrawer>
-
-      <div className="card superadmin-main">
-        <div className="card-header">
-          <div className="card-title">Superadmin panel</div>
-          <div className="superadmin-actions">
-            {onBack && (
-              <button
-                type="button"
-                className="btn btn--secondary"
-                onClick={handleBack}
-                disabled={saving}
-              >
-                ← Back
-              </button>
-            )}
-          </div>
-        </div>
-
-        {error && (
-          <div className="card error-card superadmin-error">
-            <p className="error-text">{error}</p>
-          </div>
-        )}
-
-        {/* Offer (FirstLaunch) */}
-        <div className="card superadmin-section">
-          <h3 className="superadmin-section-title">Offer (FirstLaunch)</h3>
-
-          <div className="form-group form-group-row">
-            <label className="form-label">Require offer acceptance</label>
-            <MiniSwitch
-              checked={!!form.offer?.enabled}
-              disabled={saving}
-              ariaLabel="Toggle offer gating"
-              onChange={(checked) => {
-                setForm((p) => ({
-                  ...p,
-                  offer: {
-                    enabled: checked,
-                    url: String(p.offer?.url ?? ''),
-                  },
-                }));
-                setOfferErrors((prev) => ({ ...prev, offer_url: '' }));
-              }}
-            />
-          </div>
-
-          {form.offer?.enabled && (
-            <div className="superadmin-subsection">
-              <div className="form-group">
-                <label className="form-label">Offer URL (https)</label>
-                <input
-                  className="form-input"
-                  value={form.offer?.url ?? ''}
-                  placeholder="https://your-domain/offer"
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    setForm((p) => ({
-                      ...p,
-                      offer: { enabled: !!p.offer?.enabled, url: v },
-                    }));
-                    setOfferErrors((prev) => ({ ...prev, offer_url: '' }));
-                  }}
-                  onBlur={() => {
-                    const v = String(form.offer?.url ?? '').trim();
-                    setOfferErrors((prev) => ({
-                      ...prev,
-                      offer_url: !v
-                        ? 'URL оферты обязателен.'
-                        : isHttpsUrl(v)
-                          ? ''
-                          : 'URL оферты должен начинаться с https://',
-                    }));
-                  }}
-                />
-                {offerErrors.offer_url ? (
-                  <small className="form-error">{offerErrors.offer_url}</small>
-                ) : null}
-              </div>
-
-              <div className="form-hint">{t('superAdmin.firstLaunch_offer_block_hint')}</div>
-            </div>
-          )}
-        </div>
-
-        {/* Single-tenant */}
-        <div className="card superadmin-section">
-          <h3 className="superadmin-section-title">Single-tenant</h3>
-
-          <div className="form-group form-group-row">
-            <label className="form-label">Enable single-tenant mode</label>
-            <MiniSwitch
-              checked={form.singleTenant.enabled}
-              disabled={saving}
-              ariaLabel="Toggle single-tenant"
-              onChange={(checked) => {
-                setForm((p) => {
-                  if (checked) {
-                    return {
-                      ...p,
-                      singleTenant: { ...p.singleTenant, enabled: true },
-                      payments: {
-                        ...p.payments,
-                        enabled: {
-                          telegramStars: false,
-                          ton: false,
-                          yookassa: false,
-                          stripe: false,
-                        },
-                      },
-                    };
-                  }
-                  return {
-                    ...p,
-                    singleTenant: { ...p.singleTenant, enabled: false },
-                  };
-                });
-                setPaymentErrors({});
-              }}
-            />
-          </div>
-
-          {form.singleTenant.enabled && (
-            <>
-              <div className="form-group">
-                <label className="form-label">Owner Telegram IDs</label>
-                <button
-                  className="btn btn--secondary"
-                  type="button"
-                  onClick={openAddOwner}
-                  disabled={saving}
-                >
-                  Add
-                </button>
-
-                <div className="superadmin-list">
-                  {(form.singleTenant.allowedUserIds || []).length === 0 ? (
-                    <div className="superadmin-list-empty">No IDs configured.</div>
-                  ) : (
-                    (form.singleTenant.allowedUserIds || []).map((id) => (
-                      <div key={id} className="superadmin-list-item">
-                        <div className="superadmin-list-item-text">{id}</div>
-                        <button
-                          type="button"
-                          className="btn btn--outline btn--sm"
-                          onClick={() => requestDeleteOwner(id)}
-                          title={`Удалить ${id}`}
-                          aria-label={`Удалить ${id}`}
-                        >
-                          <TrashIcon />
-                        </button>
-                      </div>
-                    ))
-                  )}
-                </div>
-
-                <div className="form-hint">{t('superAdmin.single_tenant_allowlist_hint')}</div>
-              </div>
-            </>
-          )}
-        </div>
-
-        {/* Superadmins */}
-        <div className="card superadmin-section">
-          <h3 className="superadmin-section-title">Superadmins</h3>
-
-          <button
-            className="btn btn--secondary"
-            onClick={openAddSuperadmin}
-            type="button"
-            disabled={saving}
-          >
-            Add superadmin
-          </button>
-
-          <div className="superadmin-list">
-            {(form.superadmins || []).length === 0 ? (
-              <div className="superadmin-list-empty">
-                No superadmins configured in DB settings.
-              </div>
-            ) : (
-              (form.superadmins || []).map((id) => (
-                <div key={id} className="superadmin-list-item">
-                  <div className="superadmin-list-item-text">{id}</div>
-                  <button
-                    type="button"
-                    className="btn btn--outline btn--sm"
-                    onClick={() => requestDeleteSuperadmin(id)}
-                    title={`Удалить ${id}`}
-                    aria-label={`Удалить ${id}`}
-                  >
-                    <TrashIcon />
-                  </button>
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-
-        {/* Instance defaults */}
-        <div className="card superadmin-section">
-          <h3 className="superadmin-section-title">Instance defaults</h3>
-
-          <div className="form-group">
-            <label className="form-label">{t('superAdmin.antiflood_limit_hint')}</label>
-            <input
-              className="form-input"
-              type="number"
-              value={form.instanceDefaults.antifloodMaxUserMessagesPerMinute}
-              onChange={(e) =>
-                setForm((p) => ({
-                  ...p,
-                  instanceDefaults: {
-                    ...p.instanceDefaults,
-                    antifloodMaxUserMessagesPerMinute: Number(e.target.value),
-                  },
-                }))
-              }
-            />
-          </div>
-
-          <div className="form-group">
-            <label className="form-label">{t('superAdmin.attachments_limit_mb_hint')}</label>
-            <input
-              className="form-input"
-              type="number"
-              value={form.instanceDefaults.workerMaxFileMb}
-              onChange={(e) =>
-                setForm((p) => ({
-                  ...p,
-                  instanceDefaults: { ...p.instanceDefaults, workerMaxFileMb: Number(e.target.value) },
-                }))
-              }
-            />
-          </div>
-
-          <div className="form-group">
-            <label className="form-label">{t('superAdmin.bots_limit_hint')}</label>
-            <input
-              className="form-input"
-              type="number"
-              disabled={form.singleTenant.enabled}
-              value={form.instanceDefaults.maxInstancesPerUser}
-              onChange={(e) =>
-                setForm((p) => ({
-                  ...p,
-                  instanceDefaults: {
-                    ...p.instanceDefaults,
-                    maxInstancesPerUser: Number(e.target.value),
-                  },
-                }))
-              }
-            />
-          </div>
-        </div>
-
-        {/* Payments */}
-        <div className="card superadmin-section">
-          <h3 className="superadmin-section-title">Payments (UI)</h3>
-
-          {form.singleTenant.enabled ? (
-            <div className="info-banner">
-              {t('superAdmin.single_tenant_payments_disabled_hint')}
-            </div>
-          ) : (
-            <>
-              {/* Telegram Stars */}
-              <div className="form-group form-group-row">
-                <label className="form-label">Telegram Stars</label>
-                <MiniSwitch
-                  checked={form.payments.enabled.telegramStars}
-                  disabled={saving}
-                  ariaLabel="Toggle Telegram Stars"
-                  onChange={(checked) =>
-                    setForm((p) => ({
-                      ...p,
-                      payments: {
-                        ...p.payments,
-                        enabled: { ...p.payments.enabled, telegramStars: checked },
-                      },
-                    }))
-                  }
-                />
-              </div>
-
-              {form.payments.enabled.telegramStars && (
-                <div className="superadmin-subsection">
-                  <div className="form-group">
-                    <label className="form-label">Price Lite (Stars)</label>
-                    <input
-                      className="form-input"
-                      type="number"
-                      min={0}
-                      value={form.payments.telegramStars.priceStarsLite}
-                      onChange={(e) =>
-                        setForm((p) => ({
-                          ...p,
-                          payments: {
-                            ...p.payments,
-                            telegramStars: {
-                              ...p.payments.telegramStars,
-                              priceStarsLite: Number(e.target.value),
-                            },
-                          },
-                        }))
-                      }
-                    />
-                  </div>
-
-                  <div className="form-group">
-                    <label className="form-label">Price Pro (Stars)</label>
-                    <input
-                      className="form-input"
-                      type="number"
-                      min={0}
-                      value={form.payments.telegramStars.priceStarsPro}
-                      onChange={(e) =>
-                        setForm((p) => ({
-                          ...p,
-                          payments: {
-                            ...p.payments,
-                            telegramStars: {
-                              ...p.payments.telegramStars,
-                              priceStarsPro: Number(e.target.value),
-                            },
-                          },
-                        }))
-                      }
-                    />
-                  </div>
-
-                  <div className="form-group">
-                    <label className="form-label">Price Ent (Stars)</label>
-                    <input
-                      className="form-input"
-                      type="number"
-                      min={0}
-                      value={form.payments.telegramStars.priceStarsEnterprise}
-                      onChange={(e) =>
-                        setForm((p) => ({
-                          ...p,
-                          payments: {
-                            ...p.payments,
-                            telegramStars: {
-                              ...p.payments.telegramStars,
-                              priceStarsEnterprise: Number(e.target.value),
-                            },
-                          },
-                        }))
-                      }
-                    />
-                  </div>
-                </div>
-              )}
-
-              {/* TON */}
-              <div className="form-group form-group-row">
-                <label className="form-label">TON</label>
-                <MiniSwitch
-                  checked={form.payments.enabled.ton}
-                  disabled={saving}
-                  ariaLabel="Toggle TON payments"
-                  onChange={(checked) => {
-                    setForm((p) => ({
-                      ...p,
-                      payments: { ...p.payments, enabled: { ...p.payments.enabled, ton: checked } },
-                    }));
-                    setPaymentErrors((prev) => {
-                      const n = { ...prev };
-                      Object.keys(n)
-                        .filter((k) => k.startsWith('ton_'))
-                        .forEach((k) => delete n[k]);
-                      return n;
-                    });
-                  }}
-                />
-              </div>
-
-              {form.payments.enabled.ton && (
-                <div className="superadmin-subsection">
-                  <div className="form-group">
-                    <label className="form-label">Network</label>
-                    <select
-                      className="form-select"
-                      value={form.payments.ton.network}
-                      onChange={(e) => {
-                        const next = e.target.value as any;
-                        setForm((p) => {
-                          const prevNet = p.payments.ton.network;
-                          const prevApi = (p.payments.ton.apiBaseUrl || '').trim();
-                          const shouldAutoSwitchApi =
-                            (prevNet === 'testnet' && prevApi === TON_TESTNET_DEFAULT_API) ||
-                            (prevNet === 'mainnet' && prevApi === TON_MAINNET_DEFAULT_API);
-
-                          return {
-                            ...p,
-                            payments: {
-                              ...p.payments,
-                              ton: {
-                                ...p.payments.ton,
-                                network: next,
-                                apiBaseUrl: shouldAutoSwitchApi
-                                  ? next === 'mainnet'
-                                    ? TON_MAINNET_DEFAULT_API
-                                    : TON_TESTNET_DEFAULT_API
-                                  : p.payments.ton.apiBaseUrl,
-                              },
-                            },
-                          };
-                        });
-
-                        setPaymentErrors((prev) => ({ ...prev, ton_api: '' }));
-                      }}
-                    >
-                      <option value="testnet">Testnet</option>
-                      <option value="mainnet">Mainnet</option>
-                    </select>
-                  </div>
-
-                  <div className="form-group">
-                    <label className="form-label">Wallet</label>
-                    <input
-                      className="form-input"
-                      value={form.payments.ton.walletAddress}
-                      placeholder="0QC3VqDed0SODLgoelsv0oV3iBjUOKJuQjXdWhDENohmtW"
-                      onChange={(e) => {
-                        const v = e.target.value;
-                        setForm((p) => ({
-                          ...p,
-                          payments: { ...p.payments, ton: { ...p.payments.ton, walletAddress: v } },
-                        }));
-                        setPaymentErrors((prev) => ({ ...prev, ton_wallet: '' }));
-                      }}
-                      onBlur={() => {
-                        const v = (form.payments.ton.walletAddress || '').trim();
-                        setPaymentErrors((prev) => ({
-                          ...prev,
-                          ton_wallet: isTonFriendlyAddressLike(v)
-                            ? ''
-                            : 'Некорректный TON-адрес (friendly).',
-                        }));
-                      }}
-                    />
-                    {paymentErrors.ton_wallet ? (
-                      <small className="form-error">{paymentErrors.ton_wallet}</small>
-                    ) : null}
-                  </div>
-
-                  <div className="form-group">
-                    <label className="form-label">API URL</label>
-                    <input
-                      className="form-input"
-                      value={form.payments.ton.apiBaseUrl}
-                      placeholder="https://testnet.toncenter.com/api/v2"
-                      onChange={(e) => {
-                        const v = e.target.value;
-                        setForm((p) => ({
-                          ...p,
-                          payments: { ...p.payments, ton: { ...p.payments.ton, apiBaseUrl: v } },
-                        }));
-                        setPaymentErrors((prev) => ({ ...prev, ton_api: '' }));
-                      }}
-                      onBlur={() => {
-                        const v = (form.payments.ton.apiBaseUrl || '').trim();
-                        setPaymentErrors((prev) => ({
-                          ...prev,
-                          ton_api: isHttpsUrl(v) ? '' : 'TON API URL должен начинаться с https://',
-                        }));
-                      }}
-                    />
-                    {paymentErrors.ton_api ? (
-                      <small className="form-error">{paymentErrors.ton_api}</small>
-                    ) : null}
-                  </div>
-
-                  <div className="form-group">
-                    <label className="form-label">
-                      API key <small className="form-label-optional">(необязательно)</small>
-                    </label>
-                    <input
-                      className="form-input"
-                      value={form.payments.ton.apiKey}
-                      onChange={(e) =>
-                        setForm((p) => ({
-                          ...p,
-                          payments: { ...p.payments, ton: { ...p.payments.ton, apiKey: e.target.value } },
-                        }))
-                      }
-                    />
-                  </div>
-
-                  <div className="form-group">
-                    <label className="form-label">Delay (sec)</label>
-                    <input
-                      className="form-input"
-                      type="number"
-                      min={1}
-                      value={form.payments.ton.checkDelaySeconds}
-                      onChange={(e) => {
-                        const n = Number(e.target.value);
-                        setForm((p) => ({
-                          ...p,
-                          payments: {
-                            ...p.payments,
-                            ton: { ...p.payments.ton, checkDelaySeconds: n },
-                          },
-                        }));
-                        setPaymentErrors((prev) => ({ ...prev, ton_delay: '' }));
-                      }}
-                      onBlur={() => {
-                        const n = Number(form.payments.ton.checkDelaySeconds);
-                        setPaymentErrors((prev) => ({
-                          ...prev,
-                          ton_delay: Number.isFinite(n) && n >= 1 ? '' : 'Delay ≥ 1 сек.',
-                        }));
-                      }}
-                    />
-                    {paymentErrors.ton_delay ? (
-                      <small className="form-error">{paymentErrors.ton_delay}</small>
-                    ) : null}
-                  </div>
-
-                  <div className="form-group">
-                    <label className="form-label">Confirmations</label>
-                    <input
-                      className="form-input"
-                      type="number"
-                      min={1}
-                      value={form.payments.ton.confirmationsRequired}
-                      onChange={(e) => {
-                        const n = Number(e.target.value);
-                        setForm((p) => ({
-                          ...p,
-                          payments: {
-                            ...p.payments,
-                            ton: { ...p.payments.ton, confirmationsRequired: n },
-                          },
-                        }));
-                        setPaymentErrors((prev) => ({ ...prev, ton_confirmations: '' }));
-                      }}
-                      onBlur={() => {
-                        const n = Number(form.payments.ton.confirmationsRequired);
-                        setPaymentErrors((prev) => ({
-                          ...prev,
-                          ton_confirmations: Number.isFinite(n) && n >= 1 ? '' : 'Confirmations ≥ 1.',
-                        }));
-                      }}
-                    />
-                    {paymentErrors.ton_confirmations ? (
-                      <small className="form-error">{paymentErrors.ton_confirmations}</small>
-                    ) : null}
-                  </div>
-
-                  <div className="form-group">
-                    <label className="form-label">Price Lite (TON)</label>
-                    <input
-                      className="form-input"
-                      type="number"
-                      value={form.payments.ton.pricePerPeriodLite}
-                      onChange={(e) =>
-                        setForm((p) => ({
-                          ...p,
-                          payments: {
-                            ...p.payments,
-                            ton: { ...p.payments.ton, pricePerPeriodLite: Number(e.target.value) },
-                          },
-                        }))
-                      }
-                    />
-                  </div>
-
-                  <div className="form-group">
-                    <label className="form-label">Price Pro (TON)</label>
-                    <input
-                      className="form-input"
-                      type="number"
-                      value={form.payments.ton.pricePerPeriodPro}
-                      onChange={(e) =>
-                        setForm((p) => ({
-                          ...p,
-                          payments: {
-                            ...p.payments,
-                            ton: { ...p.payments.ton, pricePerPeriodPro: Number(e.target.value) },
-                          },
-                        }))
-                      }
-                    />
-                  </div>
-
-                  <div className="form-group">
-                    <label className="form-label">Price Ent (TON)</label>
-                    <input
-                      className="form-input"
-                      type="number"
-                      value={form.payments.ton.pricePerPeriodEnterprise}
-                      onChange={(e) =>
-                        setForm((p) => ({
-                          ...p,
-                          payments: {
-                            ...p.payments,
-                            ton: { ...p.payments.ton, pricePerPeriodEnterprise: Number(e.target.value) },
-                          },
-                        }))
-                      }
-                    />
-                  </div>
-                </div>
-              )}
-
-              {/* YooKassa */}
-              <div className="form-group form-group-row">
-                <label className="form-label">YooKassa</label>
-                <MiniSwitch
-                  checked={form.payments.enabled.yookassa}
-                  disabled={saving}
-                  ariaLabel="Toggle YooKassa payments"
-                  onChange={(checked) =>
-                    setForm((p) => ({
-                      ...p,
-                      payments: {
-                        ...p.payments,
-                        enabled: { ...p.payments.enabled, yookassa: checked },
-                      },
-                    }))
-                  }
-                />
-              </div>
-
-              {form.payments.enabled.yookassa && (
-                <div className="superadmin-subsection">
-                  <div className="form-group">
-                    <label className="form-label">Shop ID</label>
-                    <input
-                      className="form-input"
-                      value={form.payments.yookassa.shopId}
-                      onChange={(e) =>
-                        setForm((p) => ({
-                          ...p,
-                          payments: {
-                            ...p.payments,
-                            yookassa: { ...p.payments.yookassa, shopId: e.target.value },
-                          },
-                        }))
-                      }
-                    />
-                  </div>
-
-                  <div className="form-group">
-                    <label className="form-label">Secret</label>
-                    <input
-                      className="form-input"
-                      value={form.payments.yookassa.secretKey}
-                      onChange={(e) =>
-                        setForm((p) => ({
-                          ...p,
-                          payments: {
-                            ...p.payments,
-                            yookassa: { ...p.payments.yookassa, secretKey: e.target.value },
-                          },
-                        }))
-                      }
-                    />
-                  </div>
-
-                  <div className="form-group">
-                    <label className="form-label">Return URL</label>
-                    <input
-                      className="form-input"
-                      value={form.payments.yookassa.returnUrl}
-                      placeholder="https://..."
-                      onChange={(e) => {
-                        const v = e.target.value;
-                        setForm((p) => ({
-                          ...p,
-                          payments: {
-                            ...p.payments,
-                            yookassa: { ...p.payments.yookassa, returnUrl: v },
-                          },
-                        }));
-                        setPaymentErrors((prev) => ({ ...prev, yk_return: '' }));
-                      }}
-                      onBlur={() => {
-                        const v = (form.payments.yookassa.returnUrl || '').trim();
-                        setPaymentErrors((prev) => ({
-                          ...prev,
-                          yk_return: isHttpsUrl(v)
-                            ? ''
-                            : 'Return URL должен начинаться с https://',
-                        }));
-                      }}
-                    />
-                    {paymentErrors.yk_return ? (
-                      <small className="form-error">{paymentErrors.yk_return}</small>
-                    ) : null}
-                  </div>
-
-                  <div className="form-group">
-                    <label className="form-label">Price Lite (RUB)</label>
-                    <input
-                      className="form-input"
-                      type="number"
-                      value={form.payments.yookassa.priceRubLite}
-                      onChange={(e) =>
-                        setForm((p) => ({
-                          ...p,
-                          payments: {
-                            ...p.payments,
-                            yookassa: {
-                              ...p.payments.yookassa,
-                              priceRubLite: Number(e.target.value),
-                            },
-                          },
-                        }))
-                      }
-                    />
-                  </div>
-
-                  <div className="form-group">
-                    <label className="form-label">Price Pro (RUB)</label>
-                    <input
-                      className="form-input"
-                      type="number"
-                      value={form.payments.yookassa.priceRubPro}
-                      onChange={(e) =>
-                        setForm((p) => ({
-                          ...p,
-                          payments: {
-                            ...p.payments,
-                            yookassa: { ...p.payments.yookassa, priceRubPro: Number(e.target.value) },
-                          },
-                        }))
-                      }
-                    />
-                  </div>
-
-                  <div className="form-group">
-                    <label className="form-label">Price Ent (RUB)</label>
-                    <input
-                      className="form-input"
-                      type="number"
-                      value={form.payments.yookassa.priceRubEnterprise}
-                      onChange={(e) =>
-                        setForm((p) => ({
-                          ...p,
-                          payments: {
-                            ...p.payments,
-                            yookassa: {
-                              ...p.payments.yookassa,
-                              priceRubEnterprise: Number(e.target.value),
-                            },
-                          },
-                        }))
-                      }
-                    />
-                  </div>
-                </div>
-              )}
-
-              {/* Stripe */}
-              <div className="form-group form-group-row">
-                <label className="form-label">Stripe</label>
-                <MiniSwitch
-                  checked={form.payments.enabled.stripe}
-                  disabled={saving}
-                  ariaLabel="Toggle Stripe payments"
-                  onChange={(checked) => {
-                    setForm((p) => ({
-                      ...p,
-                      payments: {
-                        ...p.payments,
-                        enabled: { ...p.payments.enabled, stripe: checked },
-                      },
-                    }));
-                    setPaymentErrors((prev) => {
-                      const n = { ...prev };
-                      Object.keys(n)
-                        .filter((k) => k.startsWith('stripe_'))
-                        .forEach((k) => delete n[k]);
-                      return n;
-                    });
-                  }}
-                />
-              </div>
-
-              {form.payments.enabled.stripe && (
-                <div className="superadmin-subsection">
-                  <div className="form-group">
-                    <label className="form-label">Secret Key</label>
-                    <input
-                      className="form-input"
-                      value={form.payments.stripe.secretKey}
-                      onChange={(e) =>
-                        setForm((p) => ({
-                          ...p,
-                          payments: {
-                            ...p.payments,
-                            stripe: { ...p.payments.stripe, secretKey: e.target.value },
-                          },
-                        }))
-                      }
-                    />
-                  </div>
-
-                  <div className="form-group">
-                    <label className="form-label">Publishable Key</label>
-                    <input
-                      className="form-input"
-                      value={form.payments.stripe.publishableKey}
-                      onChange={(e) =>
-                        setForm((p) => ({
-                          ...p,
-                          payments: {
-                            ...p.payments,
-                            stripe: { ...p.payments.stripe, publishableKey: e.target.value },
-                          },
-                        }))
-                      }
-                    />
-                  </div>
-
-                  <div className="form-group">
-                    <label className="form-label">Webhook Secret</label>
-                    <input
-                      className="form-input"
-                      value={form.payments.stripe.webhookSecret}
-                      onChange={(e) =>
-                        setForm((p) => ({
-                          ...p,
-                          payments: {
-                            ...p.payments,
-                            stripe: { ...p.payments.stripe, webhookSecret: e.target.value },
-                          },
-                        }))
-                      }
-                    />
-                  </div>
-
-                  <div className="form-group">
-                    <label className="form-label">Currency (e.g., usd)</label>
-                    <input
-                      className="form-input"
-                      value={form.payments.stripe.currency}
-                      onChange={(e) =>
-                        setForm((p) => ({
-                          ...p,
-                          payments: {
-                            ...p.payments,
-                            stripe: { ...p.payments.stripe, currency: e.target.value.toLowerCase() },
-                          },
-                        }))
-                      }
-                    />
-                  </div>
-
-                  <div className="form-group">
-                    <label className="form-label">Success URL</label>
-                    <input
-                      className="form-input"
-                      value={form.payments.stripe.successUrl || ''}
-                      placeholder="https://your-domain/miniapp/billing/success"
-                      onChange={(e) => {
-                        const v = e.target.value;
-                        setForm((p) => ({
-                          ...p,
-                          payments: {
-                            ...p.payments,
-                            stripe: { ...p.payments.stripe, successUrl: v },
-                          },
-                        }));
-                        setPaymentErrors((prev) => ({ ...prev, stripe_success_url: '' }));
-                      }}
-                      onBlur={() => {
-                        const v = (form.payments.stripe.successUrl || '').trim();
-                        setPaymentErrors((prev) => ({
-                          ...prev,
-                          stripe_success_url: !v
-                            ? 'Stripe successUrl обязателен.'
-                            : isHttpsUrl(v)
-                              ? ''
-                              : 'Stripe successUrl должен начинаться с https://',
-                        }));
-                      }}
-                    />
-                    {paymentErrors.stripe_success_url ? (
-                      <small className="form-error">{paymentErrors.stripe_success_url}</small>
-                    ) : null}
-                  </div>
-
-                  <div className="form-group">
-                    <label className="form-label">Cancel URL</label>
-                    <input
-                      className="form-input"
-                      value={form.payments.stripe.cancelUrl || ''}
-                      placeholder="https://your-domain/miniapp/billing/cancel"
-                      onChange={(e) => {
-                        const v = e.target.value;
-                        setForm((p) => ({
-                          ...p,
-                          payments: {
-                            ...p.payments,
-                            stripe: { ...p.payments.stripe, cancelUrl: v },
-                          },
-                        }));
-                        setPaymentErrors((prev) => ({ ...prev, stripe_cancel_url: '' }));
-                      }}
-                      onBlur={() => {
-                        const v = (form.payments.stripe.cancelUrl || '').trim();
-                        setPaymentErrors((prev) => ({
-                          ...prev,
-                          stripe_cancel_url: !v
-                            ? 'Stripe cancelUrl обязателен.'
-                            : isHttpsUrl(v)
-                              ? ''
-                              : 'Stripe cancelUrl должен начинаться с https://',
-                        }));
-                      }}
-                    />
-                    {paymentErrors.stripe_cancel_url ? (
-                      <small className="form-error">{paymentErrors.stripe_cancel_url}</small>
-                    ) : null}
-                  </div>
-
-                  <div className="form-group">
-                    <label className="form-label">Price Lite (USD)</label>
-                    <input
-                      className="form-input"
-                      type="number"
-                      step="0.01"
-                      value={form.payments.stripe.priceUsdLite}
-                      onChange={(e) =>
-                        setForm((p) => ({
-                          ...p,
-                          payments: {
-                            ...p.payments,
-                            stripe: { ...p.payments.stripe, priceUsdLite: Number(e.target.value) },
-                          },
-                        }))
-                      }
-                    />
-                  </div>
-
-                  <div className="form-group">
-                    <label className="form-label">Price Pro (USD)</label>
-                    <input
-                      className="form-input"
-                      type="number"
-                      step="0.01"
-                      value={form.payments.stripe.priceUsdPro}
-                      onChange={(e) =>
-                        setForm((p) => ({
-                          ...p,
-                          payments: {
-                            ...p.payments,
-                            stripe: { ...p.payments.stripe, priceUsdPro: Number(e.target.value) },
-                          },
-                        }))
-                      }
-                    />
-                  </div>
-
-                  <div className="form-group">
-                    <label className="form-label">Price Ent (USD)</label>
-                    <input
-                      className="form-input"
-                      type="number"
-                      step="0.01"
-                      value={form.payments.stripe.priceUsdEnterprise}
-                      onChange={(e) =>
-                        setForm((p) => ({
-                          ...p,
-                          payments: {
-                            ...p.payments,
-                            stripe: {
-                              ...p.payments.stripe,
-                              priceUsdEnterprise: Number(e.target.value),
-                            },
-                          },
-                        }))
-                      }
-                    />
-                  </div>
-                </div>
-              )}
-            </>
-          )}
-        </div>
-      </div>
 
       {/* Premium Sticky Save Button */}
       {dirty && (

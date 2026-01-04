@@ -41,6 +41,49 @@ const FLAGSTYLE: React.CSSProperties = {
   flex: '0 0 auto',
 };
 
+const FirstLaunchSkeleton: React.FC = () => {
+  return (
+    <div style={{ padding: 12 }}>
+      <div className="card" style={{ marginBottom: 16 }}>
+        <div className="card__body">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+            <div className="skeleton" style={{ width: 32, height: 32, borderRadius: 10 }} />
+            <div className="skeleton animate-pulse" style={{ width: 120, height: 24 }} />
+          </div>
+
+          <div className="skeleton animate-pulse" style={{ width: '100%', height: 16, marginBottom: 6 }} />
+          <div className="skeleton animate-pulse" style={{ width: '80%', height: 14, marginBottom: 12 }} />
+
+          <div className="skeleton animate-pulse" style={{ width: 100, height: 12, marginBottom: 6 }} />
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            {[1, 2, 3, 4, 5].map((i) => (
+              <div key={i} className="skeleton animate-pulse" style={{ width: 80, height: 32, borderRadius: 999 }} />
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="card" style={{ marginBottom: 16 }}>
+        <div className="card__body">
+          <div className="skeleton animate-pulse" style={{ width: 140, height: 18, marginBottom: 10 }} />
+          <div className="skeleton animate-pulse" style={{ width: '100%', height: 44, borderRadius: 10 }} />
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card__body">
+          <div className="skeleton animate-pulse" style={{ width: 160, height: 18, marginBottom: 10 }} />
+          <div style={{ paddingLeft: 18 }}>
+            <div className="skeleton animate-pulse" style={{ width: '90%', height: 14, marginBottom: 8 }} />
+            <div className="skeleton animate-pulse" style={{ width: '85%', height: 14, marginBottom: 8 }} />
+            <div className="skeleton animate-pulse" style={{ width: '88%', height: 14 }} />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const FirstLaunch: React.FC<FirstLaunchProps> = ({
   onAddBotClick,
   instanceId,
@@ -169,6 +212,11 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
 
   const currentLangMeta = LANGS.find((l) => l.code === language) ?? LANGS[0];
 
+  // Show skeleton while offer is loading
+  if (offer.loading) {
+    return <FirstLaunchSkeleton />;
+  }
+
   return (
     <div style={{ padding: 12 }}>
       {/* --- Offer Gate Bottom Sheet (Vaul) --- */}
@@ -189,7 +237,7 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
             className="fixed bottom-0 left-0 right-0 flex flex-col rounded-t-[16px] outline-none"
             style={{
               zIndex: 9999,
-              maxHeight: '60vh', // ← КЛЮЧЕВОЕ: не выше 60% экрана
+              maxHeight: '60vh',
               backgroundColor: 'var(--tg-theme-bg-color, #ffffff)',
             }}
           >

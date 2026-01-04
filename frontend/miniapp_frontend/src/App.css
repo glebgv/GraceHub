@@ -811,16 +811,6 @@ select.form-control {
   text-align: center;
 }
 
-.loading-spinner {
-  width: 32px;
-  height: 32px;
-  border: 3px solid var(--color-secondary);
-  border-top-color: var(--color-primary);
-  border-radius: var(--radius-full);
-  animation: spin 0.8s linear infinite;
-  margin-bottom: var(--space-16);
-}
-
 @keyframes spin {
   to {
     transform: rotate(360deg);
@@ -2937,4 +2927,108 @@ select.form-control {
 
 .bind-help-paragraph-last {
   margin-bottom: 0;
+}
+
+
+/* SuperAdmin Navigation */
+.superadmin-nav {
+  margin-bottom: 16px;
+  padding: 12px;
+}
+
+.superadmin-nav-items {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  flex-wrap: wrap;
+}
+
+.superadmin-nav-item {
+  padding: 10px 16px;
+  border: 1px solid var(--tg-theme-hint-color, #999);
+  background: transparent;
+  color: var(--tg-theme-text-color, #000);
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 14px;
+  white-space: nowrap;
+  transition: all 0.2s ease;
+}
+
+.superadmin-nav-item:hover {
+  background: var(--tg-theme-button-color, #3390ec);
+  color: var(--tg-theme-button-text-color, #fff);
+  border-color: var(--tg-theme-button-color, #3390ec);
+}
+
+.superadmin-nav-item.active {
+  background: var(--tg-theme-button-color, #3390ec);
+  color: var(--tg-theme-button-text-color, #fff);
+  border-color: var(--tg-theme-button-color, #3390ec);
+  font-weight: 600;
+}
+
+/* Dashboard Widgets */
+.superadmin-dashboard {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px;
+  margin-top: 20px;
+}
+
+.dashboard-widget {
+  padding: 20px;
+  background: var(--tg-theme-secondary-bg-color, #f0f0f0);
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  transition: transform 0.2s ease;
+}
+
+.dashboard-widget:hover {
+  transform: translateY(-2px);
+}
+
+.widget-icon {
+  font-size: 32px;
+  width: 48px;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--tg-theme-bg-color, #fff);
+  border-radius: 50%;
+}
+
+.widget-content {
+  flex: 1;
+}
+
+.widget-value {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--tg-theme-text-color, #000);
+  margin-bottom: 4px;
+}
+
+.widget-label {
+  font-size: 12px;
+  color: var(--tg-theme-hint-color, #999);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.info-banner {
+  padding: 16px;
+  background: rgba(51, 144, 236, 0.1);
+  border-left: 4px solid var(--tg-theme-button-color, #3390ec);
+  border-radius: 8px;
+  color: var(--tg-theme-text-color, #000);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.info-banner ul {
+  margin: 0;
 }
