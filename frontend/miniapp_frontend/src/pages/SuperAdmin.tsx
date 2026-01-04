@@ -298,28 +298,6 @@ const InfoDrawer: React.FC<InfoDrawerProps> = ({ open, title, text, onClose }) =
   );
 };
 
-type ConfirmExitDrawerProps = {
-  open: boolean;
-  onExit: () => void;
-  onStay: () => void;
-};
-
-const ConfirmExitDrawer: React.FC<ConfirmExitDrawerProps> = ({ open, onExit, onStay }) => {
-  return (
-    <BaseDrawer open={open} title="Подтверждение" onClose={onStay}>
-      <div className="drawer-text">У вас несохраненные изменения. Выйти?</div>
-      <div className="drawer-footer">
-        <button type="button" className="btn btn--secondary" onClick={onStay}>
-          Назад
-        </button>
-        <button type="button" className="btn btn--primary" onClick={onExit}>
-          Выход
-        </button>
-      </div>
-    </BaseDrawer>
-  );
-};
-
 type ConfirmDeleteDrawerProps = {
   open: boolean;
   title?: string;
@@ -413,7 +391,6 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
   const [addOwnerOpen, setAddOwnerOpen] = useState(false);
 
   const [savedDrawerOpen, setSavedDrawerOpen] = useState(false);
-  const [confirmExitOpen, setConfirmExitOpen] = useState(false);
 
   const [addSuperadminOpen, setAddSuperadminOpen] = useState(false);
   const [addSuperadminValue, setAddSuperadminValue] = useState('');
@@ -693,10 +670,6 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
 
   const handleBack = () => {
     if (!onBack) return;
-    if (dirty) {
-      setConfirmExitOpen(true);
-      return;
-    }
     onBack();
   };
 
@@ -1906,15 +1879,6 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
         title={t('superAdmin.saved_title')}
         text={t('superAdmin.saved_text')}
         onClose={() => setSavedDrawerOpen(false)}
-      />
-
-      <ConfirmExitDrawer
-        open={confirmExitOpen}
-        onStay={() => setConfirmExitOpen(false)}
-        onExit={() => {
-          setConfirmExitOpen(false);
-          onBack?.();
-        }}
       />
 
       <ConfirmDeleteDrawer
