@@ -56,6 +56,8 @@ const InstancesList: React.FC<InstancesListProps> = ({
   const [langError, setLangError] = useState<string | null>(null);
   const [restartModalOpen, setRestartModalOpen] = useState(false);
 
+  const [addBotModalOpen, setAddBotModalOpen] = useState(false);
+
   const normalizedLimitText = useMemo(() => {
     const txt = (limitMessage ?? '').trim();
     return txt.length ? txt : '';
@@ -123,6 +125,15 @@ const InstancesList: React.FC<InstancesListProps> = ({
     } finally {
       setLangSaving(false);
     }
+  };
+
+  const handleAddBotClick = () => {
+    setAddBotModalOpen(true);
+    onAddBotClick?.();
+  };
+
+  const closeAddBotModal = () => {
+    setAddBotModalOpen(false);
   };
 
   const addBotDisabled = deleting || limitModalOpen;
@@ -204,7 +215,7 @@ const InstancesList: React.FC<InstancesListProps> = ({
             {onAddBotClick && (
               <button
                 type="button"
-                onClick={onAddBotClick}
+                onClick={handleAddBotClick}
                 className="btn btn--primary instances-pill"
                 disabled={addBotDisabled}
                 title={addBotDisabled ? 'Недоступно во время операции' : undefined}
@@ -226,9 +237,10 @@ const InstancesList: React.FC<InstancesListProps> = ({
         <Drawer.Root
           open={langOpen}
           onOpenChange={(open) => {
-            if (!open && !langSaving) setLangOpen(false);
+            setLangOpen(open);
           }}
           modal
+          dismissible={true}
         >
           <Drawer.Portal>
             <Drawer.Overlay className="drawer-overlay" />
@@ -262,6 +274,12 @@ const InstancesList: React.FC<InstancesListProps> = ({
           </Drawer.Portal>
         </Drawer.Root>
 
+        {/* Add Bot Overlay */}
+        <div
+          className={`add-bot-overlay ${addBotModalOpen ? 'active' : ''}`}
+          onClick={closeAddBotModal}
+        />
+
         {/* Limit Modal (Vaul) */}
         <Drawer.Root
           open={limitModalOpen && !!normalizedLimitText}
@@ -269,6 +287,7 @@ const InstancesList: React.FC<InstancesListProps> = ({
             if (!open) closeLimitModal();
           }}
           modal
+          dismissible={true}
         >
           <Drawer.Portal>
             <Drawer.Overlay className="drawer-overlay" />
@@ -297,6 +316,7 @@ const InstancesList: React.FC<InstancesListProps> = ({
             if (!open) setRestartModalOpen(false);
           }}
           modal
+          dismissible={true}
         >
           <Drawer.Portal>
             <Drawer.Overlay className="drawer-overlay" />
@@ -379,7 +399,7 @@ const InstancesList: React.FC<InstancesListProps> = ({
           {onAddBotClick && (
             <button
               type="button"
-              onClick={onAddBotClick}
+              onClick={handleAddBotClick}
               className="btn btn--primary instances-pill"
               disabled={addBotDisabled}
               title={addBotDisabled ? 'Недоступно во время операции' : undefined}
@@ -439,9 +459,10 @@ const InstancesList: React.FC<InstancesListProps> = ({
       <Drawer.Root
         open={langOpen}
         onOpenChange={(open) => {
-          if (!open && !langSaving) setLangOpen(false);
+          setLangOpen(open);
         }}
         modal
+        dismissible={true}
       >
         <Drawer.Portal>
           <Drawer.Overlay className="drawer-overlay" />
@@ -475,6 +496,12 @@ const InstancesList: React.FC<InstancesListProps> = ({
         </Drawer.Portal>
       </Drawer.Root>
 
+      {/* Add Bot Overlay */}
+      <div
+        className={`add-bot-overlay ${addBotModalOpen ? 'active' : ''}`}
+        onClick={closeAddBotModal}
+      />
+
       {/* Delete Confirmation Bottom Sheet (Vaul) */}
       <Drawer.Root
         open={!!instanceToDelete}
@@ -482,6 +509,7 @@ const InstancesList: React.FC<InstancesListProps> = ({
           if (!open && !deleting) setInstanceToDelete(null);
         }}
         modal
+        dismissible={true}
       >
         <Drawer.Portal>
           <Drawer.Overlay className="drawer-overlay" />
@@ -527,6 +555,7 @@ const InstancesList: React.FC<InstancesListProps> = ({
           if (!open) closeLimitModal();
         }}
         modal
+        dismissible={true}
       >
         <Drawer.Portal>
           <Drawer.Overlay className="drawer-overlay" />
@@ -555,6 +584,7 @@ const InstancesList: React.FC<InstancesListProps> = ({
           if (!open) setRestartModalOpen(false);
         }}
         modal
+        dismissible={true}
       >
         <Drawer.Portal>
           <Drawer.Overlay className="drawer-overlay" />

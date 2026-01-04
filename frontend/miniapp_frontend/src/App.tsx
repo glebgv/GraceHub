@@ -902,7 +902,7 @@ const App: React.FC<AppProps> = ({
           <Drawer.Overlay className="drawer-overlay" />
           <Drawer.Content className="drawer-content">
             <div className="drawer-body">
-              <div className="drawer-handle" />
+              <Drawer.Handle className="drawer-handle" />
 
 
               <div className="drawer-header">
