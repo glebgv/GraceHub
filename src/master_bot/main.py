@@ -2073,7 +2073,7 @@ class MasterBot:
 
                         try:
                             # Пересоздаем worker
-                            worker = GraceHubWorker(instance_id=instance_id, db=db, token=token)
+                            worker = GraceHubWorker(instance_id=instance_id, db=self.db, token=token)
                             await worker.initialize()
                             self.workers[instance_id] = worker
                             logger.info(f"✅ Restored GraceHubWorker for {instance_id}")

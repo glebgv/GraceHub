@@ -84,7 +84,14 @@ services:
       args:
         - VITE_API_BASE_URL=${MINIAPP_BASE_URL}
     ports:
-      - "8080:80"
+      - "5173:5173"  # Изменено с 8080:80 на 5173:5173
+    volumes:
+      # Hot reload для разработки
+      - ./frontend/miniapp_frontend/src:/app/src
+      - ./frontend/miniapp_frontend/public:/app/public
+    environment:
+      - VITE_API_BASE_URL=${MINIAPP_BASE_URL}
+      - WEBHOOK_DOMAIN=${WEBHOOK_DOMAIN}
     restart: unless-stopped
 
   user-worker:
@@ -112,5 +119,4 @@ volumes:
   postgres_data:
   app_logs:
   gracehub_data:
-
 

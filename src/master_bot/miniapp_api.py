@@ -1149,7 +1149,7 @@ class MiniAppDB:
                     fields["auto_reply_greeting"],  # $3 (auto_reply_greeting)
                     fields["auto_reply_default_answer"],  # $4 (auto_reply_default_answer)
                     fields["branding_bot_name"],  # $5 (branding_bot_name)
-                    fields["openchat_enabled"],  # $6 (openchat_enabled)
+                    fields["openchat_enabled"] if fields["openchat_enabled"] is not None else False, 
                     fields["language"],  # $7 (language)
                     datetime.now(timezone.utc),  # $8 (updated_at)
                 ),
@@ -1175,7 +1175,6 @@ class MiniAppDB:
                 WHERE instance_id = ${len(params)}
                 """
                 await self.db.execute(sql, tuple(params))
-
 
 # ========================================================================
 # FastAPI App
