@@ -219,8 +219,8 @@ const InstancesList: React.FC<InstancesListProps> = ({
 
   const addBotDisabled = deleting || limitModalOpen;
 
-  // Loading state (Skeleton)
-  if (loading) {
+  // Loading or deleting state (Skeleton)
+  if (loading || deleting) {
     return <InstancesListSkeleton />;
   }
 

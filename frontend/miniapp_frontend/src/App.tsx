@@ -100,6 +100,9 @@ const App: React.FC<AppProps> = ({
 
   const [instanceDataLoading, setInstanceDataLoading] = useState(false);
 
+  // NEW: состояние для удаления инстанса (чтобы показывать скелетон во время DELETE)
+  const [deletingInstanceId, setDeletingInstanceId] = useState<string | null>(null);
+
   const isSuperadmin = useMemo(() => {
     const roles = user?.roles || [];
     return Array.isArray(roles) && roles.includes('superadmin');
@@ -456,8 +459,8 @@ const App: React.FC<AppProps> = ({
   const handleDeleteInstance = async (inst: Instance) => {
     try {
       console.log('[App] delete instance', inst);
-      setLoading(true);
       setError(null);
+      setDeletingInstanceId(inst.instanceid);
 
       await apiClient.deleteInstance(inst.instanceid);
 
@@ -486,7 +489,7 @@ const App: React.FC<AppProps> = ({
           : fallback;
       setError(message);
     } finally {
-      setLoading(false);
+      setDeletingInstanceId(null);
     }
   };
 
@@ -854,6 +857,7 @@ const App: React.FC<AppProps> = ({
               setShowAddModal(false);
               setCurrentPage('instances');
             }}
+            loading={loading || !!deletingInstanceId}
           />
         )}
 

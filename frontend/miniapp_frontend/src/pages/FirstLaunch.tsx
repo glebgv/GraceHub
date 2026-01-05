@@ -15,6 +15,7 @@ interface FirstLaunchProps {
   // NEW (for superadmin without instances)
   isSuperadmin?: boolean;
   onOpenAdmin?: () => void;
+  loading?: boolean;
 }
 
 type OfferState = {
@@ -120,6 +121,7 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
   instanceId,
   isSuperadmin,
   onOpenAdmin,
+  loading = false,
 }) => {
   const { t, i18n } = useTranslation();
 
@@ -246,8 +248,8 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
 
   const currentLangMeta = LANGS.find((l) => l.code === language) ?? LANGS[0];
 
-  // Show skeleton while offer is loading
-  if (offer.loading) {
+  // Show skeleton while offer is loading or if loading prop is true
+  if (loading || offer.loading) {
     return <FirstLaunchSkeleton />;
   }
 
