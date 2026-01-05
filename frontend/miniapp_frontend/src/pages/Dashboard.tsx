@@ -12,8 +12,21 @@ interface DashboardProps {
 const DashboardSkeleton: React.FC = () => {
   return (
     <div style={{ padding: '12px' }}>
+      {/* Карточка со статистикой тикетов */}
       <div className="card">
-        <div className="skeleton h-6 w-40 mb-4 animate-pulse"></div>
+        {/* Заголовок карточки - скелетон */}
+        <div 
+          className="skeleton h-6 w-40 mb-4 animate-pulse" 
+          style={{ 
+            display: 'block', 
+            backgroundColor: '#e5e7eb', 
+            minHeight: '1.5rem',
+            width: '10rem',
+            borderRadius: '4px',
+            marginBottom: '1rem'
+          }}
+        ></div>
+
         <div
           style={{
             display: 'grid',
@@ -21,6 +34,7 @@ const DashboardSkeleton: React.FC = () => {
             gap: '12px',
           }}
         >
+          {/* Левая колонка - блоки статистики */}
           <div
             style={{
               display: 'flex',
@@ -30,21 +44,164 @@ const DashboardSkeleton: React.FC = () => {
           >
             {[1, 2, 3, 4].map((i) => (
               <div key={i} className="stat-block">
-                <div className="skeleton h-4 w-24 mb-2 animate-pulse"></div>
-                <div className="skeleton h-8 w-16 animate-pulse"></div>
+                {/* stat-label скелетон */}
+                <div 
+                  className="skeleton h-4 w-24 mb-2 animate-pulse"
+                  style={{ 
+                    display: 'block', 
+                    backgroundColor: '#e5e7eb', 
+                    minHeight: '1rem',
+                    width: '6rem',
+                    borderRadius: '4px',
+                    marginBottom: '0.5rem'
+                  }}
+                ></div>
+                {/* stat-value скелетон */}
+                <div 
+                  className="skeleton h-8 w-16 animate-pulse"
+                  style={{ 
+                    display: 'block', 
+                    backgroundColor: '#e5e7eb', 
+                    minHeight: '2rem',
+                    width: '4rem',
+                    borderRadius: '4px'
+                  }}
+                ></div>
               </div>
             ))}
           </div>
-          <div className="skeleton h-40 w-full animate-pulse"></div>
+
+          {/* Правая колонка - график */}
+          <div style={{ height: '250px', position: 'relative' }}>
+            {/* Круглый скелетон графика */}
+            <div
+              className="skeleton animate-pulse rounded-full"
+              style={{
+                width: '160px',
+                height: '160px',
+                margin: '20px auto 0',
+                backgroundColor: '#e5e7eb',
+                display: 'block',
+                borderRadius: '9999px'
+              }}
+            ></div>
+
+            {/* Центральное значение */}
+            <div
+              className="skeleton h-8 w-16 animate-pulse"
+              style={{
+                position: 'absolute',
+                top: '95px',
+                left: '50%',
+                transform: 'translateX(-50%)',
+                backgroundColor: '#e5e7eb',
+                display: 'block',
+                minHeight: '2rem',
+                width: '4rem',
+                borderRadius: '4px'
+              }}
+            ></div>
+
+            {/* Легенда графика */}
+            <div style={{ marginTop: '20px', paddingLeft: '20px' }}>
+              {[1, 2, 3, 4].map((i) => (
+                <div
+                  key={i}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    marginBottom: '8px',
+                  }}
+                >
+                  <div 
+                    className="skeleton h-4 w-4 mr-2 animate-pulse rounded"
+                    style={{ 
+                      display: 'block', 
+                      backgroundColor: '#e5e7eb', 
+                      minHeight: '1rem',
+                      width: '1rem',
+                      borderRadius: '4px',
+                      marginRight: '0.5rem'
+                    }}
+                  ></div>
+                  <div 
+                    className="skeleton h-4 w-32 animate-pulse"
+                    style={{ 
+                      display: 'block', 
+                      backgroundColor: '#e5e7eb', 
+                      minHeight: '1rem',
+                      width: '8rem',
+                      borderRadius: '4px'
+                    }}
+                  ></div>
+                  <div 
+                    className="skeleton h-4 w-8 ml-auto animate-pulse"
+                    style={{ 
+                      display: 'block', 
+                      backgroundColor: '#e5e7eb', 
+                      minHeight: '1rem',
+                      width: '2rem',
+                      borderRadius: '4px',
+                      marginLeft: 'auto'
+                    }}
+                  ></div>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       </div>
 
+      {/* Вторая карточка - средний ответ и уникальные пользователи */}
       <div className="card">
-        <div className="skeleton h-4 w-48 mb-2 animate-pulse"></div>
-        <div className="skeleton h-8 w-40 mb-4 animate-pulse"></div>
+        {/* Первый блок - Средний ответ (label) */}
+        <div 
+          className="skeleton h-4 w-48 mb-2 animate-pulse"
+          style={{ 
+            display: 'block', 
+            backgroundColor: '#e5e7eb', 
+            minHeight: '1rem',
+            width: '12rem',
+            borderRadius: '4px',
+            marginBottom: '0.5rem'
+          }}
+        ></div>
+        {/* Первый блок - Средний ответ (value) */}
+        <div 
+          className="skeleton h-8 w-40 mb-4 animate-pulse"
+          style={{ 
+            display: 'block', 
+            backgroundColor: '#e5e7eb', 
+            minHeight: '2rem',
+            width: '10rem',
+            borderRadius: '4px',
+            marginBottom: '1rem'
+          }}
+        ></div>
 
-        <div className="skeleton h-4 w-32 mb-2 animate-pulse"></div>
-        <div className="skeleton h-8 w-20 animate-pulse"></div>
+        {/* Второй блок - Уникальные пользователи (label) */}
+        <div 
+          className="skeleton h-4 w-32 mb-2 animate-pulse"
+          style={{ 
+            display: 'block', 
+            backgroundColor: '#e5e7eb', 
+            minHeight: '1rem',
+            width: '8rem',
+            borderRadius: '4px',
+            marginBottom: '0.5rem'
+          }}
+        ></div>
+        {/* Второй блок - Уникальные пользователи (value) */}
+        <div 
+          className="skeleton h-8 w-20 animate-pulse"
+          style={{ 
+            display: 'block', 
+            backgroundColor: '#e5e7eb', 
+            minHeight: '2rem',
+            width: '5rem',
+            borderRadius: '4px'
+          }}
+        ></div>
       </div>
     </div>
   );
@@ -58,6 +215,14 @@ const Dashboard: React.FC<DashboardProps> = ({ instanceId }) => {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    // ✅ Не загружаем данные, если instanceId пустой или временный
+    if (!instanceId || instanceId === 'temp-loading' || instanceId === '') {
+      setLoading(true);
+      setStats(null);
+      setError(null);
+      return;
+    }
+
     let cancelled = false;
 
     const load = async () => {

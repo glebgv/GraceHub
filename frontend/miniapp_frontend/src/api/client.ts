@@ -233,6 +233,13 @@ export interface MiniappPublicSettings {
   };
 }
 
+export interface PlatformMetrics {
+  total_clients: number;
+  active_bots: number;
+  monthly_tickets: number;
+  paid_subscriptions: number;
+}
+
 /**
  * Ошибка API с кодом HTTP и телом ответа (если оно было).
  * Удобно для UI: можно делать проверку e.status === 400 и e.message.includes(...).
@@ -648,6 +655,10 @@ class ApiClient {
     };
 
     return this.setPlatformSetting('miniapp_public', cleaned);
+  }
+
+  async getPlatformMetrics(): Promise<PlatformMetrics> {
+    return this.request<PlatformMetrics>('GET', '/api/platform/metrics');
   }
 }
 

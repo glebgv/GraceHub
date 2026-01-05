@@ -33,6 +33,87 @@ interface InstancesListProps {
   loading?: boolean;
 }
 
+const InstancesListSkeleton: React.FC = () => {
+  return (
+    <div style={{ padding: 12 }}>
+      {/* Top section with title and actions */}
+      <div style={{ marginBottom: 20 }}>
+        <div style={{ marginBottom: 12 }}>
+          <div
+            className="skeleton animate-pulse"
+            style={{ width: 200, height: 28, marginBottom: 8, borderRadius: 6 }}
+          />
+          <div
+            className="skeleton animate-pulse"
+            style={{ width: 150, height: 16, borderRadius: 4 }}
+          />
+        </div>
+
+        {/* Action buttons skeleton */}
+        <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+          <div
+            className="skeleton animate-pulse"
+            style={{ width: 44, height: 36, borderRadius: 999 }}
+          />
+          <div
+            className="skeleton animate-pulse"
+            style={{ width: 100, height: 36, borderRadius: 999 }}
+          />
+          <div
+            className="skeleton animate-pulse"
+            style={{ width: 120, height: 36, borderRadius: 999 }}
+          />
+        </div>
+      </div>
+
+      {/* Instance cards skeleton */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        {[1, 2, 3].map((i) => (
+          <div
+            key={i}
+            className="card"
+            style={{
+              padding: 16,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 12,
+            }}
+          >
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <div
+                  className="skeleton animate-pulse"
+                  style={{ width: 20, height: 20, borderRadius: 4 }}
+                />
+                <div
+                  className="skeleton animate-pulse"
+                  style={{ width: 140, height: 18, borderRadius: 4 }}
+                />
+              </div>
+              <div
+                className="skeleton animate-pulse"
+                style={{ width: 100, height: 14, borderRadius: 4 }}
+              />
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <div
+                className="skeleton animate-pulse"
+                style={{ width: 60, height: 24, borderRadius: 12 }}
+              />
+              <div
+                className="skeleton animate-pulse"
+                style={{ width: 36, height: 36, borderRadius: 8 }}
+              />
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
 const InstancesList: React.FC<InstancesListProps> = ({
   instances,
   onSelect,
@@ -140,38 +221,7 @@ const InstancesList: React.FC<InstancesListProps> = ({
 
   // Loading state (Skeleton)
   if (loading) {
-    return (
-      <div className="instances-page">
-        <div className="instances-top">
-          <div className="instances-title">
-            <div className="skeleton skeleton-h2" />
-            <div className="skeleton skeleton-subtitle" />
-          </div>
-
-          <div className="instances-actions">
-            <div className="skeleton skeleton-pill" />
-            <div className="skeleton skeleton-pill" />
-          </div>
-        </div>
-
-        <div className="instances-grid">
-          {[1, 2, 3].map((i) => (
-            <div key={i} className="card skeleton-card">
-              <div className="skeleton-card-content">
-                <div className="skeleton-card-left">
-                  <div className="skeleton skeleton-name" />
-                  <div className="skeleton skeleton-username" />
-                </div>
-                <div className="skeleton-card-right">
-                  <div className="skeleton skeleton-badge" />
-                  <div className="skeleton skeleton-action" />
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-    );
+    return <InstancesListSkeleton />;
   }
 
   // Пустой список

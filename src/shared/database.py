@@ -147,6 +147,11 @@ class MasterDatabase:
         url = str(offer.get("url", "") or "").strip()
         return {"enabled": enabled, "url": url}
 
+    async def count_unique_users(self) -> int:
+        row = await self.fetchone("SELECT COUNT(DISTINCT user_id) AS cnt FROM bot_instances")
+        return int(row["cnt"]) if row else 0
+
+
     async def get_user_offer_status(self, user_id: int) -> Dict[str, Any]:
         row = await self.fetchone(
             """

@@ -7,16 +7,41 @@ import { Drawer } from 'vaul';
 interface AddBotModalProps {
   onClose: () => void;
   onSubmitToken: (token: string) => Promise<void> | void;
+  validateToken?: (token: string) => boolean;
+  getErrorMessage?: () => string;
 }
 
-const AddBotModal: React.FC<AddBotModalProps> = ({ onClose, onSubmitToken }) => {
+const AddBotModal: React.FC<AddBotModalProps> = ({ 
+  onClose, 
+  onSubmitToken,
+  validateToken,
+  getErrorMessage,
+}) => {
   const { t } = useTranslation();
   const [token, setToken] = useState('');
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleTokenChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value;
+    setToken(value);
+    
+    // Validate only if token is not empty and validator is provided
+    if (value.trim() && validateToken) {
+      if (!validateToken(value.trim())) {
+        setError(getErrorMessage?.() || 'Invalid token format');
+      } else {
+        setError(null);
+      }
+    } else {
+      setError(null);
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!token.trim() || loading) return;
+    if (!token.trim() || loading || error) return;
+    
     try {
       setLoading(true);
       await onSubmitToken(token.trim());
@@ -27,6 +52,8 @@ const AddBotModal: React.FC<AddBotModalProps> = ({ onClose, onSubmitToken }) => 
       setLoading(false);
     }
   };
+
+  const isSubmitDisabled = !token.trim() || !!error || loading;
 
   return (
     <Drawer.Root 
@@ -107,19 +134,38 @@ const AddBotModal: React.FC<AddBotModalProps> = ({ onClose, onSubmitToken }) => 
                   type="text"
                   placeholder={t('firstLaunch.botTokenPlaceholder') || '123456:ABC-DEF...'}
                   value={token}
-                  onChange={(e) => setToken(e.target.value)}
+                  onChange={handleTokenChange}
                   disabled={loading}
                   style={{
                     width: '100%',
                     padding: '10px 12px',
                     borderRadius: 10,
-                    border: '1px solid rgba(148, 163, 184, 0.5)',
+                    border: error 
+                      ? '1px solid rgba(239, 68, 68, 0.8)' 
+                      : '1px solid rgba(148, 163, 184, 0.5)',
                     background: 'rgba(0, 0, 0, 0.04)',
                     color: 'var(--tg-theme-text-color)',
                     fontSize: 14,
                     fontFamily: 'monospace',
                   }}
                 />
+                
+                {/* Validation error message */}
+                {error && (
+                  <div
+                    style={{
+                      marginTop: 6,
+                      fontSize: 12,
+                      color: 'rgb(239, 68, 68)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 4,
+                    }}
+                  >
+                    <span>⚠️</span>
+                    <span>{error}</span>
+                  </div>
+                )}
               </div>
 
               {/* Action buttons */}
@@ -136,8 +182,12 @@ const AddBotModal: React.FC<AddBotModalProps> = ({ onClose, onSubmitToken }) => 
                 <button
                   type="submit"
                   className="btn btn--primary"
-                  disabled={loading || !token.trim()}
-                  style={{ flex: 1 }}
+                  disabled={isSubmitDisabled}
+                  style={{ 
+                    flex: 1,
+                    opacity: isSubmitDisabled ? 0.5 : 1,
+                    cursor: isSubmitDisabled ? 'not-allowed' : 'pointer',
+                  }}
                 >
                   {loading ? t('common.saving') : t('firstLaunch.connectBot')}
                 </button>

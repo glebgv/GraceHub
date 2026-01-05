@@ -8,7 +8,7 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { Drawer } from 'vaul';
-import { FaChartBar, FaUsers, FaFileAlt, FaLock, FaUserShield, FaCogs, FaCreditCard } from 'react-icons/fa'; // Added for tab bar icons
+import { FaChartBar, FaUsers, FaCogs, FaCreditCard } from 'react-icons/fa'; // Added for tab bar icons
 
 import { apiClient } from '../api/client';
 import type { MiniappPublicSettings } from '../api/client';
@@ -374,7 +374,7 @@ const MiniSwitch: React.FC<{
   );
 };
 
-type MenuSection = 'dashboard' | 'clients' | 'offer' | 'single-tenant' | 'superadmins' | 'instance-defaults' | 'payments';
+type MenuSection = 'dashboard' | 'clients' | 'settings' | 'payments';
 
 const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
   const { t } = useTranslation();
@@ -404,6 +404,8 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
   >(null);
 
   const [activeSection, setActiveSection] = useState<MenuSection>('dashboard');
+
+  const [metrics, setMetrics] = useState<any>(null);
 
   const isSuperadmin = useMemo(() => {
     const roles = me?.roles || [];
@@ -460,6 +462,14 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (activeSection === 'dashboard') {
+      apiClient.getPlatformMetrics()
+        .then(setMetrics)
+        .catch((e) => console.error('Metrics error:', e));
+    }
+  }, [activeSection]);
 
   const validatePayments = (v: MiniappPublicSettings): Record<string, string> => {
     const errs: Record<string, string> = {};
@@ -746,7 +756,7 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
               <div className="dashboard-widget">
                 <div className="widget-icon">👥</div>
                 <div className="widget-content">
-                  <div className="widget-value">-</div>
+                  <div className="widget-value">{metrics?.total_clients ?? '...'}</div>
                   <div className="widget-label">Всего клиентов</div>
                 </div>
               </div>
@@ -754,7 +764,7 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
               <div className="dashboard-widget">
                 <div className="widget-icon">🤖</div>
                 <div className="widget-content">
-                  <div className="widget-value">-</div>
+                  <div className="widget-value">{metrics?.active_bots ?? '...'}</div>
                   <div className="widget-label">Активных ботов</div>
                 </div>
               </div>
@@ -762,7 +772,7 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
               <div className="dashboard-widget">
                 <div className="widget-icon">🎫</div>
                 <div className="widget-content">
-                  <div className="widget-value">-</div>
+                  <div className="widget-value">{metrics?.monthly_tickets ?? '...'}</div>
                   <div className="widget-label">Тикетов за месяц</div>
                 </div>
               </div>
@@ -770,14 +780,10 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
               <div className="dashboard-widget">
                 <div className="widget-icon">💰</div>
                 <div className="widget-content">
-                  <div className="widget-value">-</div>
+                  <div className="widget-value">{metrics?.paid_subscriptions ?? '...'}</div>
                   <div className="widget-label">Платные подписки</div>
                 </div>
               </div>
-            </div>
-
-            <div className="info-banner" style={{ marginTop: '20px' }}>
-              📈 Backend для метрик в разработке. Здесь будут отображаться статистика клиентов, активность ботов и аналитика платформы.
             </div>
           </div>
         )}
@@ -825,14 +831,18 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
           </div>
         )}
 
-        {/* Offer Section */}
-        {activeSection === 'offer' && (
+        {/* Settings Section */}
+        {activeSection === 'settings' && (
           <div className="card superadmin-main">
             <div className="card-header">
-              <div className="card-title">Оферта (FirstLaunch)</div>
+              <div className="card-title">Настройки</div>
             </div>
 
+            {/* Offer Subsection */}
             <div className="card superadmin-section">
+              <div className="card-header">
+                <div className="card-title">Оферта (FirstLaunch)</div>
+              </div>
               <div className="form-group form-group-row">
                 <label className="form-label">Требовать принятие оферты</label>
                 <MiniSwitch
@@ -889,17 +899,12 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
                 </div>
               )}
             </div>
-          </div>
-        )}
 
-        {/* Single-tenant Section */}
-        {activeSection === 'single-tenant' && (
-          <div className="card superadmin-main">
-            <div className="card-header">
-              <div className="card-title">Single-tenant режим</div>
-            </div>
-
+            {/* Single-tenant Subsection */}
             <div className="card superadmin-section">
+              <div className="card-header">
+                <div className="card-title">Single-tenant режим</div>
+              </div>
               <div className="form-group form-group-row">
                 <label className="form-label">Включить single-tenant</label>
                 <MiniSwitch
@@ -972,17 +977,12 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
                 </>
               )}
             </div>
-          </div>
-        )}
 
-        {/* Superadmins Section */}
-        {activeSection === 'superadmins' && (
-          <div className="card superadmin-main">
-            <div className="card-header">
-              <div className="card-title">Superadmins управление</div>
-            </div>
-
+            {/* Superadmins Subsection */}
             <div className="card superadmin-section">
+              <div className="card-header">
+                <div className="card-title">Superadmins управление</div>
+              </div>
               <button
                 className="btn btn--secondary"
                 onClick={openAddSuperadmin}
@@ -1015,17 +1015,12 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
                 )}
               </div>
             </div>
-          </div>
-        )}
 
-        {/* Instance Defaults Section */}
-        {activeSection === 'instance-defaults' && (
-          <div className="card superadmin-main">
-            <div className="card-header">
-              <div className="card-title">Дефолтные настройки инстансов</div>
-            </div>
-
+            {/* Instance Defaults Subsection */}
             <div className="card superadmin-section">
+              <div className="card-header">
+                <div className="card-title">Дефолтные настройки инстансов</div>
+              </div>
               <div className="form-group">
                 <label className="form-label">{t('superAdmin.antiflood_limit_hint')}</label>
                 <input
@@ -1837,32 +1832,11 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
             <span className="nav-label">Клиенты</span>
           </button>
           <button
-            className={`nav-button ${activeSection === 'offer' ? 'active' : ''}`}
-            onClick={() => setActiveSection('offer')}
-          >
-            <FaFileAlt className="nav-icon" />
-            <span className="nav-label">Оферта</span>
-          </button>
-          <button
-            className={`nav-button ${activeSection === 'single-tenant' ? 'active' : ''}`}
-            onClick={() => setActiveSection('single-tenant')}
-          >
-            <FaLock className="nav-icon" />
-            <span className="nav-label">Single</span>
-          </button>
-          <button
-            className={`nav-button ${activeSection === 'superadmins' ? 'active' : ''}`}
-            onClick={() => setActiveSection('superadmins')}
-          >
-            <FaUserShield className="nav-icon" />
-            <span className="nav-label">Админы</span>
-          </button>
-          <button
-            className={`nav-button ${activeSection === 'instance-defaults' ? 'active' : ''}`}
-            onClick={() => setActiveSection('instance-defaults')}
+            className={`nav-button ${activeSection === 'settings' ? 'active' : ''}`}
+            onClick={() => setActiveSection('settings')}
           >
             <FaCogs className="nav-icon" />
-            <span className="nav-label">Дефолты</span>
+            <span className="nav-label">Настройки</span>
           </button>
           <button
             className={`nav-button ${activeSection === 'payments' ? 'active' : ''}`}

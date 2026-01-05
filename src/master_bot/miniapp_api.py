@@ -29,6 +29,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, StrictBool, StrictInt, StrictStr, ValidationError
 
 from shared import settings
+from shared.models import InstanceStatus
 from worker.main import GraceHubWorker
 
 from .main import MasterBot
@@ -356,6 +357,13 @@ class YooKassaWebhook(BaseModel):
     object: Object
 
 
+class PlatformMetrics(BaseModel):
+    total_clients: int  # Всего уникальных владельцев инстансов
+    active_bots: int    # Активных инстансов (status = 'running')
+    monthly_tickets: int  # Тикетов за последние 30 дней по всем инстансам
+    paid_subscriptions: int  # Активных инстансов на платных планах (не demo, service_paused = FALSE)
+
+
 INSTANCE_ID_RE = r"^[A-Za-z0-9_-]{1,128}$"
 
 InstanceId = Annotated[
@@ -368,6 +376,7 @@ InstanceId = Annotated[
         description="GraceHub instance id",
     ),
 ]
+
 
 # ========================================================================
 # Telegram Validation
@@ -1223,6 +1232,15 @@ async def get_current_user(
 
     except ValueError as e:
         raise HTTPException(status_code=401, detail=str(e))
+
+async def require_superadmin(current_user: Dict[str, Any] = Depends(get_current_user)):
+    user_id = current_user["user_id"]
+    superadmins = await master_bot.db.get_superadmins()
+    if user_id not in superadmins:
+        raise HTTPException(status_code=403, detail="Доступ только супер-администраторам")
+    return current_user
+
+
 
 
 async def get_single_tenant_config(db) -> SingleTenantConfig:
@@ -2537,6 +2555,79 @@ def create_miniapp_app(
             session_id=invoice.get("external_id"),
             payment_intent_id=None,
             period_applied=bool(invoice.get("period_applied", False)),
+        )
+
+    @app.get(
+        "/api/platform/metrics",
+        response_model=PlatformMetrics,
+        responses={
+            **COMMON_AUTH_RESPONSES,
+            500: {"description": "Internal Server Error"},
+        },
+    )
+    async def get_platform_metrics(
+        current_user: Dict[str, Any] = Depends(require_superadmin),
+    ):
+        """
+        Метрики для дашборда супер-админа.
+        Подсчитывает данные из master_db и агрегирует тикеты из worker SQLite.
+        """
+        if master_bot is None or master_bot.db is None:
+            raise HTTPException(status_code=500, detail="MasterBot не инициализирован")
+
+        # 1. Всего клиентов: уникальные user_id из bot_instances
+        total_clients = await master_bot.db.count_unique_users()  # Нужно добавить метод в database.py, см. ниже
+
+        # 2. Активных ботов: COUNT WHERE status = 'running'
+        active_bots_sql = "SELECT COUNT(*) FROM bot_instances WHERE status = 'running'"
+        active_bots_row = await master_bot.db.fetchone(active_bots_sql)
+        active_bots = active_bots_row[0] if active_bots_row else 0
+
+        # 3. Платные подписки: инстансы на non-demo планах, не paused
+        # Сначала найди demo plan_id
+        demo_plan_row = await master_bot.db.fetchone("SELECT plan_id FROM saas_plans WHERE code = 'demo'")
+        demo_plan_id = demo_plan_row["plan_id"] if demo_plan_row else 1  # Предполагаем ID=1 для demo, скорректируйте
+
+        paid_subs_sql = """
+            SELECT COUNT(*) 
+            FROM instance_billing ib
+            JOIN bot_instances bi ON bi.instance_id = ib.instance_id
+            WHERE ib.plan_id != $1 AND ib.service_paused = FALSE AND bi.status = 'running'
+        """
+        paid_subs_row = await master_bot.db.fetchone(paid_subs_sql, (demo_plan_id,))
+        paid_subscriptions = paid_subs_row[0] if paid_subs_row else 0
+
+        # 4. Тикетов за месяц: агрегация по всем инстансам (SQLite)
+        monthly_tickets = 0
+        instances = await master_bot.db.get_all_instances_for_monitor()  # Все инстансы
+        thirty_days_ago = datetime.now(timezone.utc) - timedelta(days=30)
+        thirty_days_ago_str = thirty_days_ago.isoformat()
+
+        for instance in instances:
+            if instance.status != InstanceStatus.RUNNING:
+                continue  # Только активные
+
+            db_path = settings.get_worker_db_path(instance.instance_id)
+            if not db_path.exists():
+                logger.warning(f"SQLite not found for {instance.instance_id}, skipping")
+                continue
+
+            try:
+                async with aiosqlite.connect(db_path) as conn:
+                    cursor = await conn.execute(
+                        "SELECT COUNT(*) FROM tickets WHERE createdat > ?",
+                        (thirty_days_ago_str,)
+                    )
+                    row = await cursor.fetchone()
+                    monthly_tickets += row[0] if row else 0
+            except Exception as e:
+                logger.error(f"Error counting tickets for {instance.instance_id}: {e}")
+
+        return PlatformMetrics(
+            total_clients=total_clients,
+            active_bots=active_bots,
+            monthly_tickets=monthly_tickets,
+            paid_subscriptions=paid_subscriptions,
         )
 
     @app.get("/api/offer/settings", response_model=OfferSettingsOut)

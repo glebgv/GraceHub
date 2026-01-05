@@ -41,6 +41,37 @@ const FLAGSTYLE: React.CSSProperties = {
   flex: '0 0 auto',
 };
 
+// Telegram Bot Token validation regex
+// Format: 8-10 digits, colon, 35 alphanumeric characters plus underscore and hyphen
+const TELEGRAM_BOT_TOKEN_REGEX = /^[0-9]{8,10}:[a-zA-Z0-9_-]{35}$/;
+
+/**
+ * Validates if the provided string is a valid Telegram Bot API token
+ */
+const validateTelegramBotToken = (token: string): boolean => {
+  if (!token || typeof token !== 'string') {
+    return false;
+  }
+  
+  const trimmedToken = token.trim();
+  return TELEGRAM_BOT_TOKEN_REGEX.test(trimmedToken);
+};
+
+/**
+ * Get localized error message for invalid token
+ */
+const getTokenErrorMessage = (language: LangCode): string => {
+  const errorMessages: Record<LangCode, string> = {
+    ru: 'Неверный формат токена',
+    en: 'Invalid token format',
+    es: 'Formato de token no válido',
+    hi: 'अमान्य टोकन प्रारूप',
+    zh: '令牌格式无效',
+  };
+  
+  return errorMessages[language] || errorMessages.en;
+};
+
 const FirstLaunchSkeleton: React.FC = () => {
   return (
     <div style={{ padding: 12 }}>
@@ -207,7 +238,10 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
   };
 
   const handleSubmitToken = async (token: string) => {
-    await onAddBotClick(token);
+    // Token is already validated in AddBotModal, so just proceed
+    const trimmedToken = token.trim();
+    await onAddBotClick(trimmedToken);
+    setShowAddModal(false);
   };
 
   const currentLangMeta = LANGS.find((l) => l.code === language) ?? LANGS[0];
@@ -504,11 +538,17 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
             }}
             onClick={() => setShowAddModal(false)}
           />
-          <AddBotModal onClose={() => setShowAddModal(false)} onSubmitToken={handleSubmitToken} />
+          <AddBotModal 
+            onClose={() => setShowAddModal(false)} 
+            onSubmitToken={handleSubmitToken}
+            validateToken={validateTelegramBotToken}
+            getErrorMessage={() => getTokenErrorMessage(language)}
+          />
         </>
       )}
     </div>
   );
 };
 
+export { validateTelegramBotToken, getTokenErrorMessage };
 export default FirstLaunch;
