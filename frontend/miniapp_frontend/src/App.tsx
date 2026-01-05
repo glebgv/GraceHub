@@ -886,6 +886,7 @@ const App: React.FC<AppProps> = ({
           <SuperAdmin
             onBack={() => {
               setCurrentPage('instances');
+              setIsFirstLaunch(true);
             }}
           />
         )}
@@ -896,39 +897,153 @@ const App: React.FC<AppProps> = ({
       {showBottomNav && (
         <nav className="app-nav">
           <div className="app-nav-inner">
-            <button
-              className={`nav-button ${currentPage === 'dashboard' ? 'active' : ''}`}
-              onClick={() => setCurrentPage('dashboard')}
-            >
-              <span className="nav-icon">📊</span>
-              <span className="nav-label">{t('nav.dashboard')}</span>
-            </button>
+            {isHeaderLoading ? (
+              <>
+                {/* Скелетон для кнопки Dashboard */}
+                <div className="nav-button" style={{ cursor: 'default' }}>
+                  <span 
+                    className="skeleton animate-pulse"
+                    style={{
+                      display: 'block',
+                      backgroundColor: '#e5e7eb',
+                      minHeight: '1.5rem',
+                      width: '1.5rem',
+                      borderRadius: '4px',
+                      margin: '0 auto 0.25rem'
+                    }}
+                  ></span>
+                  <span 
+                    className="skeleton animate-pulse"
+                    style={{
+                      display: 'block',
+                      backgroundColor: '#e5e7eb',
+                      minHeight: '0.875rem',
+                      width: '4rem',
+                      borderRadius: '4px',
+                      margin: '0 auto'
+                    }}
+                  ></span>
+                </div>
 
-            <button
-              className={`nav-button ${currentPage === 'tickets' ? 'active' : ''}`}
-              onClick={() => setCurrentPage('tickets')}
-            >
-              <span className="nav-icon">🎫</span>
-              <span className="nav-label">{t('nav.tickets')}</span>
-            </button>
+                {/* Скелетон для кнопки Tickets */}
+                <div className="nav-button" style={{ cursor: 'default' }}>
+                  <span 
+                    className="skeleton animate-pulse"
+                    style={{
+                      display: 'block',
+                      backgroundColor: '#e5e7eb',
+                      minHeight: '1.5rem',
+                      width: '1.5rem',
+                      borderRadius: '4px',
+                      margin: '0 auto 0.25rem'
+                    }}
+                  ></span>
+                  <span 
+                    className="skeleton animate-pulse"
+                    style={{
+                      display: 'block',
+                      backgroundColor: '#e5e7eb',
+                      minHeight: '0.875rem',
+                      width: '3.5rem',
+                      borderRadius: '4px',
+                      margin: '0 auto'
+                    }}
+                  ></span>
+                </div>
 
-            {selectedInstance?.role === 'owner' && (
+                {/* Скелетон для кнопки Operators (если role === 'owner') */}
+                {selectedInstance?.role === 'owner' && (
+                  <>
+                    <div className="nav-button" style={{ cursor: 'default' }}>
+                      <span 
+                        className="skeleton animate-pulse"
+                        style={{
+                          display: 'block',
+                          backgroundColor: '#e5e7eb',
+                          minHeight: '1.5rem',
+                          width: '1.5rem',
+                          borderRadius: '4px',
+                          margin: '0 auto 0.25rem'
+                        }}
+                      ></span>
+                      <span 
+                        className="skeleton animate-pulse"
+                        style={{
+                          display: 'block',
+                          backgroundColor: '#e5e7eb',
+                          minHeight: '0.875rem',
+                          width: '4.5rem',
+                          borderRadius: '4px',
+                          margin: '0 auto'
+                        }}
+                      ></span>
+                    </div>
+
+                    {/* Скелетон для кнопки Settings */}
+                    <div className="nav-button" style={{ cursor: 'default' }}>
+                      <span 
+                        className="skeleton animate-pulse"
+                        style={{
+                          display: 'block',
+                          backgroundColor: '#e5e7eb',
+                          minHeight: '1.5rem',
+                          width: '1.5rem',
+                          borderRadius: '4px',
+                          margin: '0 auto 0.25rem'
+                        }}
+                      ></span>
+                      <span 
+                        className="skeleton animate-pulse"
+                        style={{
+                          display: 'block',
+                          backgroundColor: '#e5e7eb',
+                          minHeight: '0.875rem',
+                          width: '4rem',
+                          borderRadius: '4px',
+                          margin: '0 auto'
+                        }}
+                      ></span>
+                    </div>
+                  </>
+                )}
+              </>
+            ) : (
               <>
                 <button
-                  className={`nav-button ${currentPage === 'operators' ? 'active' : ''}`}
-                  onClick={() => setCurrentPage('operators')}
+                  className={`nav-button ${currentPage === 'dashboard' ? 'active' : ''}`}
+                  onClick={() => setCurrentPage('dashboard')}
                 >
-                  <span className="nav-icon">👥</span>
-                  <span className="nav-label">{t('nav.operators')}</span>
+                  <span className="nav-icon">📊</span>
+                  <span className="nav-label">{t('nav.dashboard')}</span>
                 </button>
 
                 <button
-                  className={`nav-button ${currentPage === 'settings' ? 'active' : ''}`}
-                  onClick={() => setCurrentPage('settings')}
+                  className={`nav-button ${currentPage === 'tickets' ? 'active' : ''}`}
+                  onClick={() => setCurrentPage('tickets')}
                 >
-                  <span className="nav-icon">⚙️</span>
-                  <span className="nav-label">{t('nav.settings')}</span>
+                  <span className="nav-icon">🎫</span>
+                  <span className="nav-label">{t('nav.tickets')}</span>
                 </button>
+
+                {selectedInstance?.role === 'owner' && (
+                  <>
+                    <button
+                      className={`nav-button ${currentPage === 'operators' ? 'active' : ''}`}
+                      onClick={() => setCurrentPage('operators')}
+                    >
+                      <span className="nav-icon">👥</span>
+                      <span className="nav-label">{t('nav.operators')}</span>
+                    </button>
+
+                    <button
+                      className={`nav-button ${currentPage === 'settings' ? 'active' : ''}`}
+                      onClick={() => setCurrentPage('settings')}
+                    >
+                      <span className="nav-icon">⚙️</span>
+                      <span className="nav-label">{t('nav.settings')}</span>
+                    </button>
+                  </>
+                )}
               </>
             )}
           </div>
