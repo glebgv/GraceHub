@@ -67,7 +67,7 @@ class DockerWorkerManager:
                 # 🔥 КРИТИЧЕСКИ ВАЖНО! Реальный instance_id из БД
                 "WORKER_INSTANCE_ID": instance_id,
                 
-                # 🔥 ФИКС ДЕШИФРОВКИ! Точный ключ из data/master_key.key
+                # 🔥 ФИКС ДЕШИФРОВКИ! Точный ключ из master_key.key
                 "ENCRYPTION_KEY": "DK2GpT43STFu463KTh4aUNLud5HPZ38YEBpD-ndhm3E=",
                 
                 # Дополнительные настройки
@@ -75,7 +75,7 @@ class DockerWorkerManager:
                 "log_level": os.getenv("LOGLEVEL", "INFO"),
                 "webhook_domain": os.getenv("WEBHOOKDOMAIN"),
                 "webhook_port": os.getenv("WEBHOOKPORT", "8443"),
-                "encryption_key_file": "/app/data/master_key.key",
+                "encryption_key_file": "/app/master_key.key",
                 
                 # Fallback DB vars
                 "db_host": os.getenv("DB_HOST", "db"),

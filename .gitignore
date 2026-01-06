@@ -66,9 +66,11 @@ docker/
 site/
 docs/
 .requirements.hash
+compose-down.sh
 mkdocs.yml
 11
 frontend/miniapp_frontend/node_modules/
 deploy_git.sh
 scripts/
+examples/
 .requirements.hash

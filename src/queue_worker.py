@@ -1,4 +1,4 @@
-# queue_worker.py
+# src/worker/queue_worker.py
 import asyncio
 import json
 import logging
@@ -11,6 +11,7 @@ from typing import Dict, Optional
 from aiogram.types import Update
 
 from shared.database import MasterDatabase, get_master_dsn
+from shared.cleanup_tasks import QueueCleanupService
 from worker.main import GraceHubWorker
 
 logger = logging.getLogger("queue_worker")
@@ -77,6 +78,7 @@ async def _get_or_create_worker(
     cache[instance_id] = w
     return w
 
+
 async def stuck_requeue_loop(
     db: MasterDatabase,
     *,
@@ -85,8 +87,14 @@ async def stuck_requeue_loop(
 ) -> None:
     """
     Перекидывает зависшие jobs из status=processing обратно в retry.
-    Это must-have, иначе после крэша воркера job может остаться processing навсегда. [file:2]
+    Это must-have, иначе после крэша воркера job может остаться processing навсегда.
+    
+    ⚠️ DEPRECATED: Эта функция оставлена для обратной совместимости,
+    но теперь реквей выполняется через QueueCleanupService.
     """
+    logger.warning(
+        "⚠️ stuck_requeue_loop is DEPRECATED - requeue now handled by QueueCleanupService"
+    )
     while True:
         try:
             n = await db.requeue_stuck_tg_updates(stuck_seconds=stuck_seconds)
@@ -113,7 +121,11 @@ async def run_worker() -> None:
     # env-config
     idle_sleep = _get_float_env("QUEUE_WORKER_IDLE_SLEEP", 0.2)
 
-    requeue_enabled = os.getenv("QUEUE_REQUEUE_ENABLED", "1").strip().lower() not in ("0", "false", "no")
+    # 🔥 НОВАЯ СИСТЕМА ОЧИСТКИ через QueueCleanupService
+    cleanup_enabled = os.getenv("QUEUE_CLEANUP_ENABLED", "1").strip().lower() not in ("0", "false", "no")
+    
+    # Старая система реквея (оставлена для совместимости, но можно отключить)
+    requeue_enabled = os.getenv("QUEUE_REQUEUE_ENABLED", "0").strip().lower() not in ("0", "false", "no")
     stuck_seconds = _get_int_env("QUEUE_REQUEUE_STUCK_SECONDS", 600)
     requeue_interval = _get_int_env("QUEUE_REQUEUE_INTERVAL_SECONDS", 30)
 
@@ -125,7 +137,17 @@ async def run_worker() -> None:
 
     cache: Dict[str, GraceHubWorker] = {}
 
-    if requeue_enabled:
+    # 🔥 ЗАПУСКАЕМ НОВЫЙ СЕРВИС ОЧИСТКИ (рекомендуется)
+    cleanup_service = None
+    if cleanup_enabled:
+        cleanup_service = QueueCleanupService(db)
+        cleanup_service.start()
+        logger.info("✅ QueueCleanupService started (handles requeue + cleanup)")
+    else:
+        logger.warning("⚠️ QueueCleanupService disabled via QUEUE_CLEANUP_ENABLED=0")
+
+    # Старый реквей-луп (deprecated, но оставлен для миграции)
+    if requeue_enabled and not cleanup_enabled:
         asyncio.create_task(
             stuck_requeue_loop(
                 db,
@@ -134,50 +156,67 @@ async def run_worker() -> None:
             )
         )
         logger.info(
-            "stuck_requeue_loop enabled stuck_seconds=%s interval_seconds=%s",
+            "⚠️ Using deprecated stuck_requeue_loop: stuck_seconds=%s interval_seconds=%s",
             stuck_seconds,
             requeue_interval,
         )
-    else:
-        logger.info("stuck_requeue_loop disabled via QUEUE_REQUEUE_ENABLED=0")
+        logger.warning("💡 Consider migrating to QUEUE_CLEANUP_ENABLED=1")
+    elif requeue_enabled and cleanup_enabled:
+        logger.info("ℹ️ QUEUE_REQUEUE_ENABLED ignored (QueueCleanupService active)")
 
-    while True:
-        job = await db.pick_tg_update(worker_id=wid)
-        if not job:
-            await asyncio.sleep(idle_sleep)
-            continue
-
-        job_id = int(job["id"])
-        instance_id = job["instance_id"]
-        payload = job["payload"]
-
-        try:
-            worker = await _get_or_create_worker(cache, db, instance_id)
-            if not worker:
-                await db.fail_tg_update(
-                    job_id,
-                    f"no token for instance_id={instance_id}",
-                    max_attempts=no_token_max_attempts,
-                    retry_seconds=no_token_retry_seconds,
-                )
+    try:
+        while True:
+            job = await db.pick_tg_update(worker_id=wid)
+            if not job:
+                await asyncio.sleep(idle_sleep)
                 continue
 
-            if isinstance(payload, str):
-                payload = json.loads(payload)
+            job_id = int(job["id"])
+            instance_id = job["instance_id"]
+            payload = job["payload"]
 
-            update = Update(**payload)
-            await worker.process_update(update)
+            try:
+                worker = await _get_or_create_worker(cache, db, instance_id)
+                if not worker:
+                    await db.fail_tg_update(
+                        job_id,
+                        f"no token for instance_id={instance_id}",
+                        max_attempts=no_token_max_attempts,
+                        retry_seconds=no_token_retry_seconds,
+                    )
+                    continue
 
-            await db.ack_tg_update(job_id)
+                if isinstance(payload, str):
+                    payload = json.loads(payload)
 
-        except Exception as e:
-            await db.fail_tg_update(
-                job_id,
-                f"{type(e).__name__}: {e}",
-                max_attempts=fail_max_attempts,
-                retry_seconds=fail_retry_seconds,
-            )
-            logger.exception("Job failed id=%s instance_id=%s", job_id, instance_id)
+                update = Update(**payload)
+                await worker.process_update(update)
+
+                await db.ack_tg_update(job_id)
+
+            except Exception as e:
+                await db.fail_tg_update(
+                    job_id,
+                    f"{type(e).__name__}: {e}",
+                    max_attempts=fail_max_attempts,
+                    retry_seconds=fail_retry_seconds,
+                )
+                logger.exception("Job failed id=%s instance_id=%s", job_id, instance_id)
+
+    except KeyboardInterrupt:
+        logger.info("🛑 Received shutdown signal, stopping gracefully...")
+    finally:
+        # 🔥 GRACEFUL SHUTDOWN для cleanup service
+        if cleanup_service:
+            logger.info("⏳ Stopping QueueCleanupService...")
+            await cleanup_service.stop()
+        
+        # Закрываем пул БД
+        if db.pool:
+            await db.pool.close()
+            logger.info("✅ Database pool closed")
+        
+        logger.info("👋 Queue worker shutdown complete")
 
 
 def run_supervisor() -> None:

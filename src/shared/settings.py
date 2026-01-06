@@ -4,7 +4,6 @@ from pathlib import Path
 from urllib.parse import quote
 
 BASE_DIR = Path(os.getenv("APP_BASE_DIR", "/app"))
-DATA_DIR = Path(os.getenv("DATA_DIR", str(BASE_DIR / "data")))
 LOGS_DIR = Path(os.getenv("LOGS_DIR", str(BASE_DIR / "logs")))
 CONFIG_DIR = Path(os.getenv("CONFIG_DIR", str(BASE_DIR / "config")))
 
@@ -31,7 +30,7 @@ DATABASE_URL_ASYNC = (
 ENCRYPTION_KEY_FILE = Path(
     os.getenv(
         "ENCRYPTION_KEY_FILE",
-        os.getenv("ENCRYPTION_KEY_FILE", str(DATA_DIR / "master_key.key")),
+        str(BASE_DIR / "master_key.key"),  
     )
 )
 
