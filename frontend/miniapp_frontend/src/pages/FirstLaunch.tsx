@@ -128,7 +128,6 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
   const initialLang = (i18n.language as LangCode) || 'ru';
   const [language, setLanguage] = useState<LangCode>(initialLang);
 
-  const [saving, setSaving] = useState(false);
   const [showAddModal, setShowAddModal] = useState(false);
 
   // --- Offer gate state ---
@@ -220,23 +219,10 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
     }
   };
 
-  const saveLanguage = async (lang: LangCode) => {
-    if (!instanceId) return;
-
-    try {
-      setSaving(true);
-      await apiClient.updateSettings(instanceId, { language: lang });
-    } catch (err) {
-      console.error('[FirstLaunch] Failed to update language', err);
-    } finally {
-      setSaving(false);
-    }
-  };
-
+  // ✅ ИЗМЕНЕНИЕ: убрали saveLanguage, теперь только локальное переключение
   const handleLanguageClick = (lang: LangCode) => {
     setLanguage(lang);
-    i18n.changeLanguage(lang);
-    void saveLanguage(lang);
+    i18n.changeLanguage(lang); // Только меняем язык в i18n, без API вызова
   };
 
   const handleSubmitToken = async (token: string) => {
@@ -444,7 +430,6 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
                     key={item.code}
                     type="button"
                     onClick={() => handleLanguageClick(item.code)}
-                    disabled={saving}
                     style={{
                       padding: '6px 10px',
                       borderRadius: 999,
@@ -479,19 +464,6 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
                 );
               })}
             </div>
-
-            {saving && (
-              <small
-                style={{
-                  display: 'block',
-                  marginTop: 4,
-                  fontSize: 11,
-                  color: 'var(--tg-color-text-secondary)',
-                }}
-              >
-                {t('firstLaunch.savingLanguage')}
-              </small>
-            )}
           </div>
         </div>
       </div>

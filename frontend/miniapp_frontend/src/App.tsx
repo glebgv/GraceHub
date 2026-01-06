@@ -462,7 +462,10 @@ const App: React.FC<AppProps> = ({
 
 
       // Теперь отправляем запрос к API
-      const created = await apiClient.createInstanceByToken({ token });
+      const created = await apiClient.createInstanceByToken({ 
+        token,
+        language: i18n.language 
+      });
 
 
       console.log('[App] created instance', created);

@@ -212,6 +212,7 @@ TELEGRAM_BOT_TOKEN_RE = r"^[0-9]{8,10}:[A-Za-z0-9_-]{35}$"
 
 class CreateInstanceRequest(BaseModel):
     token: str = Field(min_length=1, pattern=TELEGRAM_BOT_TOKEN_RE)
+    language: Optional[str] = Field(None, pattern="^(ru|en|es|hi|zh)$") 
 
 
 class CreateInstanceResponse(BaseModel):
@@ -3760,26 +3761,22 @@ def create_miniapp_app(
         req: CreateInstanceRequest,
         current_user: Dict[str, Any] = Depends(get_current_user),
     ):
-        """
-        Создать новый инстанс по токену бота через MasterBot:
-        - MasterBot проверяет токен, создаёт запись в БД, шифрует токен.
-        - Miniapp создаёт worker в памяти и настраивает webhook для инстанса.
-        - Auto-close тикетов теперь глобальный цикл в MasterBot, поэтому тут НЕ запускается.
-        """
         user_id = current_user["user_id"]
         token = req.token
+        language = req.language  # ✅ Получаем язык из запроса
 
         logger.info(
-            "create_instance (miniapp): user_id=%s token_preview=%s",
+            "create_instance (miniapp): user_id=%s token_preview=%s language=%s",
             user_id,
             token[:10],
+            language,
         )
 
         if master_bot is None:
             logger.error("create_instance: master_bot is not initialized")
             raise HTTPException(status_code=500, detail="MasterBot не инициализирован")
 
-        # 1) Создаём инстанс в БД через MasterBot (валидация токена + запись в БД)
+        # 1) Создаём инстанс в БД через MasterBot
         try:
             instance = await master_bot.process_bot_token_from_miniapp(
                 token=token,
@@ -3797,12 +3794,30 @@ def create_miniapp_app(
         try:
             worker = GraceHubWorker(instance.instance_id, token, master_bot.db)
             master_bot.workers[instance.instance_id] = worker
-
-            # На всякий случай гарантируем, что instance доступен в master_bot.instances
             master_bot.instances[instance.instance_id] = instance
 
             if not await master_bot.setup_worker_webhook(instance.instance_id, token):
                 raise ValueError("Failed to setup webhook")
+
+            # ✅ Применяем язык, если он передан
+            if language:
+                try:
+                    await master_bot.db.update_instance_settings(
+                        instance.instance_id,
+                        {"language": language}
+                    )
+                    logger.info(
+                        "Applied language=%s to instance_id=%s",
+                        language,
+                        instance.instance_id
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Failed to apply language to instance %s: %s",
+                        instance.instance_id,
+                        e
+                    )
+                    # Не падаем, инстанс уже создан
 
         except Exception as e:
             logger.error(
