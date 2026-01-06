@@ -433,6 +433,35 @@ const App: React.FC<AppProps> = ({
   }, [selectedInstance?.instanceid]);
 
 
+  // Добавленный useEffect для динамической установки темы
+  useEffect(() => {
+    if (window.Telegram && window.Telegram.WebApp) {
+      const webApp = window.Telegram.WebApp;
+
+      // Установка начальной темы
+      const colorScheme = webApp.colorScheme; // 'light' или 'dark'
+      document.documentElement.setAttribute('data-color-scheme', colorScheme);
+
+      // Слушатель изменений темы
+      webApp.onEvent('themeChanged', () => {
+        const newScheme = webApp.colorScheme;
+        document.documentElement.setAttribute('data-color-scheme', newScheme);
+      });
+
+      // Инициализация WebApp
+      webApp.ready();
+    } else {
+      // Fallback для браузера (не в Telegram)
+      const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+      document.documentElement.setAttribute('data-color-scheme', mediaQuery.matches ? 'dark' : 'light');
+
+      mediaQuery.addEventListener('change', (e) => {
+        document.documentElement.setAttribute('data-color-scheme', e.matches ? 'dark' : 'light');
+      });
+    }
+  }, []);
+
+
   const handleCreateInstanceByToken = async (token: string) => {
     try {
       // ✅ НЕ используем глобальный loading - вместо этого используем isCreatingInstance
