@@ -1,0 +1,5 @@
+services:
+  frontend-nginx:
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public

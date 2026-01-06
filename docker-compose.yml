@@ -39,8 +39,6 @@ services:
     env_file: .env
     environment:
       - ENCRYPTION_KEY=DK2GpT43STFu463KTh4aUNLud5HPZ38YEBpD-ndhm3E=
-    ports:
-      - "8001:8001"
     volumes:
       - app_logs:/app/logs
       - gracehub_data:/app/data
@@ -58,8 +56,6 @@ services:
     env_file: .env
     environment:
       - ENCRYPTION_KEY=DK2GpT43STFu463KTh4aUNLud5HPZ38YEBpD-ndhm3E=
-    ports:
-      - "9443:9443"  # Telegram Webhook порт
     volumes:
       - app_logs:/app/logs
       - gracehub_data:/app/data
@@ -77,21 +73,43 @@ services:
       "
     restart: unless-stopped
 
-  frontend:
+  frontend-nginx:
     build:
       context: .
-      dockerfile: Dockerfile.frontend
+      dockerfile: Dockerfile.frontend-nginx
+      target: ${ENV_MODE:-dev}  # dev или prod
       args:
         - VITE_API_BASE_URL=${MINIAPP_BASE_URL}
+        - BUILD_PROD=${BUILD_PROD:-false}  # true только для prod
     ports:
-      - "5173:5173"  # Изменено с 8080:80 на 5173:5173
+      - "80:80"
+      - "443:443"
     volumes:
-      # Hot reload для разработки
-      - ./frontend/src:/app/src
-      - ./frontend/public:/app/public
+      - letsencrypt_data:/etc/letsencrypt:ro
+      - certbot_www:/var/www/certbot
     environment:
       - VITE_API_BASE_URL=${MINIAPP_BASE_URL}
       - WEBHOOK_DOMAIN=${WEBHOOK_DOMAIN}
+    depends_on:
+      - api
+      - master-bot
+      - db
+    restart: unless-stopped
+
+  certbot:
+    image: certbot/certbot:latest
+    volumes:
+      - letsencrypt_data:/etc/letsencrypt
+      - certbot_www:/var/www/certbot
+    entrypoint: "/bin/sh -c"
+    command: >
+      "trap exit TERM;
+      while :; do
+        certbot renew --webroot -w /var/www/certbot --quiet --post-hook 'docker kill -s HUP frontend-nginx';
+        sleep 12h & wait $${!};
+      done;"
+    depends_on:
+      - frontend-nginx
     restart: unless-stopped
 
   user-worker:
@@ -104,7 +122,7 @@ services:
     environment:
       - ENCRYPTION_KEY=DK2GpT43STFu463KTh4aUNLud5HPZ38YEBpD-ndhm3E=
       - WORKER_INSTANCE_ID=${WORKER_INSTANCE_ID:-unknown}
-      - DATABASE_URL=postgresql://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}
+      - 'DATABASE_URL=postgresql://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}'
     hostname: gracehub-worker-${WORKER_INSTANCE_ID:-unknown}
     container_name: gracehub-worker-${WORKER_INSTANCE_ID:-unknown}
     volumes:
@@ -119,3 +137,5 @@ volumes:
   postgres_data:
   app_logs:
   gracehub_data:
+  letsencrypt_data:
+  certbot_www:
