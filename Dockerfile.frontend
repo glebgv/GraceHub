@@ -3,7 +3,7 @@ FROM mirror.gcr.io/library/node:22-alpine
 WORKDIR /app
 
 # Зависимости
-COPY frontend/miniapp_frontend/package*.json ./
+COPY frontend/package*.json ./
 
 # Увеличить timeout и retry для npm
 RUN npm config set fetch-retry-maxtimeout 120000 && \
@@ -14,7 +14,7 @@ RUN npm config set fetch-retry-maxtimeout 120000 && \
 RUN npm install --prefer-offline --no-audit
 
 # Копировать весь код
-COPY frontend/miniapp_frontend/ ./
+COPY frontend/ ./
 
 # Vite ENV
 ARG VITE_API_BASE_URL=http://api:8001
