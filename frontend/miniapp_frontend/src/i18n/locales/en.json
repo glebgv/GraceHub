@@ -3,7 +3,7 @@
     "loading_app": "Loading",
     "title": "GraceHub Platform",
     "masterBot": "Master Bot",
-    "footerBrand": "Powered by GraceHub 0.1.0a",
+    "footerBrand": "Powered by ",
     "loading": "Loading app...",
     "open_from_telegram": "Open the mini app via Telegram",
     "error_owner_only": "This panel is available only to the bot owner. Open the mini app from the administrator account.",
