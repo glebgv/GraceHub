@@ -1,3 +1,5 @@
+# creator GraceHub Tg: @Gribson_Micro
+
 import asyncio
 import logging
 import os

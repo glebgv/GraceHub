@@ -1,4 +1,6 @@
 // src/pages/Billing.tsx
+// creator GraceHub Tg: @Gribson_Micro
+
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { apiClient, type PaymentMethod } from '../api/client';
 import { useTranslation } from 'react-i18next';

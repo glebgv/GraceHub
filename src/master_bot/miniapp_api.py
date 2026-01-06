@@ -1,4 +1,6 @@
 # src/master_bot/miniapp_api.py
+# creator GraceHub Tg: @Gribson_Micro
+
 """
 Mini App API для управления инстансами ботов.
 Интегрируется с master‑ботом и SQLite базой.

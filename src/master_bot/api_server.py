@@ -1,4 +1,5 @@
-#!/usr/bin/env python3
+# creator GraceHub Tg: @Gribson_Micro
+
 import asyncio
 import logging
 import os

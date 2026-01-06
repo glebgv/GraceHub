@@ -1,4 +1,6 @@
+# creator GraceHub Tg: @Gribson_Micro
 # src/shared/database.py
+
 import json
 import logging
 import os

@@ -1,10 +1,5 @@
 // src/pages/SuperAdmin.tsx
-//
-// UPDATED: Admin Panel with Navigation Menu
-// - Dashboard with client metrics widgets
-// - Clients section (stub for future backend)
-// - Settings sections: Offer, Single-Tenant, Superadmins, Instance Defaults, Payments
-// - All existing logic preserved
+// creator GraceHub Tg: @Gribson_Micro
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { Drawer } from 'vaul';
