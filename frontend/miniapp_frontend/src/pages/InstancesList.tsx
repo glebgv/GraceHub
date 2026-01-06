@@ -386,29 +386,14 @@ const InstancesList: React.FC<InstancesListProps> = ({
         )}
       </div>
 
-      {/* Shared AddBotModal — оверлей без закрытия по клику */}
-      {addBotModalOpen && (
-        <>
-          <div
-            style={{
-              position: 'fixed',
-              top: 0,
-              left: 0,
-              right: 0,
-              bottom: 0,
-              backgroundColor: 'rgba(0, 0, 0, 0.4)',
-              zIndex: 9998,
-            }}
-            // onClick удалён намеренно — теперь клик вне модалки НЕ закрывает её
-          />
-          <AddBotModal
-            onClose={closeAddBotModal}
-            onSubmitToken={handleSubmitToken}
-            validateToken={validateTelegramBotToken}
-            getErrorMessage={() => getTokenErrorMessage(currentLang)}
-          />
-        </>
-      )}
+      {/* AddBotModal с контролируемым состоянием */}
+      <AddBotModal
+        open={addBotModalOpen}
+        onClose={closeAddBotModal}
+        onSubmitToken={handleSubmitToken}
+        validateToken={validateTelegramBotToken}
+        getErrorMessage={() => getTokenErrorMessage(currentLang)}
+      />
 
       {/* Shared Language Picker Drawer */}
       <Drawer.Root

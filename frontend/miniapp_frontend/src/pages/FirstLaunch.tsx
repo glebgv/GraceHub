@@ -525,29 +525,14 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
         </div>
       </div>
 
-      {/* AddBotModal с оверлеем для затемнения фона */}
-      {showAddModal && (
-        <>
-          <div
-            style={{
-              position: 'fixed',
-              top: 0,
-              left: 0,
-              right: 0,
-              bottom: 0,
-              backgroundColor: 'rgba(0, 0, 0, 0.4)',
-              zIndex: 9998,
-            }}
-            onClick={() => setShowAddModal(false)}
-          />
-          <AddBotModal 
-            onClose={() => setShowAddModal(false)} 
-            onSubmitToken={handleSubmitToken}
-            validateToken={validateTelegramBotToken}
-            getErrorMessage={() => getTokenErrorMessage(language)}
-          />
-        </>
-      )}
+      {/* AddBotModal с контролируемым состоянием */}
+      <AddBotModal 
+        open={showAddModal}
+        onClose={() => setShowAddModal(false)} 
+        onSubmitToken={handleSubmitToken}
+        validateToken={validateTelegramBotToken}
+        getErrorMessage={() => getTokenErrorMessage(language)}
+      />
     </div>
   );
 };

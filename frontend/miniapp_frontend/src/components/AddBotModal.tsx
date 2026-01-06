@@ -1,10 +1,11 @@
 // src/components/AddBotModal.tsx
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Drawer } from 'vaul';
 
 interface AddBotModalProps {
+  open: boolean;
   onClose: () => void;
   onSubmitToken: (token: string) => Promise<void> | void;
   validateToken?: (token: string) => boolean;
@@ -12,6 +13,7 @@ interface AddBotModalProps {
 }
 
 const AddBotModal: React.FC<AddBotModalProps> = ({ 
+  open,
   onClose, 
   onSubmitToken,
   validateToken,
@@ -21,6 +23,15 @@ const AddBotModal: React.FC<AddBotModalProps> = ({
   const [token, setToken] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Сброс состояния при открытии/закрытии модалки
+  useEffect(() => {
+    if (open) {
+      setToken('');
+      setError(null);
+      setLoading(false);
+    }
+  }, [open]);
 
   const handleTokenChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value;
@@ -53,18 +64,32 @@ const AddBotModal: React.FC<AddBotModalProps> = ({
     }
   };
 
+  const handleClose = () => {
+    if (!loading) {
+      onClose();
+    }
+  };
+
   const isSubmitDisabled = !token.trim() || !!error || loading;
 
   return (
     <Drawer.Root 
-      open={true} 
-      onOpenChange={(open) => !open && !loading && onClose()}
+      open={open} 
+      onOpenChange={(isOpen) => {
+        if (!isOpen && !loading) {
+          onClose();
+        }
+      }}
       modal={true}
     >
       <Drawer.Portal>
         <Drawer.Overlay
-          className="fixed inset-0 bg-black/40"
-          style={{ zIndex: 9998 }}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.5)',
+            zIndex: 9998,
+          }}
         />
         <Drawer.Content
           style={{
@@ -136,6 +161,7 @@ const AddBotModal: React.FC<AddBotModalProps> = ({
                   value={token}
                   onChange={handleTokenChange}
                   disabled={loading}
+                  autoFocus
                   style={{
                     width: '100%',
                     padding: '10px 12px',
@@ -173,7 +199,7 @@ const AddBotModal: React.FC<AddBotModalProps> = ({
                 <button
                   type="button"
                   className="btn btn--outline"
-                  onClick={onClose}
+                  onClick={handleClose}
                   disabled={loading}
                   style={{ flex: 1 }}
                 >
