@@ -1,12 +1,9 @@
-# Upstreams (определите на основе ваших сервисов в docker-compose.yml)
 upstream miniapp_api {
     server api:8001;
 }
 
 upstream gracehub_backend {
     server master-bot:9443;
-    # Если есть user-worker инстансы, добавьте: server user-worker:порт; (для load balancing)
-    # keepalive 32;  # Опционально для оптимизации соединений
 }
 
 # Redirect HTTP → HTTPS
@@ -14,7 +11,6 @@ server {
     listen 80;
     server_name ${WEBHOOK_DOMAIN};
 
-    # Certbot ACME-challenge
     location /.well-known/acme-challenge/ {
         root /var/www/certbot;
     }
@@ -36,12 +32,11 @@ server {
     ssl_session_cache shared:SSL:10m;
     ssl_session_timeout 10m;
 
-    # Certbot ACME-challenge (для HTTPS тоже, на всякий случай)
     location /.well-known/acme-challenge/ {
         root /var/www/certbot;
     }
 
-    # 0. Webhook master-бота
+    # master webhook
     location /master_webhook {
         proxy_pass http://gracehub_backend;
         proxy_set_header Host $host;
@@ -50,9 +45,9 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
-    # 1. API (FastAPI)
+    # FastAPI API
     location /api/ {
-        proxy_pass http://miniapp_api/;
+        proxy_pass http://miniapp_api;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
@@ -65,14 +60,14 @@ server {
         proxy_cache_bypass 1;
     }
 
-    # 2. Health backend
+    # health
     location /health {
         proxy_pass http://gracehub_backend/health;
     }
 
-    # 3. Остальные backend API
+    # backend API
     location /backend/ {
-        proxy_pass http://gracehub_backend/;
+        proxy_pass http://gracehub_backend;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -82,9 +77,9 @@ server {
         proxy_connect_timeout 60s;
     }
 
-    # 4. Webhook worker-инстансов
+    # webhooks
     location /webhook/ {
-        proxy_pass http://gracehub_backend/;
+        proxy_pass http://gracehub_backend;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
@@ -95,29 +90,27 @@ server {
         proxy_send_timeout 60s;
     }
 
-    # Кэширование статических файлов (js, css, изображения и т.д.)
+    # Кэшируем статические файлы, которые уже лежат в /usr/share/nginx/html после билда Vite
     location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$ {
         root /usr/share/nginx/html;
-        expires 1y;  # Долгосрочный кэш (1 год)
+        expires 1y;
         add_header Cache-Control "public, immutable";
-        access_log off;  # Отключить логи для статики
+        access_log off;
     }
 
-    # FRONTEND - Serve собранной статики (SPA)
+    # SPA frontend (index.html)
     location / {
         root /usr/share/nginx/html;
         index index.html index.htm;
-        try_files $uri $uri/ /index.html;  # SPA-роутинг: все пути на index.html
+        try_files $uri $uri/ /index.html;
     }
 
-    # Обработка ошибок
     error_page 500 502 503 504 /50x.html;
     location = /50x.html {
-        root /usr/share/nginx/html;  # Путь внутри контейнера
+        root /usr/share/nginx/html;
         internal;
     }
 
-    # Gzip
     gzip on;
     gzip_vary on;
     gzip_min_length 1024;
@@ -133,3 +126,4 @@ server {
         application/json
         image/svg+xml;
 }
+
