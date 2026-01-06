@@ -104,6 +104,25 @@ type StripeInvoice = {
   sessionId: string;
 };
 
+const SkeletonCard: React.FC = () => (
+  <div className="card billing-plan-card skeleton-card">
+    <div className="billing-plan-content">
+      <div className="billing-plan-info">
+        <div className="billing-plan-title skeleton-text skeleton-text-title" />
+        <div className="billing-plan-subtitle skeleton-text skeleton-text-subtitle" />
+        <div className="billing-plan-price skeleton-text skeleton-text-price" />
+        <div className="billing-plan-methods">
+          <span className="billing-method-badge skeleton-badge" />
+          <span className="billing-method-badge skeleton-badge" />
+        </div>
+      </div>
+      <button className="btn btn--primary skeleton-btn" disabled>
+        <div className="skeleton-text skeleton-text-btn" />
+      </button>
+    </div>
+  </div>
+);
+
 const Billing: React.FC<BillingProps> = ({ instanceId }) => {
   const { t } = useTranslation();
 
@@ -732,10 +751,9 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
   if (loading || paymentsLoading) {
     return (
       <div className="billing-page">
-        <div className="card billing-loading">
-          <div className="loading-spinner" />
-          <p>{t('billing.loading')}</p>
-        </div>
+        {[1, 2, 3].map((i) => (
+          <SkeletonCard key={i} />
+        ))}
       </div>
     );
   }
