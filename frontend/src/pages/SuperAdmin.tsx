@@ -371,6 +371,18 @@ const MiniSwitch: React.FC<{
 
 type MenuSection = 'dashboard' | 'clients' | 'settings' | 'payments';
 
+const Skeleton: React.FC<{ className?: string; style?: React.CSSProperties }> = ({ className = '', style }) => (
+  <div
+    className={`skeleton ${className}`}
+    style={{
+      backgroundColor: '#e0e0e0',
+      borderRadius: '4px',
+      animation: 'pulse 1.5s ease-in-out infinite',
+      ...style,
+    }}
+  />
+);
+
 const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
   const { t } = useTranslation();
   const [loading, setLoading] = useState(true);
@@ -401,6 +413,9 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
   const [activeSection, setActiveSection] = useState<MenuSection>('dashboard');
 
   const [metrics, setMetrics] = useState<any>(null);
+  const [metricsLoading, setMetricsLoading] = useState(false);
+
+  const [clientsLoading, setClientsLoading] = useState(false);
 
   const isSuperadmin = useMemo(() => {
     const roles = me?.roles || [];
@@ -460,9 +475,21 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
 
   useEffect(() => {
     if (activeSection === 'dashboard') {
+      setMetricsLoading(true);
       apiClient.getPlatformMetrics()
         .then(setMetrics)
-        .catch((e) => console.error('Metrics error:', e));
+        .catch((e) => console.error('Metrics error:', e))
+        .finally(() => setMetricsLoading(false));
+    }
+  }, [activeSection]);
+
+  useEffect(() => {
+    if (activeSection === 'clients') {
+      setClientsLoading(true);
+      // Simulate loading for clients section since it's in development
+      setTimeout(() => {
+        setClientsLoading(false);
+      }, 800); // Simulated delay
     }
   }, [activeSection]);
 
@@ -751,7 +778,9 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
               <div className="dashboard-widget">
                 <div className="widget-icon">👥</div>
                 <div className="widget-content">
-                  <div className="widget-value">{metrics?.total_clients ?? '...'}</div>
+                  <div className="widget-value">
+                    {metricsLoading ? <Skeleton style={{ width: '60px', height: '32px' }} /> : metrics?.total_clients ?? '0'}
+                  </div>
                   <div className="widget-label">Всего клиентов</div>
                 </div>
               </div>
@@ -759,7 +788,9 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
               <div className="dashboard-widget">
                 <div className="widget-icon">🤖</div>
                 <div className="widget-content">
-                  <div className="widget-value">{metrics?.active_bots ?? '...'}</div>
+                  <div className="widget-value">
+                    {metricsLoading ? <Skeleton style={{ width: '60px', height: '32px' }} /> : metrics?.active_bots ?? '0'}
+                  </div>
                   <div className="widget-label">Активных ботов</div>
                 </div>
               </div>
@@ -767,7 +798,9 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
               <div className="dashboard-widget">
                 <div className="widget-icon">🎫</div>
                 <div className="widget-content">
-                  <div className="widget-value">{metrics?.monthly_tickets ?? '...'}</div>
+                  <div className="widget-value">
+                    {metricsLoading ? <Skeleton style={{ width: '60px', height: '32px' }} /> : metrics?.monthly_tickets ?? '0'}
+                  </div>
                   <div className="widget-label">Тикетов за месяц</div>
                 </div>
               </div>
@@ -775,7 +808,9 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
               <div className="dashboard-widget">
                 <div className="widget-icon">💰</div>
                 <div className="widget-content">
-                  <div className="widget-value">{metrics?.paid_subscriptions ?? '...'}</div>
+                  <div className="widget-value">
+                    {metricsLoading ? <Skeleton style={{ width: '60px', height: '32px' }} /> : metrics?.paid_subscriptions ?? '0'}
+                  </div>
                   <div className="widget-label">Платные подписки</div>
                 </div>
               </div>
@@ -805,22 +840,41 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
               <h3 className="superadmin-section-title">Заглушка списка клиентов</h3>
               
               <div className="superadmin-list">
-                <div className="superadmin-list-item">
-                  <div className="superadmin-list-item-text">
-                    <strong>User ID:</strong> 123456789 | <strong>Username:</strong> @example_user | <strong>Боты:</strong> 2 | <strong>План:</strong> Pro
-                  </div>
-                  <button type="button" className="btn btn--outline btn--sm" disabled>
-                    Управление
-                  </button>
-                </div>
-                <div className="superadmin-list-item">
-                  <div className="superadmin-list-item-text">
-                    <strong>User ID:</strong> 987654321 | <strong>Username:</strong> @demo_client | <strong>Боты:</strong> 1 | <strong>План:</strong> Lite
-                  </div>
-                  <button type="button" className="btn btn--outline btn--sm" disabled>
-                    Управление
-                  </button>
-                </div>
+                {clientsLoading ? (
+                  <>
+                    <div className="superadmin-list-item">
+                      <div className="superadmin-list-item-text">
+                        <Skeleton style={{ width: '80%', height: '20px' }} />
+                      </div>
+                      <Skeleton style={{ width: '100px', height: '32px' }} />
+                    </div>
+                    <div className="superadmin-list-item">
+                      <div className="superadmin-list-item-text">
+                        <Skeleton style={{ width: '80%', height: '20px' }} />
+                      </div>
+                      <Skeleton style={{ width: '100px', height: '32px' }} />
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="superadmin-list-item">
+                      <div className="superadmin-list-item-text">
+                        <strong>User ID:</strong> 123456789 | <strong>Username:</strong> @example_user | <strong>Боты:</strong> 2 | <strong>План:</strong> Pro
+                      </div>
+                      <button type="button" className="btn btn--outline btn--sm" disabled>
+                        Управление
+                      </button>
+                    </div>
+                    <div className="superadmin-list-item">
+                      <div className="superadmin-list-item-text">
+                        <strong>User ID:</strong> 987654321 | <strong>Username:</strong> @demo_client | <strong>Боты:</strong> 1 | <strong>План:</strong> Lite
+                      </div>
+                      <button type="button" className="btn btn--outline btn--sm" disabled>
+                        Управление
+                      </button>
+                    </div>
+                  </>
+                )}
               </div>
             </div>
           </div>

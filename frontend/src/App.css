@@ -2643,17 +2643,18 @@ select.form-control {
   flex: 1 1 0;
   position: relative;
   min-height: 44px;
-  border: 1px solid var(--color-border);
+  background: var(--color-secondary); 
+  border: 1px solid rgba(255, 255, 255, 0.2); 
   transition: all var(--duration-fast) var(--ease-in-out);
 }
 
 .billing-period-btn.active {
-  background: rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.15);  
   border: 2px solid var(--color-primary);
 }
 
 .billing-period-btn:hover:not(:disabled) {
-  background: var(--color-card-hover);
+  background: var(--color-card-hover);  
 }
 
 .billing-period-check {
