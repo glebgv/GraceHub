@@ -960,15 +960,30 @@ const App: React.FC<AppProps> = ({
                   </>
                 )}
               </div>
-              <button
-                type="button"
-                className="btn-back"
-                onClick={() => setCurrentPage('instances')}
-                aria-label={t('common.back', 'Назад')}
-                title={t('common.back', 'Назад')}
-              >
-                ←
-              </button>
+              {isHeaderLoading ? (
+                <div className="btn-back" style={{ cursor: 'default' }}>
+                  <div 
+                    className="skeleton animate-pulse"
+                    style={{
+                      display: 'block',
+                      backgroundColor: '#e5e7eb',
+                      minHeight: '2.5rem',
+                      width: '2.5rem',
+                      borderRadius: '50%'
+                    }}
+                  ></div>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  className="btn-back"
+                  onClick={() => setCurrentPage('instances')}
+                  aria-label={t('common.back', 'Назад')}
+                  title={t('common.back', 'Назад')}
+                >
+                  ←
+                </button>
+              )}
             </div>
           )}
         </header>

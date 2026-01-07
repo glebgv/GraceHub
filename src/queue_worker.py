@@ -1,4 +1,4 @@
-# src/worker/queue_worker.py
+# src/queue_worker.py
 import asyncio
 import json
 import logging
@@ -40,7 +40,6 @@ def _get_float_env(name: str, default: float) -> float:
 
 
 def _worker_id() -> str:
-    # удобно видеть, какой процесс залочил job
     return os.getenv("QUEUE_WORKER_ID") or f"{socket.gethostname()}:{os.getpid()}"
 
 
@@ -62,7 +61,6 @@ async def _get_or_create_worker(
         logger.warning(f"No token found for instance {instance_id}")
         return None
 
-    # ❗ ВАЖНО: правильный порядок аргументов GraceHubWorker(instance_id, db, token=...)
     w = GraceHubWorker(instance_id=instance_id, db=db, token=token)
 
     try:
@@ -87,7 +85,6 @@ async def stuck_requeue_loop(
 ) -> None:
     """
     Перекидывает зависшие jobs из status=processing обратно в retry.
-    Это must-have, иначе после крэша воркера job может остаться processing навсегда.
     
     ⚠️ DEPRECATED: Эта функция оставлена для обратной совместимости,
     но теперь реквей выполняется через QueueCleanupService.
@@ -120,11 +117,12 @@ async def run_worker() -> None:
 
     # env-config
     idle_sleep = _get_float_env("QUEUE_WORKER_IDLE_SLEEP", 0.2)
+    listen_timeout = 30  # Периодическая перепроверка для stuck recovery (константа)
 
-    # 🔥 НОВАЯ СИСТЕМА ОЧИСТКИ через QueueCleanupService
+    # Система очистки через QueueCleanupService
     cleanup_enabled = os.getenv("QUEUE_CLEANUP_ENABLED", "1").strip().lower() not in ("0", "false", "no")
     
-    # Старая система реквея (оставлена для совместимости, но можно отключить)
+    # Старая система реквея (deprecated)
     requeue_enabled = os.getenv("QUEUE_REQUEUE_ENABLED", "0").strip().lower() not in ("0", "false", "no")
     stuck_seconds = _get_int_env("QUEUE_REQUEUE_STUCK_SECONDS", 600)
     requeue_interval = _get_int_env("QUEUE_REQUEUE_INTERVAL_SECONDS", 30)
@@ -137,7 +135,7 @@ async def run_worker() -> None:
 
     cache: Dict[str, GraceHubWorker] = {}
 
-    # 🔥 ЗАПУСКАЕМ НОВЫЙ СЕРВИС ОЧИСТКИ (рекомендуется)
+    # 🔥 ЗАПУСКАЕМ СЕРВИС ОЧИСТКИ
     cleanup_service = None
     if cleanup_enabled:
         cleanup_service = QueueCleanupService(db)
@@ -146,7 +144,7 @@ async def run_worker() -> None:
     else:
         logger.warning("⚠️ QueueCleanupService disabled via QUEUE_CLEANUP_ENABLED=0")
 
-    # Старый реквей-луп (deprecated, но оставлен для миграции)
+    # Старый реквей-луп (deprecated)
     if requeue_enabled and not cleanup_enabled:
         asyncio.create_task(
             stuck_requeue_loop(
@@ -164,11 +162,40 @@ async def run_worker() -> None:
     elif requeue_enabled and cleanup_enabled:
         logger.info("ℹ️ QUEUE_REQUEUE_ENABLED ignored (QueueCleanupService active)")
 
+    # 🔥 LISTEN/NOTIFY setup (всегда включён)
+    listen_conn = None
+    wakeup_event = asyncio.Event()
+    
+    def on_notify(connection, pid, channel, payload):
+        """Callback при получении NOTIFY от PostgreSQL"""
+        wakeup_event.set()
+    
+    try:
+        listen_conn = await db.pool.acquire()
+        await listen_conn.add_listener('tg_update_channel', on_notify)
+        logger.info("✅ LISTEN/NOTIFY active on 'tg_update_channel' (timeout=%ss)", listen_timeout)
+    except Exception as e:
+        logger.warning("⚠️ Failed to setup LISTEN/NOTIFY: %s. Falling back to polling.", e)
+        if listen_conn:
+            await db.pool.release(listen_conn)
+            listen_conn = None
+
     try:
         while True:
             job = await db.pick_tg_update(worker_id=wid)
             if not job:
-                await asyncio.sleep(idle_sleep)
+                if listen_conn:
+                    # 🔥 Ждём NOTIFY от PostgreSQL (вместо polling)
+                    try:
+                        await asyncio.wait_for(wakeup_event.wait(), timeout=listen_timeout)
+                    except asyncio.TimeoutError:
+                        # Периодически просыпаемся для stuck recovery и health check
+                        pass
+                    finally:
+                        wakeup_event.clear()
+                else:
+                    # Fallback: старый polling режим (если LISTEN failed)
+                    await asyncio.sleep(idle_sleep)
                 continue
 
             job_id = int(job["id"])
@@ -206,7 +233,16 @@ async def run_worker() -> None:
     except KeyboardInterrupt:
         logger.info("🛑 Received shutdown signal, stopping gracefully...")
     finally:
-        # 🔥 GRACEFUL SHUTDOWN для cleanup service
+        # 🔥 CLEANUP: отключаем LISTEN/NOTIFY
+        if listen_conn:
+            try:
+                await listen_conn.remove_listener('tg_update_channel', on_notify)
+                await db.pool.release(listen_conn)
+                logger.info("✅ LISTEN/NOTIFY connection released")
+            except Exception as e:
+                logger.warning("⚠️ Error releasing LISTEN connection: %s", e)
+        
+        # Останавливаем cleanup service
         if cleanup_service:
             logger.info("⏳ Stopping QueueCleanupService...")
             await cleanup_service.stop()
@@ -238,7 +274,6 @@ def run_supervisor() -> None:
     for i in range(replicas):
         env = os.environ.copy()
         env["QUEUE_WORKER_MODE"] = "worker"
-        # делаем worker_id более читаемым: hostname:pid:idx (pid будет уже дочерний)
         env["QUEUE_WORKER_ID"] = env.get("QUEUE_WORKER_ID") or f"{socket.gethostname()}:replica-{i+1}"
 
         cmd = [sys.executable, __file__]
@@ -246,8 +281,6 @@ def run_supervisor() -> None:
         procs.append(p)
         logger.info("Spawned replica %s pid=%s", i + 1, p.pid)
 
-    # Простой "ожидатель": если любой процесс упал — валим supervisor (чтобы ты заметил)
-    # При желании можно сделать авто-рестарт.
     try:
         while True:
             for p in procs:

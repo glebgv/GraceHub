@@ -1109,14 +1109,39 @@ class MasterDatabase:
 
                 # Индекс под "выбор следующей задачи" воркером (pending/retry + run_at)
                 await conn.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_tg_update_queue_pick "
-                    "ON tg_update_queue (status, run_at, id)"
+                    "CREATE INDEX IF NOT EXISTS idx_tg_update_queue_pending_active "
+                    "ON tg_update_queue (run_at, id) "
+                    "WHERE status IN ('pending', 'retry')"
                 )
 
                 # Индекс для диагностики/админки и выборок по инстансу
                 await conn.execute(
                     "CREATE INDEX IF NOT EXISTS idx_tg_update_queue_instance_status "
                     "ON tg_update_queue (instance_id, status, id)"
+                )
+
+                # Функция для уведомления о новых задачах
+                await conn.execute(
+                    """
+                    CREATE OR REPLACE FUNCTION notify_new_tg_update() 
+                    RETURNS TRIGGER AS $$
+                    BEGIN
+                        PERFORM pg_notify('tg_update_channel', NEW.instance_id);
+                        RETURN NEW;
+                    END;
+                    $$ LANGUAGE plpgsql;
+                    """
+                )
+
+                # Триггер на INSERT (новые задачи)
+                await conn.execute(
+                    """
+                    DROP TRIGGER IF EXISTS tg_update_insert_trigger ON tg_update_queue;
+                    CREATE TRIGGER tg_update_insert_trigger
+                    AFTER INSERT ON tg_update_queue
+                    FOR EACH ROW
+                    EXECUTE FUNCTION notify_new_tg_update();
+                    """
                 )
 
                 # blacklist
