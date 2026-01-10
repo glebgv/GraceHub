@@ -88,14 +88,13 @@ async def run_worker():
     logger.info(f"🎯 TARGET instance_id: '{instance_id}'")
     logger.info(f"🔍 Environment check: WORKER_INSTANCE_ID={os.getenv('WORKER_INSTANCE_ID')}, DATABASE_URL={'SET' if os.getenv('DATABASE_URL') else 'NOT SET'}")
 
-    
     # 2. Database URL
-    database_url = os.getenv("database_url")
+    database_url = os.getenv("DATABASE_URL")
     if not database_url:
         logger.error("❌ DATABASE_URL env var required!")
         sys.exit(1)
     
-    logger.info(f"✅ Using database_url={database_url[:50]}...")
+    logger.info(f"✅ Using DATABASE_URL={database_url[:50]}...")
     
     # 🔥 3. MasterDatabase - ОДНА попытка! (НЕ retry!)
     try:
@@ -117,7 +116,28 @@ async def run_worker():
     logger.info(f"✅ Worker '{instance_id}' FULLY ready!")
     logger.info(f"✅ Bot ready: @{worker.bot_username}")
     
-    # 5. Webhook server + infinite loop
+    # 🆕 5. Автоматическая настройка Mini App кнопки
+    try:
+        logger.info(f"🔄 [Instance {instance_id}] Setting up Mini App button...")
+        miniapp_success = await worker.setup_dynamic_miniapp()
+        if miniapp_success:
+            logger.info(f"✅ [Instance {instance_id}] Mini App button configured")
+        else:
+            logger.warning(f"⚠️ [Instance {instance_id}] Running without Mini App button")
+    except Exception as e:
+        logger.error(f"❌ [Instance {instance_id}] Mini App setup failed: {e}", exc_info=True)
+        # Продолжаем работу без Mini App
+    
+    # 🆕 6. Запускаем обработчик команд от API в фоне
+    try:
+        logger.info(f"🔄 [Instance {instance_id}] Starting bot commands processor...")
+        asyncio.create_task(worker.process_bot_commands_loop())
+        logger.info(f"✅ [Instance {instance_id}] Bot commands processor started")
+    except Exception as e:
+        logger.error(f"❌ [Instance {instance_id}] Failed to start commands processor: {e}", exc_info=True)
+        # Продолжаем работу без обработчика команд
+    
+    # 7. Webhook server + infinite loop
     logger.info("🚀 Starting webhook server...")
     logger.info("⏳ Waiting for updates...")
     
@@ -502,7 +522,183 @@ class GraceHubWorker:
         
         logger.info(f"✅ Worker READY: {self.instance_id}")
 
+    async def setup_dynamic_miniapp(self):
+        """
+        Автоматически устанавливает кнопку Mini App в меню бота
+        через Bot API без ручной настройки в BotFather.
+        """
+        try:
+            from aiogram.types import MenuButtonWebApp, WebAppInfo
+            
+            helpdesk_url = f"https://app.gracehub.ru/helpdesk/?instance={self.instance_id}"
+            
+            await self.bot.set_chat_menu_button(
+                chat_id=None,
+                menu_button=MenuButtonWebApp(
+                    text="🎫 Helpdesk",
+                    web_app=WebAppInfo(url=helpdesk_url)
+                )
+            )
+            
+            logger.info(f"✅ [Instance {self.instance_id}] Mini App button set: {helpdesk_url}")
+            
+            # ✅ ИСПРАВЛЕНО: используем snake_case как в вашей БД
+            await self.db.execute("""
+                INSERT INTO worker_settings (instance_id, key, value)
+                VALUES ($1, 'miniapp_configured', 'true')
+                ON CONFLICT (instance_id, key) DO UPDATE SET value = EXCLUDED.value
+            """, self.instance_id)
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ [Instance {self.instance_id}] Failed to set Mini App button: {e}")
+            return False
 
+        
+    async def process_bot_commands_loop(self):
+        """
+        Фоновая задача: проверяет очередь команд от API и выполняет их.
+        """
+        logger.info(f"🔄 [Instance {self.instance_id}] Bot commands processor started")
+        
+        while True:
+            try:
+                # ✅ ИСПРАВЛЕНО: snake_case
+                commands = await self.db.fetchall("""
+                    SELECT id, command, payload
+                    FROM bot_commands
+                    WHERE instance_id = $1 AND status = 'pending'
+                    ORDER BY created_at ASC
+                    LIMIT 10
+                """, self.instance_id)
+                
+                for cmd in commands:
+                    cmd_id = cmd['id']
+                    command = cmd['command']
+                    payload = json.loads(cmd['payload']) if cmd['payload'] else {}
+                    
+                    try:
+                        await self.execute_bot_command(command, payload)
+                        
+                        # ✅ ИСПРАВЛЕНО: snake_case
+                        await self.db.execute("""
+                            UPDATE bot_commands
+                            SET status = 'completed', completed_at = NOW()
+                            WHERE id = $1
+                        """, cmd_id)
+                        
+                        logger.info(f"✅ [Instance {self.instance_id}] Command '{command}' executed (id={cmd_id})")
+                        
+                    except Exception as e:
+                        logger.error(f"❌ [Instance {self.instance_id}] Command '{command}' failed (id={cmd_id}): {e}")
+                        
+                        await self.db.execute("""
+                            UPDATE bot_commands
+                            SET status = 'failed', error = $1
+                            WHERE id = $2
+                        """, str(e)[:500], cmd_id)
+                
+                await asyncio.sleep(2)
+                
+            except Exception as e:
+                logger.error(f"❌ [Instance {self.instance_id}] Command loop error: {e}")
+                await asyncio.sleep(5)
+
+    
+    async def execute_bot_command(self, command: str, payload: dict):
+        """Выполняет команду от API"""
+        
+        if command == 'create_operator_topic':
+            await self.handle_create_operator_topic(payload)
+        
+        elif command == 'close_ticket':
+            ticket_id = payload.get('ticket_id')
+            if ticket_id:
+                await self.close_ticket(ticket_id)
+        
+        else:
+            logger.warning(f"⚠️ [Instance {self.instance_id}] Unknown command: {command}")
+    
+    async def handle_create_operator_topic(self, payload: dict):
+        """
+        Создает топик в личном чате оператора с историей тикета.
+        """
+        ticket_id = payload.get('ticket_id')
+        operator_id = payload.get('operator_id')
+        username = payload.get('username', 'User')
+        user_id = payload.get('user_id')
+        history = payload.get('history', [])
+        
+        if not ticket_id or not operator_id:
+            logger.error(f"❌ Invalid payload for create_operator_topic: {payload}")
+            return
+        
+        logger.info(f"🎫 [Instance {self.instance_id}] Creating topic for ticket #{ticket_id}, operator {operator_id}")
+        
+        try:
+            topic_name = f"#{ticket_id}: @{username}" if username != 'User' else f"#{ticket_id}: User {user_id}"
+            
+            ft = await self.bot.create_forum_topic(
+                chat_id=operator_id,
+                name=topic_name[:128]
+            )
+            
+            thread_id = ft.message_thread_id
+            
+            # ✅ ИСПРАВЛЕНО: snake_case (проверьте вашу схему таблицы tickets!)
+            await self.db.execute("""
+                UPDATE tickets
+                SET thread_id = $1, updated_at = NOW()
+                WHERE id = $2 AND instance_id = $3
+            """, thread_id, ticket_id, self.instance_id)
+            
+            # Отправка истории...
+            if history:
+                history_text = self._format_history_messages(history, limit=10)
+                
+                await self.bot.send_message(
+                    chat_id=operator_id,
+                    message_thread_id=thread_id,
+                    text=f"📋 **История обращения #{ticket_id}**\n\n{history_text}\n\n"
+                        f"✍️ _Напишите ваш ответ в этот топик_",
+                    parse_mode="Markdown"
+                )
+            else:
+                await self.bot.send_message(
+                    chat_id=operator_id,
+                    message_thread_id=thread_id,
+                    text=f"✅ Тикет #{ticket_id} взят в работу\n\n"
+                        f"✍️ _Напишите ваш ответ здесь_"
+                )
+            
+            logger.info(f"✅ [Instance {self.instance_id}] Topic {thread_id} created for ticket #{ticket_id}")
+            
+        except Exception as e:
+            logger.error(f"❌ [Instance {self.instance_id}] Failed to create topic for ticket #{ticket_id}: {e}")
+            raise
+
+    
+    def _format_history_messages(self, messages: list, limit: int = 10) -> str:
+        """Форматирует последние N сообщений для отображения"""
+        recent = messages[-limit:] if len(messages) > limit else messages
+        
+        lines = []
+        if len(messages) > limit:
+            lines.append(f"_...показаны последние {limit} из {len(messages)} сообщений_\n")
+        
+        for msg in recent:
+            direction_emoji = "👤" if msg.get('direction') == 'usertoopenchat' else "👨‍💼"
+            direction_text = "Клиент" if msg.get('direction') == 'usertoopenchat' else "Оператор"
+            content = msg.get('content', '_медиа_')
+            
+            # Обрезаем длинные сообщения
+            if len(content) > 200:
+                content = content[:200] + "..."
+            
+            lines.append(f"{direction_emoji} {direction_text}:\n{content}\n")
+        
+        return "\n".join(lines)
 
     def get_rating_keyboard(self, ticket_id: int) -> InlineKeyboardMarkup:
         """
@@ -1112,7 +1308,7 @@ class GraceHubWorker:
         """
         Обновляет название форумной темы по данным тикета.
         """
-        thread_id = ticket.get("thread_id")  # было "threadid"
+        thread_id = ticket.get("thread_id") 
         chat_id = ticket.get("chat_id")
         if not thread_id or not chat_id:
             return

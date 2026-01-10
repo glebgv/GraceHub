@@ -5,14 +5,14 @@ WORKDIR /app
 ARG BUILD_PROD=false  # По умолчанию false для dev
 
 # Зависимости
-COPY frontend/package*.json ./
+COPY frontend-miniapp/package*.json ./
 RUN npm config set fetch-retry-maxtimeout 120000 && \
     npm config set fetch-retry-mintimeout 10000 && \
     npm config set fetch-retries 5
 RUN npm install --prefer-offline --no-audit
 
 # Копировать код
-COPY frontend/ ./
+COPY frontend-miniapp/ ./
 
 # Vite ENV
 ARG VITE_API_BASE_URL=http://api:8001

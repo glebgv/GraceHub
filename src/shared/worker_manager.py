@@ -40,7 +40,7 @@ class DockerWorkerManager:
         try:
             client = docker.DockerClient(base_url=self.docker_host)
             container_name = f"gracehub-worker-{instance_id}"
-            image_name = "gracehub-user-worker"  # Без :latest!
+            image_name = "gracehub-user-worker"
             
             # Проверяем наличие образа
             try:
@@ -59,40 +59,42 @@ class DockerWorkerManager:
             except docker.errors.NotFound:
                 pass
             
-            # 🔥 МИНИМАЛЬНЫЕ ENV - НИКАКИХ токенов!
+            # 🔥 ИСПРАВЛЕННЫЕ ENV - ВСЕ С ЗАГЛАВНЫМИ БУКВАМИ!
             environment = {
-                # ✅ Единственная обязательная - для подключения к БД
-                "database_url": db.dsn,
-                
-                # 🔥 КРИТИЧЕСКИ ВАЖНО! Реальный instance_id из БД
+                # ✅ Критически важные переменные
+                "DATABASE_URL": db.dsn,  # ✅ Заглавные буквы!
                 "WORKER_INSTANCE_ID": instance_id,
+                "ENCRYPTION_KEY": os.getenv("ENCRYPTION_KEY", "DK2GpT43STFu463KTh4aUNLud5HPZ38YEBpD-ndhm3E="),
                 
-                # 🔥 ФИКС ДЕШИФРОВКИ! Точный ключ из master_key.key
-                "ENCRYPTION_KEY": "DK2GpT43STFu463KTh4aUNLud5HPZ38YEBpD-ndhm3E=",
+                # Настройки приложения
+                "APP_BASE_DIR": "/app",
+                "LOGLEVEL": os.getenv("LOGLEVEL", "INFO"),
+                "WEBHOOK_DOMAIN": os.getenv("WEBHOOK_DOMAIN", ""),
+                "WEBHOOK_PORT": os.getenv("WEBHOOK_PORT", "8443"),
+                "ENCRYPTION_KEY_FILE": "/app/master_key.key",
                 
-                # Дополнительные настройки
-                "app_base_dir": "/app",
-                "log_level": os.getenv("LOGLEVEL", "INFO"),
-                "webhook_domain": os.getenv("WEBHOOKDOMAIN"),
-                "webhook_port": os.getenv("WEBHOOKPORT", "8443"),
-                "encryption_key_file": "/app/master_key.key",
-                
-                # Fallback DB vars
-                "db_host": os.getenv("DB_HOST", "db"),
-                "db_user": os.getenv("DB_USER"),
-                "db_password": os.getenv("DB_PASSWORD"),
-                "db_name": os.getenv("DB_NAME"),
+                # Fallback DB переменные (на случай если DATABASE_URL не работает)
+                "DB_HOST": os.getenv("DB_HOST", "db"),
+                "DB_USER": os.getenv("DB_USER", ""),
+                "DB_PASSWORD": os.getenv("DB_PASSWORD", ""),
+                "DB_NAME": os.getenv("DB_NAME", ""),
             }
             
             # 🔥 Копируем все GRACEHUB_* переменные из master (но НЕ токены!)
             for key, value in os.environ.items():
                 if key.startswith("GRACEHUB_") and key not in ["GRACEHUB_MASTERBOT_TOKEN"]:
-                    environment[key.lower()] = value  # GRACEHUB_FOO → gracehub_foo
-            
+                    environment[key] = value  # ✅ Оставляем как есть (заглавные)
+            # Перед client.containers.run добавьте:
+            logger.info(f"🔍 [DEBUG] Environment for {container_name}:")
+            logger.info(f"   DATABASE_URL: {environment.get('DATABASE_URL', 'NOT SET')[:50]}...")
+            logger.info(f"   WORKER_INSTANCE_ID: {environment.get('WORKER_INSTANCE_ID', 'NOT SET')}")
+            logger.info(f"   ENCRYPTION_KEY: {'SET' if environment.get('ENCRYPTION_KEY') else 'NOT SET'}")
+           
             container = client.containers.run(
                 image=image_name,
                 name=container_name,
-                environment=environment,  # ✅ Только безопасные ENV!
+                hostname=container_name,  # ✅ Устанавливаем hostname
+                environment=environment,
                 detach=True,
                 network="gracehub_default",
                 mem_limit="512m",
@@ -103,12 +105,14 @@ class DockerWorkerManager:
                 }
             )
             
-            logger.info(f"🚀 Docker worker spawned: {container_name} ID={container.id}")
+            logger.info(f"🚀 Docker worker spawned: {container_name} (hostname={container_name}) ID={container.id}")
             await db.update_instance_status(instance_id, "RUNNING")
             
         except Exception as e:
             logger.error(f"💥 Docker spawn failed instance_id={instance_id}: {e}")
             raise
+
+
     
     async def stop_worker(self, instance_id: str):
         """Останавливаем и удаляем worker контейнер"""

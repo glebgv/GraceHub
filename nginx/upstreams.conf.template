@@ -4,6 +4,10 @@ upstream miniapp_api {
 
 upstream gracehub_backend {
     server master-bot:9443;
-    # Если нужно добавить user-worker инстансы, добавьте здесь, например:
-    # server gracehub-worker-some-id:port;
 }
+
+# 🆕 Helpdesk frontend upstream
+upstream helpdesk_frontend {
+    server frontend-helpdesk:3001;
+}
+

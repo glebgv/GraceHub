@@ -1477,6 +1477,27 @@ class MasterDatabase:
             )
             """
         )
+        # Таблица команд для worker от API
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS bot_commands (
+                id BIGSERIAL PRIMARY KEY,
+                instance_id TEXT NOT NULL REFERENCES bot_instances(instance_id) ON DELETE CASCADE,
+                command TEXT NOT NULL,
+                payload JSONB NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',  -- pending, completed, failed
+                error TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                completed_at TIMESTAMPTZ,
+                CONSTRAINT fk_bot_commands_instance 
+                    FOREIGN KEY (instance_id) REFERENCES bot_instances(instance_id) ON DELETE CASCADE
+            )
+        """)
+        
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_bot_commands_instance_status 
+            ON bot_commands(instance_id, status, created_at)
+        """)
+        
 
     async def _create_billing_tables(self, conn) -> None:
         """

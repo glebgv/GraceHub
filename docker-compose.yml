@@ -73,14 +73,30 @@ services:
       "
     restart: unless-stopped
 
+  # 🆕 Helpdesk Mini App Frontend (отдельный Vite на порту 3001)
+  frontend-helpdesk:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend-helpdesk
+      target: ${ENV_MODE:-dev}
+      args:
+        - VITE_API_BASE_URL=${MINIAPP_BASE_URL}
+        - BUILD_PROD=${BUILD_PROD:-false}
+    environment:
+      - VITE_API_BASE_URL=${MINIAPP_BASE_URL}
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  # Главный Mini App Frontend (существующий на порту 5173)
   frontend-nginx:
     build:
       context: .
       dockerfile: Dockerfile.frontend-nginx
-      target: ${ENV_MODE:-dev}  # dev или prod
+      target: ${ENV_MODE:-dev}
       args:
         - VITE_API_BASE_URL=${MINIAPP_BASE_URL}
-        - BUILD_PROD=${BUILD_PROD:-false}  # true только для prod
+        - BUILD_PROD=${BUILD_PROD:-false}
     ports:
       - "80:80"
       - "443:443"
@@ -94,6 +110,7 @@ services:
       - api
       - master-bot
       - db
+      - frontend-helpdesk  # 🆕 Зависимость от helpdesk
     restart: unless-stopped
 
   certbot:
@@ -139,3 +156,4 @@ volumes:
   gracehub_data:
   letsencrypt_data:
   certbot_www:
+
