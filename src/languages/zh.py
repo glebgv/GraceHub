@@ -56,7 +56,7 @@ TEXTS_ZH = Texts(
         "打开聊天设置 → '话题' / '论坛模式'，启用它然后重复 /bind。"
     ),
     openchat_bound_ok=(
-        "✅ OpenChat 已成功绑定到此聊天：\n"
+        "✅ GraceHub 已成功绑定到此聊天：\n"
         "<b>{chat_title}</b>\n\n"
         "新用户请求将作为票据创建在此聊天中。"
     ),

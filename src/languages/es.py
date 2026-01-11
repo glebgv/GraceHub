@@ -62,7 +62,7 @@ TEXTS_ES = Texts(
         "Abre los ajustes del chat → 'Temas' / 'Modo foro', actívalo y repite /bind."
     ),
     openchat_bound_ok=(
-        "✅ OpenChat se ha vinculado correctamente a este chat:\n"
+        "✅ GraceHub se ha vinculado correctamente a este chat:\n"
         "<b>{chat_title}</b>\n\n"
         "Las nuevas solicitudes de usuarios se crearán como tickets en este chat."
     ),

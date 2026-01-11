@@ -61,7 +61,7 @@ TEXTS_EN = Texts(
         "Open chat settings → 'Topics' / 'Forum mode', enable it and repeat /bind."
     ),
     openchat_bound_ok=(
-        "✅ OpenChat has been successfully bound to this chat:\n"
+        "✅ GraceHub has been successfully bound to this chat:\n"
         "<b>{chat_title}</b>\n\n"
         "New user requests will be created as tickets in this chat."
     ),

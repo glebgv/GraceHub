@@ -389,29 +389,27 @@ class MasterDatabase:
         """
         await self.execute(sql)
 
-    async def get_instances_expiring_in_7_days_for_notify(self) -> list[dict]:
+    async def get_user_subscriptions_expiring_in_5_days_for_notify(self) -> list[dict]:
         """
-        Инстансы, у которых осталось ровно 7 дней, service_paused = FALSE
-        и которым ещё не отправляли напоминание сегодня.
+        Юзеры с подпиской <=5 дней, без уведомления сегодня.
+        JOIN с bot_instances для owner_user_id → bot_username/chat_id.
         """
         sql = """
-        SELECT ib.instance_id,
-               ib.period_end,
-               ib.days_left,
-               ib.tickets_used,
-               ib.tickets_limit,
-               ib.last_expiring_notice_date,
-               bi.owner_user_id,
-               bi.admin_private_chat_id,
-               bi.bot_username
-        FROM instance_billing ib
-        JOIN bot_instances bi ON bi.instance_id = ib.instance_id
-        WHERE ib.service_paused = FALSE
-          AND ib.days_left = 7
-          AND (
-                ib.last_expiring_notice_date IS NULL
-                OR ib.last_expiring_notice_date < CURRENT_DATE
-          );
+        SELECT us.user_id,
+            us.period_end,
+            us.days_left,
+            bi.instance_id,
+            bi.bot_username,
+            bi.owner_user_id,
+            bi.admin_private_chat_id,
+            us.last_expiring_notice_date
+        FROM user_subscription us
+        JOIN bot_instances bi ON bi.owner_user_id = us.user_id
+        WHERE us.days_left <= 5  -- <=5 вместо =5 (гибче)
+        AND us.service_paused = FALSE
+        AND (us.last_expiring_notice_date IS NULL 
+            OR us.last_expiring_notice_date < CURRENT_DATE)
+        ORDER BY us.days_left ASC, bi.created_at DESC
         """
         rows = await self.fetchall(sql)
         return [dict(r) for r in rows]
@@ -1521,6 +1519,24 @@ class MasterDatabase:
             """
         )
 
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_subscription (
+                user_id BIGINT PRIMARY KEY,
+                plan_id INTEGER NOT NULL REFERENCES saas_plans(plan_id) ON DELETE RESTRICT,
+                period_start TIMESTAMPTZ NOT NULL,
+                period_end TIMESTAMPTZ NOT NULL,
+                days_left INTEGER NOT NULL DEFAULT 0,
+                service_paused BOOLEAN NOT NULL DEFAULT FALSE,
+                instances_limit INTEGER NOT NULL DEFAULT 1,
+                instances_created INTEGER NOT NULL DEFAULT 0,
+                last_expiring_notice_date DATE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+        """)
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_user_subscription_period ON user_subscription(period_end);")
+
+
         # instance_billing: текущий тариф + статистика для инстанса
         await conn.execute(
             """
@@ -1785,7 +1801,16 @@ class MasterDatabase:
                 )
 
         # после создания инстанса — инициализируем Demo-биллинг
+        # Проверяем/ставим демо-подписку юзера (НЕ сбрасывается при пересоздании инстанса)
+        if instance.owner_user_id:
+            await self.ensure_default_subscription(instance.owner_user_id)
+            sub = await self.get_user_subscription(instance.owner_user_id)
+            if sub and sub.get('days_left', 0) <= 0:
+                raise ValueError(f"Демо-период истёк для owner_user_id {instance.owner_user_id}")
+
+        # instance_billing: метрики тикетов только для этого инстанса (остаётся как есть)
         await self.ensure_default_billing(instance.instance_id)
+
 
     async def delete_instance(self, instance_id: str) -> None:
         async with self.pool.acquire() as conn:
@@ -2814,3 +2839,47 @@ class MasterDatabase:
             """,
             (user_id, lang_code),
         )
+
+
+    async def ensure_default_subscription(self, owneruserid: int):
+        """Демо-подписка по user_id (7 дней, если истекла)"""
+        now = datetime.now(timezone.utc)
+        row = await self.fetchone("SELECT * FROM user_subscription WHERE user_id = $1", (owneruserid,)) 
+        if not row or row['period_end'] < now:
+            demo_ends = now + timedelta(days=7)
+            await self.execute("""
+                INSERT INTO user_subscription (user_id, plan_id, period_start, period_end, instances_limit)
+                SELECT $1, plan_id, $2, $3, 3 FROM saas_plans WHERE code = 'demo'
+                ON CONFLICT (user_id) DO UPDATE SET 
+                    period_start = $2, period_end = $3, updated_at = NOW()
+            """, (owneruserid, now, demo_ends)) 
+            logger.info(f"Демо-подписка для user {owneruserid}: до {demo_ends}")
+
+    async def get_user_subscription(self, owneruserid: int) -> Optional[Dict]:
+        """Получить подписку юзера"""
+        row = await self.fetchone("""
+            SELECT *, GREATEST(0, CAST(EXTRACT(EPOCH FROM (period_end - NOW()) / 86400) AS INTEGER)) as days_left 
+            FROM user_subscription WHERE user_id = $1
+        """, (owneruserid,))  # ✅ уже правильно
+        return dict(row) if row else None
+
+    async def mark_user_expired_noticed_today(self, owneruserid: int):
+        """Отметить алерт отправленным"""
+        await self.execute("""
+            UPDATE user_subscription SET last_expiring_notice_date = CURRENT_DATE, updated_at = NOW() 
+            WHERE user_id = $1
+        """, (owneruserid,))  
+
+    async def increment_user_instances_created(self, user_id: int):
+        await self.execute("""
+            UPDATE user_subscription 
+            SET instances_created = instances_created + 1, updated_at = NOW()
+            WHERE user_id = $1
+        """, (user_id,))
+
+    async def decrement_user_instances_created(self, user_id: int):
+        await self.execute("""
+            UPDATE user_subscription 
+            SET instances_created = GREATEST(0, instances_created - 1), updated_at = NOW()
+            WHERE user_id = $1
+        """, (user_id,))

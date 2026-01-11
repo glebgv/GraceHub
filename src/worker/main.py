@@ -522,64 +522,42 @@ class GraceHubWorker:
         
         logger.info(f"✅ Worker READY: {self.instance_id}")
 
-    async def setup_dynamic_miniapp(self) -> bool:
+    async def setup_dynamic_miniapp(self):
         """
-        Настраивает кнопку Menu Button (Mini App) ТОЛЬКО для владельца бота.
-        Для всех остальных пользователей устанавливает обычное меню команд.
+        Автоматически устанавливает кнопку Mini App в меню бота
+        через Bot API без ручной настройки в BotFather.
         """
         try:
-            from aiogram.types import MenuButtonWebApp, WebAppInfo, MenuButtonCommands
+            from aiogram.types import MenuButtonWebApp, WebAppInfo
             
-            # 1. Получаем ID владельца из таблицы bot_instances
-            # Используем user_id так как в вашей схеме он NOT NULL
-            row = await self.db.fetchone(
-                """
-                SELECT user_id 
-                FROM bot_instances 
-                WHERE instance_id = $1
-                """,
-                (self.instance_id,)
-            )
-            
-            if not row:
-                logger.warning(f"⚠️ [Instance {self.instance_id}] Owner not found in bot_instances, skipping Menu Button setup")
-                return False
-                
-            owner_id = int(row['user_id'])
-            
-            # Ссылка для админского дашборда ОБЯЗАТЕЛЬНО ЗАМЕНИТЬ ХАРДКОД НА ENV!!!
             helpdesk_url = f"https://app.gracehub.ru/helpdesk/?instance={self.instance_id}"
-
-            # 2. СНАЧАЛА: Сбрасываем меню для ВСЕХ (глобально)
-            # Чтобы обычные юзеры видели просто кнопку "Меню" (команды)
+            
             await self.bot.set_chat_menu_button(
                 chat_id=None,
-                menu_button=MenuButtonCommands() 
-            )
-
-            # 3. ПОТОМ: Ставим кнопку Helpdesk персонально ВЛАДЕЛЬЦУ
-            await self.bot.set_chat_menu_button(
-                chat_id=owner_id,
                 menu_button=MenuButtonWebApp(
-                    text="🖲 Helpdesk",
+                    text="🎫 Helpdesk",
                     web_app=WebAppInfo(url=helpdesk_url)
                 )
             )
             
-            logger.info(f"✅ [Instance {self.instance_id}] Helpdesk button set ONLY for owner {owner_id}")
+            logger.info(f"✅ [Instance {self.instance_id}] Mini App button set: {helpdesk_url}")
             
-            # Сохраняем флаг настройки (опционально, как у вас было)
-            await self.db.execute("""
+            # ИСПРАВЛЕНО: параметр обёрнут в кортеж
+            await self.db.execute(
+                """
                 INSERT INTO worker_settings (instance_id, key, value)
                 VALUES ($1, 'miniapp_configured', 'true')
                 ON CONFLICT (instance_id, key) DO UPDATE SET value = EXCLUDED.value
-            """, self.instance_id)
+                """,
+                (self.instance_id,)  # ← КОРТЕЖ С ЗАПЯТОЙ!
+            )
             
             return True
             
         except Exception as e:
             logger.error(f"❌ [Instance {self.instance_id}] Failed to set Mini App button: {e}")
             return False
+
         
     async def process_bot_commands_loop(self):
         """
@@ -589,14 +567,18 @@ class GraceHubWorker:
         
         while True:
             try:
-                commands = await self.db.fetchall("""
+                # ИСПРАВЛЕНО: параметр в кортеже
+                commands = await self.db.fetchall(
+                    """
                     SELECT id, command, payload
                     FROM bot_commands
                     WHERE instance_id = $1 AND status = 'pending'
                     ORDER BY created_at ASC
                     LIMIT 10
-                """, (self.instance_id,)) 
-
+                    """,
+                    (self.instance_id,)  # ← КОРТЕЖ!
+                )
+                
                 for cmd in commands:
                     cmd_id = cmd['id']
                     command = cmd['command']
@@ -605,29 +587,37 @@ class GraceHubWorker:
                     try:
                         await self.execute_bot_command(command, payload)
                         
-                        # ✅ ИСПРАВЛЕНО: snake_case
-                        await self.db.execute("""
+                        # ИСПРАВЛЕНО: параметр в кортеже
+                        await self.db.execute(
+                            """
                             UPDATE bot_commands
                             SET status = 'completed', completed_at = NOW()
                             WHERE id = $1
-                        """, cmd_id)
+                            """,
+                            (cmd_id,)  # ← КОРТЕЖ!
+                        )
                         
                         logger.info(f"✅ [Instance {self.instance_id}] Command '{command}' executed (id={cmd_id})")
                         
                     except Exception as e:
                         logger.error(f"❌ [Instance {self.instance_id}] Command '{command}' failed (id={cmd_id}): {e}")
                         
-                        await self.db.execute("""
+                        # ИСПРАВЛЕНО: оба параметра в кортеже
+                        await self.db.execute(
+                            """
                             UPDATE bot_commands
                             SET status = 'failed', error = $1
                             WHERE id = $2
-                        """, str(e)[:500], cmd_id)
+                            """,
+                            (str(e)[:500], cmd_id)  # ← КОРТЕЖ!
+                        )
                 
                 await asyncio.sleep(2)
                 
             except Exception as e:
                 logger.error(f"❌ [Instance {self.instance_id}] Command loop error: {e}")
                 await asyncio.sleep(5)
+
 
     
     async def execute_bot_command(self, command: str, payload: dict):
@@ -1810,94 +1800,6 @@ class GraceHubWorker:
         except Exception as e:
             logger.error(f"Failed to insert message into messages table: {e}")
 
-    async def ensure_ticket_for_user(
-        self,
-        chat_id: int,
-        user_id: int,
-        username: str,
-    ) -> Dict[str, Any]:
-        """
-        Гарантирует наличие тикета для данного пользователя.
-        Если тикет уже есть — возвращает его, иначе создаёт новый и топик в личном чате админа.
-        """
-        # Пытаемся найти существующий тикет для этого пользователя
-        ticket = await self.fetch_ticket_by_chat(chat_id, username, user_id)
-        if ticket:
-            return ticket
-
-        # === БИЛЛИНГ: проверяем лимит тикетов ===
-        ok, reason = await self.db.increment_tickets_used(self.instance_id)
-        if not ok:
-            logger.warning(
-                "Ticket creation blocked by billing: instance=%s reason=%s user_id=%s",
-                self.instance_id,
-                reason,
-                user_id,
-            )
-            return {
-                "id": None,
-                "user_id": user_id,
-                "username": username,
-                "chat_id": chat_id,
-                "thread_id": None,
-                "status": "billing_blocked",
-                "assigned_username": None,
-                "assigned_user_id": None,
-                "billing_reason": reason,
-            }
-
-        now = datetime.now(timezone.utc)
-        # Создаём базовый тикет в Postgres
-        row = await self.db.fetchone(
-            """
-            INSERT INTO tickets (
-                instance_id,
-                user_id,
-                username,
-                chat_id,
-                status,
-                created_at,
-                updated_at
-            )
-            VALUES ($1, $2, $3, $4, 'new', $5, $6)
-            RETURNING id
-            """,
-            (self.instance_id, user_id, username, chat_id, now, now),
-        )
-        ticket_id = row["id"]
-
-        # Создаём топик в личном чате админа
-        thread_id = None
-        user_label = username or f"user {user_id}"
-        title = f"{ticket_id} · {user_label}"
-        try:
-            ft = await self.bot.create_forum_topic(chat_id, name=title)
-            thread_id = ft.message_thread_id
-            await self.db.execute(
-                """
-                UPDATE tickets
-                SET thread_id = $1, updated_at = $2
-                WHERE instance_id = $3 AND id = $4
-                """,
-                (thread_id, now, self.instance_id, ticket_id),
-            )
-        except Exception as e:
-            logger.error(f"Failed to create forum topic for ticket {ticket_id}: {e}")
-            thread_id = None
-
-        ticket = {
-            "id": ticket_id,
-            "user_id": user_id,
-            "username": username,
-            "chat_id": chat_id,
-            "thread_id": thread_id,
-            "status": "new",
-            "assigned_username": None,
-            "assigned_user_id": None,
-        }
-        return ticket
-
-
     async def forward_to_openchat(self, message: Message) -> None:
         """
         Отправка входящего сообщения пользователя в привязанный OpenChat (в его топик)
@@ -2209,79 +2111,53 @@ class GraceHubWorker:
 
     async def cmd_start(self, message: Message, state: FSMContext) -> None:
         user_id = message.from_user.id
-        admin_id = await self.get_setting("admin_user_id")
 
+        admin_id = await self.get_setting("admin_user_id")
         # Автоматически назначаем первого пользователя админом (если ещё не задан)
         if not admin_id or admin_id in ("0", ""):
             await self.set_setting("admin_user_id", str(user_id))
-            # Сохраняем admin_private_chat_id в БД
-            # ✅ ИСПРАВЛЕНО: WHERE instance_id = $2
-            await self.db.execute(
-                """
-                UPDATE bot_instances
-                SET admin_private_chat_id = $1
-                WHERE instance_id = $2
-                """,
-                (message.chat.id, self.instance_id),
-            )
             await self._send_safe_message(
                 chat_id=message.chat.id,
                 text=self.texts.you_are_admin_now,
             )
 
+        # Общие настройки OpenChat для статуса
+        oc = await self.get_openchat_settings()
+        if oc["enabled"] and oc["chat_id"]:
+            status_line_admin = self.texts.openchat_status_line_on
+        else:
+            status_line_admin = self.texts.openchat_status_line_off
+
         # Ветка для админа
         if await self.is_admin(user_id):
-            # 1. Обновляем admin_private_chat_id при каждом /start
-            # ✅ ИСПРАВЛЕНО: WHERE instance_id = $2
-            await self.db.execute(
-                """
-                UPDATE bot_instances
-                SET admin_private_chat_id = $1
-                WHERE instance_id = $2
-                """,
-                (message.chat.id, self.instance_id),
-            )
-            
-            # 2. ПРИНУДИТЕЛЬНО (БЕЗ УСЛОВИЙ) включаем OpenChat и пишем ID чата
-            # Это исправит вашу проблему с пустой базой
-            await self.set_setting("openchat_enabled", "True")
-            await self.set_setting("general_panel_chat_id", str(message.chat.id))
-            
-            # Синхронизируем в instance_meta
-            try:
-                await self.db.execute(
-                    """
-                    INSERT INTO instance_meta (
-                        instance_id,
-                        general_panel_chat_id,
-                        openchat_enabled,
-                        updated_at
-                    )
-                    VALUES ($1, $2, $3, NOW())
-                    ON CONFLICT (instance_id) DO UPDATE
-                    SET general_panel_chat_id = EXCLUDED.general_panel_chat_id,
-                        openchat_enabled = EXCLUDED.openchat_enabled,
-                        updated_at = NOW()
-                    """,
-                    (self.instance_id, message.chat.id, True),
-                )
-            except Exception as e:
-                logger.error(
-                    f"Failed to update instance_meta for {self.instance_id}: {e}"
-                )
+            me = await self.bot.get_me()
+            bot_username = me.username or "bot"
 
-            # Основное админское сообщение
-            await self._send_safe_message(
-                chat_id=message.chat.id,
-                text=(
-                    f"🟢 Топики активированы в этом чате\n"
-                    f"{self.texts.menu_you_are_admin}\n"
-                    f"{self.texts.admin_panel_choose_section}"
-                ),
-                reply_markup=await self.get_admin_menu(),
-            )
+            if not oc["enabled"]:
+                # Для незанастроенного OpenChat показываем статус + подсказку по привязке
+                await self._send_safe_message(
+                    chat_id=message.chat.id,
+                    text=(
+                        f"{status_line_admin}\n"
+                        f"{self.texts.menu_you_are_admin}\n\n"
+                        + self.texts.openchat_setup_hint.format(bot_username=bot_username)
+                    ),
+                )
+            else:
+                # Основное админское сообщение с клавиатурой
+                await self._send_safe_message(
+                    chat_id=message.chat.id,
+                    text=(
+                        f"{status_line_admin}\n"
+                        f"{self.texts.menu_you_are_admin}\n"
+                        f"{self.texts.admin_panel_choose_section}"
+                    ),
+                    reply_markup=await self.get_admin_menu(),
+                )
         else:
             # Ветка для обычного пользователя
+
+            # Проверка на blacklist
             if await self.is_user_blacklisted(user_id):
                 await self._send_safe_message(
                     chat_id=message.chat.id,
@@ -2289,10 +2165,14 @@ class GraceHubWorker:
                 )
                 return
 
+            # Пытаемся взять кастомное приветствие из настроек
             greeting = await self.get_setting("greeting_text")
             if not greeting or not greeting.strip():
+                # Если админ ещё не задал приветствие — используем дефолтное из языковых текстов
+                # (убедись, что такое поле есть в self.texts, либо поменяй имя)
                 greeting = self.texts.default_greeting
 
+            # Отправляем пользователю приветствие
             await self._send_safe_message(
                 chat_id=message.chat.id,
                 text=greeting,
@@ -2360,6 +2240,97 @@ class GraceHubWorker:
             chat_id=message.chat.id,
             text=self.texts.openchat_off_confirm,
         )
+
+    async def cmd_bind_openchat(self, message: Message, state: FSMContext) -> None:
+        """
+        Привязка OpenChat из самого группового чата:
+        /bind @bot_name_bot
+        """
+        user_id = message.from_user.id
+
+        # Только админ инстанса может привязывать OpenChat
+        if not await self.is_admin(user_id):
+            await self._send_safe_message(
+                chat_id=message.chat.id,
+                text=self.texts.openchat_bind_only_owner,
+            )
+            return
+
+        parts = (message.text or "").split()
+        if len(parts) > 1:
+            arg = parts[1].lstrip("@")
+            me = await self.bot.get_me()
+            if arg.lower() != (me.username or "").lower():
+                await self._send_safe_message(
+                    chat_id=message.chat.id,
+                    text=self.texts.openchat_bind_usage_error,
+                )
+                return
+
+        chat = message.chat
+
+        # 1. Чат должен быть супергруппой
+        if chat.type != ChatType.SUPERGROUP:
+            await self._send_safe_message(
+                chat_id=message.chat.id,
+                text=self.texts.openchat_not_supergroup,
+            )
+            return
+
+        # 2. Не должен иметь username
+        if chat.username:
+            await self._send_safe_message(
+                chat_id=message.chat.id,
+                text=self.texts.openchat_has_username.format(chat_username=chat.username),
+            )
+            return
+
+        # 3. Должен быть включен форумный режим (topics)
+        if not chat.is_forum:
+            await self._send_safe_message(
+                chat_id=message.chat.id,
+                text=self.texts.openchat_no_forum,
+            )
+            return
+
+        # Сохраняем в worker settings (как было)
+        await self.set_setting("openchat_enabled", "True")
+        await self.set_setting("general_panel_chat_id", str(chat.id))
+        await self.set_setting("openchat_username", chat.username or "")
+
+        # Дополнительно синхронизируем в master Postgres для mini-app (instance_meta)
+        try:
+            await self.db.execute(
+                """
+                INSERT INTO instance_meta (
+                    instance_id,
+                    openchat_username,
+                    general_panel_chat_id,
+                    openchat_enabled,
+                    updated_at
+                )
+                VALUES ($1, $2, $3, $4, NOW())
+                ON CONFLICT (instance_id) DO UPDATE
+                  SET openchat_username     = EXCLUDED.openchat_username,
+                      general_panel_chat_id = EXCLUDED.general_panel_chat_id,
+                      openchat_enabled      = EXCLUDED.openchat_enabled,
+                      updated_at            = NOW()
+                """,
+                (
+                    self.instance_id,  # или self.instanceid, как у тебя реально называется
+                    chat.username or None,
+                    chat.id,
+                    True,
+                ),
+            )
+        except Exception as e:
+            logger.error(f"Failed to upsert instance_meta for instance {self.instance_id}: {e}")
+
+        await self._send_safe_message(
+            chat_id=message.chat.id,
+            text=self.texts.openchat_bound_ok.format(chat_title=chat.title),
+        )
+
 
     # ====================== CALLBACKS (ТИКЕТЫ) ======================
 
@@ -2705,27 +2676,37 @@ class GraceHubWorker:
             )
 
         elif data == "setup_openchat":
-            # Просто сообщаем статус
             openchat = await self.get_openchat_settings()
-            
-            if openchat["enabled"]:
-                status_text = "🟢 OpenChat активен (сообщения приходят сюда в топики)."
-            else:
-                status_text = "🔴 OpenChat выключен. Нажмите /start для включения."
-
-            # Кнопка назад
-            kb = InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        InlineKeyboardButton(
-                            text=self.texts.back,
-                            callback_data="main_menu",
-                        )
-                    ]
-                ]
+            status = (
+                self.texts.openchat_status_on
+                if openchat["enabled"]
+                else self.texts.openchat_status_off
             )
-            
-            await cb.message.edit_text(status_text, reply_markup=kb)
+
+            if openchat["chat_id"]:
+                current = self.texts.openchat_current_chat_id.format(chat_id=openchat["chat_id"])
+            else:
+                current = self.texts.openchat_not_bound
+
+            me = await self.bot.get_me()
+            bot_username = me.username or "bot"
+            await cb.message.edit_text(
+                self.texts.openchat_now_status.format(
+                    status=status,
+                    current=current,
+                    bot_username=bot_username,
+                ),
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [
+                            InlineKeyboardButton(
+                                text=self.texts.back,
+                                callback_data="main_menu",
+                            )
+                        ]
+                    ]
+                ),
+            )
 
         elif data == "setup_privacy":
             enabled = (
@@ -2852,7 +2833,7 @@ class GraceHubWorker:
             await state.set_state(AdminStates.wait_blacklist_menu)
             await cb.message.edit_text(
                 self.texts.blacklist_title,
-                reply_markup=self.get_blacklist_view_menu(page=0),
+                reply_markup=self.get_blacklist_menu(),
             )
 
         elif data == "blacklist_add":
@@ -2956,29 +2937,42 @@ class GraceHubWorker:
             await state.clear()
 
             openchat = await self.get_openchat_settings()
-            
-            # Если включено — Зеленый, иначе Красный (но без инструкций по привязке)
-            if openchat["enabled"]:
-                status_line_admin = "🟢 Топики активированы"
+            if openchat["enabled"] and openchat["chat_id"]:
+                status_line_admin = self.texts.openchat_status_line_on
             else:
-                status_line_admin = "🔴 Топики отключены"
+                status_line_admin = self.texts.openchat_status_line_off
 
             me = await self.bot.get_me()
             bot_username = me.username or "bot"
 
-            # Всегда показываем стандартную панель
-            text = (
-                f"{status_line_admin}\n"
-                f"{self.texts.menu_you_are_admin}\n"
-                f"{self.texts.admin_panel_choose_section}"
-            )
-            reply_markup = await self.get_admin_menu()
+            if not openchat["enabled"]:
+                text = (
+                    f"{status_line_admin}\n"
+                    f"{self.texts.menu_you_are_admin}\n\n"
+                    + self.texts.openchat_setup_hint.format(bot_username=bot_username)
+                )
+                reply_markup = InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [
+                            InlineKeyboardButton(
+                                text=self.texts.openchat_setup_button,
+                                callback_data="setup_openchat",
+                            )
+                        ]
+                    ]
+                )
+            else:
+                text = (
+                    f"{status_line_admin}\n"
+                    f"{self.texts.menu_you_are_admin}\n"
+                    f"{self.texts.admin_panel_choose_section}"
+                )
+                reply_markup = await self.get_admin_menu()
 
             await cb.message.edit_text(text, reply_markup=reply_markup)
 
         else:
             await cb.answer()
-
 
     # ====================== ОБРАБОТКА СОСТОЯНИЙ АДМИНА ======================
 
@@ -3253,14 +3247,8 @@ class GraceHubWorker:
             wait_for = await self.ratelimiter.wait_for_send()
             await asyncio.sleep(wait_for)
 
-        # Если это админ
+        # Если это админ — показываем админ-панель
         if await self.is_admin(user_id):
-            # Если админ пишет внутри топика (thread_id) — это ответ пользователю
-            if message.message_thread_id:
-                await self.handle_admin_topic_reply(message)
-                return
-            
-            # Если админ пишет в основной чат — показываем админ-панель
             await self._send_safe_message(
                 chat_id=message.chat.id,
                 text=self.texts.admin_panel_title,
@@ -3386,23 +3374,14 @@ class GraceHubWorker:
             text=self.texts.support_not_configured,
         )
 
-
     # ====================== OPENCHAT: СОБЩЕНИЯ И РЕПЛАИ ======================
     async def handle_openchat_message(self, message: Message) -> None:
         """
-        Обработка сообщений в OpenChat-режиме в ЛС админа с ботом (private chat с топиками).
-        Интересуют только реплаи на сообщения (reply) внутри привязанного private-чата.
+        Обработка сообщений в чате OpenChat (супергруппа с темами).
+        Интересуют только реплаи внутри привязанного чата.
         """
         oc = await self.get_openchat_settings()
         if not (oc["enabled"] and oc["chat_id"] and message.chat.id == oc["chat_id"]):
-            return
-
-        # OpenChat теперь работает в личном чате админа
-        if message.chat.type != ChatType.PRIVATE:
-            return
-
-        # Страховка: отвечать пользователям может только админ инстанса
-        if message.from_user and not await self.is_admin(message.from_user.id):
             return
 
         # Берём только ответы на сообщения (reply) — это сигнал ответа клиенту
@@ -3421,7 +3400,7 @@ class GraceHubWorker:
                 message.from_user.username or "",
             )
 
-        # -------- Валидация размеров вложений от админов/операторов в OpenChat --------
+        # -------- Валидация размеров вложений от админов/операторов в OpenChat (исправлено) --------
         max_bytes = self.max_file_bytes  # задаётся в __init__ из settings.WORKER_MAX_FILE_MB
         too_big = False
 
@@ -3532,12 +3511,10 @@ class GraceHubWorker:
                     )
                 except Exception as e:
                     logger.error(
-                        "Failed to notify user %s about big attachment: %s",
-                        target_user_id,
-                        e,
+                        "Failed to notify user %s about big attachment: %s", target_user_id, e
                     )
 
-            # 3) (Опционально) сообщаем в текущий топик/тред, чтобы оператор видел причину
+            # 3) (Опционально) сообщаем в топик, чтобы оператор видел причину
             try:
                 await self._send_safe_message(
                     chat_id=message.chat.id,
@@ -3552,76 +3529,107 @@ class GraceHubWorker:
 
         await self.handle_openchat_reply(message, message.reply_to_message, oc)
 
-    async def handle_admin_topic_reply(self, message: Message) -> None:
+    async def handle_openchat_reply(
+        self, message: Message, reply_msg: Message, oc: Dict[str, Any]
+    ) -> None:
         """
-        Обработка ответов админа из топика (Private Chat).
-        Определяем получателя по thread_id (из таблицы tickets).
+        Реплай админа в теме OpenChat → ответ клиенту в личку.
         """
-        thread_id = message.message_thread_id
-        if not thread_id:
+        if not self.db:
             return
 
-        # Ищем тикет по thread_id
-        row = await self.db.fetchone(
-            """
-            SELECT user_id, id, status 
-            FROM tickets 
-            WHERE instance_id = $1 AND thread_id = $2
-            """,
-            (self.instance_id, thread_id),
+        # Находим, кому отвечаем, по сохранённому маппингу
+        target_user_id = await self.get_target_user_by_admin_message(
+            reply_msg.chat.id, reply_msg.message_id
         )
-        
-        if not row:
-            # Если топик есть, а тикета нет (странно, но бывает)
+        if not target_user_id:
+            # Нет маппинга — не знаем, кому отправлять
             return
 
-        target_user_id = row["user_id"]
-        ticket_id = row["id"]
-        
-        # Отправляем копию сообщения пользователю
+        # Если пользователь в чёрном списке — сообщения к нему не отправляем
+        if await self.is_user_blacklisted(target_user_id):
+            return
+
+        # Уважим rate limit перед исходящим
+        if not await self.ratelimiter.can_send(chat_id=target_user_id):
+            wait_for = await self.ratelimiter.wait_for_send()
+            await asyncio.sleep(wait_for)
+
+        # Пересылаем по типу контента с учётом Privacy Mode
         try:
             if message.text:
-                await self._send_safe_message(chat_id=target_user_id, text=message.text)
+                await self._send_safe_message(
+                    chat_id=target_user_id,
+                    text=message.text,
+                )
             elif message.photo:
-                await self._send_safe_photo(chat_id=target_user_id, file_id=message.photo[-1].file_id, caption=message.caption)
+                await self._send_safe_photo(
+                    chat_id=target_user_id,
+                    file_id=message.photo[-1].file_id,
+                    caption=message.caption,
+                )
             elif message.document:
-                await self._send_safe_document(chat_id=target_user_id, file_id=message.document.file_id, caption=message.caption)
+                await self._send_safe_document(
+                    chat_id=target_user_id,
+                    file_id=message.document.file_id,
+                    caption=message.caption,
+                )
             elif message.video:
-                await self._send_safe_video(chat_id=target_user_id, file_id=message.video.file_id, caption=message.caption)
+                await self._send_safe_video(
+                    chat_id=target_user_id,
+                    file_id=message.video.file_id,
+                    caption=message.caption,
+                )
             elif message.audio:
-                await self._send_safe_audio(chat_id=target_user_id, file_id=message.audio.file_id, caption=message.caption)
+                await self._send_safe_audio(
+                    chat_id=target_user_id,
+                    file_id=message.audio.file_id,
+                    caption=message.caption,
+                )
             elif message.voice:
-                await self._send_safe_voice(chat_id=target_user_id, file_id=message.voice.file_id, caption=message.caption)
+                await self._send_safe_voice(
+                    chat_id=target_user_id,
+                    file_id=message.voice.file_id,
+                    caption=message.caption,
+                )
             elif message.sticker:
-                await self._send_safe_sticker(chat_id=target_user_id, file_id=message.sticker.file_id)
+                await self._send_safe_sticker(
+                    chat_id=target_user_id,
+                    file_id=message.sticker.file_id,
+                )
             else:
-                await self._send_safe_message(chat_id=target_user_id, text="[Unsupported message type]")
+                await self._send_safe_message(
+                    chat_id=target_user_id,
+                    text=f"[{message.content_type}]",
+                )
         except Exception as e:
-            logger.error(f"Failed to send reply to user {target_user_id} from topic {thread_id}: {e}")
-            await self._send_safe_message(
-                chat_id=message.chat.id, 
-                text="❌ Не удалось отправить сообщение пользователю (возможно, он заблокировал бота).",
-                message_thread_id=thread_id
-            )
+            logger.error(f"Failed to send OpenChat reply to user {target_user_id}: {e}")
             return
 
-        # Обновляем статус тикета и время ответа
+        # Обновляем тайминги/статус тикета
         try:
             now = datetime.now(timezone.utc)
+
+            ticket = await self.fetch_ticket_by_chat(oc["chat_id"], "", target_user_id)
+            if not ticket:
+                ticket = await self.ensure_ticket_for_user(oc["chat_id"], target_user_id, "")
+
+            # Обновляем временные метки ответа админа
             await self.db.execute(
                 """
-                UPDATE tickets 
-                SET last_admin_reply_at = $1, 
-                    updated_at = $2,
-                    status = CASE WHEN status = 'new' THEN 'answered' ELSE status END
-                WHERE instance_id = $3 AND id = $4
+                UPDATE tickets
+                   SET last_admin_reply_at = $1,
+                       updated_at          = $2
+                 WHERE instance_id = $3
+                   AND id          = $4
                 """,
-                (now, now, self.instance_id, ticket_id),
+                (now, now, self.instance_id, ticket["id"]),
             )
+
+            # Фиксируем статус "сотрудник ответил" (🟩)
+            await self.set_ticket_status(ticket["id"], "answered")
         except Exception as e:
-            logger.error(f"Failed to update ticket stats for {ticket_id}: {e}")
-
-
+            logger.error(f"Failed to update ticket after admin reply: {e}")
 
     # ====================== РЕГИСТРАЦИЯ ХЭНДЛЕРОВ ======================
     def register_handlers(self) -> None:
@@ -3664,12 +3672,24 @@ class GraceHubWorker:
             Command("openchat_off"),
             F.chat.type == ChatType.PRIVATE,
         )
-        
+
+        # Привязка OpenChat из группы/супергруппы
+        self.dp.message.register(
+            self.cmd_bind_openchat,
+            Command("bind"),
+            (F.chat.type == ChatType.SUPERGROUP) | (F.chat.type == ChatType.GROUP),
+        )
 
         # Задаём язык (ИСПОЛЬЗУЕМ self.dp)
         self.dp.callback_query.register(
             self.handle_language_callback,
             F.data.in_(["setup_language"]) | F.data.startswith("set_lang:"),
+        )
+
+        # OpenChat: обработка сообщений в супергруппе (для реплеев)
+        self.dp.message.register(
+            self.handle_openchat_message,
+            F.chat.type == ChatType.SUPERGROUP,
         )
 
         # Callback'и админ-панели
@@ -3702,7 +3722,7 @@ class GraceHubWorker:
             F.chat.type == ChatType.PRIVATE,
         )
 
-        # Общий обработчик приватных сообщений (сообщения от юзеров боту)
+        # Общий обработчик приватных сообщений
         self.dp.message.register(
             self.handle_private_message,
             F.chat.type == ChatType.PRIVATE,
@@ -3712,7 +3732,6 @@ class GraceHubWorker:
         # Общий для ошибок
         self.dp.errors.register(self.global_error_handler)
         logger.info(f"All handlers registered successfully for worker {self.instance_id}")
-
 
     # ====================== ЗАПУСК / ИНТЕГРАЦИЯ ======================
 

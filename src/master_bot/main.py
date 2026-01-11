@@ -219,17 +219,18 @@ class MasterBot:
     # ====================== БИЛЛИНГ: CRON-ЗАДАЧИ ======================
 
     async def _billing_notify_expiring(self) -> None:
-        rows = await self.db.get_instances_expiring_in_7_days_for_notify()
+        rows = await self.db.get_user_subscriptions_expiring_in_5_days_for_notify()
         if not rows:
             return
 
-        logger.info("BillingCron: %d instances expiring in 7 days (fresh)", len(rows))
+        logger.info("BillingCron: %d user subscriptions expiring in <=5 days (fresh)", len(rows))
 
         for r in rows:
-            owner_id = r["owner_user_id"]
+            owner_id = r["owner_user_id"]  # из bot_instances
             admin_chat = r["admin_private_chat_id"]
             bot_username = r["bot_username"]
             days_left = r["days_left"]
+            user_id = r["user_id"]  # из user_subscription
 
             if not owner_id and not admin_chat:
                 continue
@@ -265,13 +266,14 @@ class MasterBot:
 
             if sent_ok:
                 try:
-                    await self.db.mark_expiring_notified_today(r["instance_id"])
+                    await self.db.mark_user_expired_noticed_today(user_id)  # ← по user_id!
                 except Exception as e:
                     logger.exception(
-                        "BillingCron: failed to mark expiring notified for %s: %s",
-                        r["instance_id"],
+                        "BillingCron: failed to mark expiring notified for user_id %s: %s",
+                        user_id,
                         e,
                     )
+
 
     async def _billing_notify_paused(self) -> None:
         # новый метод БД с учётом last_paused_notice_at
@@ -626,26 +628,18 @@ class MasterBot:
         if existing:
             raise ValueError("Этот бот уже добавлен в систему")
 
-        # 🔥 4) Создание инстанса
+        # 🔥 3.5) Проверка демо-подписки юзера (НЕ сбрасывается при пересоздании)
+        sub = await self.db.get_user_subscription(owner_user_id)
+        if sub is None or sub.get('days_left', 0) <= 0:
+            raise ValueError(f"Демо-период истёк для owner_user_id {owner_user_id}")
+
+        # 🔥 4) Создание инстанса (ensure_default_subscription вызовется внутри create_bot_instance)
         instance = await self.create_bot_instance(
             user_id=owner_user_id,
             token=token,
             bot_username=me.username,
             bot_name=me.first_name,
         )
-        logger.info(f"✅ Miniapp: Created instance '{instance.instance_id}' in DB")
-
-        # 🔥 ЖДЁМ сохранения в БД (race condition fix!)
-        logger.info(f"⏳ Miniapp: Waiting 3s for DB replication...")
-        await asyncio.sleep(3)
-
-        # 🔥 Verify instance exists
-        verify_instance = await self.db.get_instance(instance.instance_id)
-        if not verify_instance:
-            logger.error(f"❌ Miniapp: Instance '{instance.instance_id}' not found after sleep!")
-            raise RuntimeError(f"DB replication failed for {instance.instance_id}")
-
-        logger.info(f"✅ Miniapp: Verified instance '{instance.instance_id}' exists")
 
         # 🔥 5) Setup webhook ПЕРЕД Docker spawn!
         await self.setup_worker_webhook(instance.instance_id, token)
@@ -1423,6 +1417,8 @@ class MasterBot:
         # Удаление инстанса
         await self.db.delete_instance(instance_id)
         self.instances.pop(instance_id, None)
+        await self.db.decrement_user_instances_created(owner_user_id)
+
 
         # Всплывающее уведомление
         await callback.answer("✅ " + texts.master_instance_deleted_short)
@@ -1696,6 +1692,7 @@ class MasterBot:
 
         # Save to database
         await self.db.create_instance(instance)
+        await self.db.increment_user_instances_created(user_id)
 
         # Store encrypted token separately
         await self.db.store_encrypted_token(instance_id, token)
