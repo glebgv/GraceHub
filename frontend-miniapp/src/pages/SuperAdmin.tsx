@@ -392,6 +392,7 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
   const [me, setMe] = useState<any>(null);
 
   const [form, setForm] = useState<MiniappPublicSettings>(defaultSettings);
+  
   const [initialSnapshot, setInitialSnapshot] = useState(stableStringify(defaultSettings));
 
   const [newOwnerId, setNewOwnerId] = useState('');
@@ -412,8 +413,13 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
 
   const [activeSection, setActiveSection] = useState<MenuSection>('dashboard');
 
-  const [metrics, setMetrics] = useState<any>(null);
-  const [metricsLoading, setMetricsLoading] = useState(false);
+  const [metrics, setMetrics] = useState({
+    total_clients: 0,
+    active_bots: 0,
+    monthly_tickets: 0,
+    paid_subscriptions: 0,
+  });
+  const [metricsLoading, setMetricsLoading] = useState(true);
 
   const [clientsLoading, setClientsLoading] = useState(false);
 
@@ -477,7 +483,14 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
     if (activeSection === 'dashboard') {
       setMetricsLoading(true);
       apiClient.getPlatformMetrics()
-        .then(setMetrics)
+        .then((metricsRes) => {
+          setMetrics({
+            total_clients: metricsRes.data.total_clients,
+            active_bots: metricsRes.data.active_bots,
+            monthly_tickets: metricsRes.data.monthly_tickets,
+            paid_subscriptions: metricsRes.data.paid_subscriptions,
+          });
+        })
         .catch((e) => console.error('Metrics error:', e))
         .finally(() => setMetricsLoading(false));
     }
@@ -773,13 +786,12 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
             <div className="card-header">
               <div className="card-title">Дашборд GraceHub Platform</div>
             </div>
-
             <div className="superadmin-dashboard">
               <div className="dashboard-widget">
                 <div className="widget-icon">👥</div>
                 <div className="widget-content">
                   <div className="widget-value">
-                    {metricsLoading ? <Skeleton style={{ width: '60px', height: '32px' }} /> : metrics?.total_clients ?? '0'}
+                    {metricsLoading ? <Skeleton style={{ width: '60px', height: '32px' }} /> : metrics.total_clients}
                   </div>
                   <div className="widget-label">Всего клиентов</div>
                 </div>
@@ -789,7 +801,7 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
                 <div className="widget-icon">🤖</div>
                 <div className="widget-content">
                   <div className="widget-value">
-                    {metricsLoading ? <Skeleton style={{ width: '60px', height: '32px' }} /> : metrics?.active_bots ?? '0'}
+                    {metricsLoading ? <Skeleton style={{ width: '60px', height: '32px' }} /> : metrics.active_bots}
                   </div>
                   <div className="widget-label">Активных ботов</div>
                 </div>
@@ -799,7 +811,7 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
                 <div className="widget-icon">🎫</div>
                 <div className="widget-content">
                   <div className="widget-value">
-                    {metricsLoading ? <Skeleton style={{ width: '60px', height: '32px' }} /> : metrics?.monthly_tickets ?? '0'}
+                    {metricsLoading ? <Skeleton style={{ width: '60px', height: '32px' }} /> : metrics.monthly_tickets}
                   </div>
                   <div className="widget-label">Тикетов за месяц</div>
                 </div>
@@ -809,7 +821,7 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
                 <div className="widget-icon">💰</div>
                 <div className="widget-content">
                   <div className="widget-value">
-                    {metricsLoading ? <Skeleton style={{ width: '60px', height: '32px' }} /> : metrics?.paid_subscriptions ?? '0'}
+                    {metricsLoading ? <Skeleton style={{ width: '60px', height: '32px' }} /> : metrics.paid_subscriptions}
                   </div>
                   <div className="widget-label">Платные подписки</div>
                 </div>

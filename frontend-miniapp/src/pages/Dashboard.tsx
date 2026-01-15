@@ -350,7 +350,7 @@ const Dashboard: React.FC<DashboardProps> = ({ instanceId }) => {
                     ))
                   : <Cell key="no-data" fill={NO_DATA_COLOR} />}
               </Pie>
-              <Text x={100} y={100} dy={8} textAnchor="middle" fill="#333">
+              <Text x={100} y={100} dy={8} textAnchor="middle" fill="var(--color-text)">
                 {total}
               </Text>
               <Tooltip />

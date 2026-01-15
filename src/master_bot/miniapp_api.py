@@ -2516,6 +2516,21 @@ def create_miniapp_app(
         return {"status": current_status}
 
     @app.get(
+        "/api/superadmin/metrics",
+        response_model=Dict[str, Any],
+        responses={**COMMON_AUTH_RESPONSES},
+    )
+    async def get_superadmin_metrics(
+        current_user: Dict[str, Any] = Depends(get_current_user),
+    ):
+        if not await is_superadmin(current_user):
+            raise HTTPException(status_code=403, detail="Forbidden")
+        
+        metrics = await miniapp_db.get_superadmin_metrics()
+        return metrics
+
+
+    @app.get(
         "/api/invoices/stripe/{invoice_id}/status",
         response_model=StripeInvoiceStatusResponse,
         responses={
@@ -3463,45 +3478,56 @@ def create_miniapp_app(
         """
         await require_instance_access(instance_id, current_user, required_role=None)
 
-        billing = await miniapp_db.get_instance_billing(instance_id)
-        if not billing:
-            raise HTTPException(status_code=404, detail="Billing not found for this instance")
+        # Получаем инстанс чтобы найти owner_user_id
+        instance = await masterbot.db.get_instance(instance_id)
+        if not instance:
+            raise HTTPException(status_code=404, detail="Instance not found")
+        
+        # Берем подписку владельца из usersubscription
+        sub = await masterbot.db.get_user_subscription(instance.owner_user_id)
+        if not sub:
+            raise HTTPException(status_code=404, detail="Subscription not found")
+        
+        # Получаем план
+        plan = await masterbot.db.get_saas_plan_by_id(sub['plan_id'])
+        if not plan:
+            raise HTTPException(status_code=500, detail="Plan not found")
 
         # single-tenant режим: безлимитный тариф (config from DB)
         single_tenant = await get_single_tenant_config(miniapp_db.db)
         if single_tenant.enabled:
             return BillingInfo(
-                instance_id=billing["instance_id"],
-                plan_code=billing["plan_code"],
-                plan_name=billing["plan_name"],
-                price_stars=billing["price_stars"],
-                tickets_used=billing["tickets_used"],
-                tickets_limit=billing["tickets_limit"],  # можно вернуть как есть или 0/None
+                instance_id=instance_id,
+                plan_code=plan['plan_code'],
+                plan_name=plan['plan_name'],
+                price_stars=plan['price_stars'],
+                tickets_used=sub.get('instances_created', 0),
+                tickets_limit=plan['tickets_limit'],
                 over_limit=False,
-                period_start=billing["period_start"].isoformat(),
-                period_end=billing["period_end"].isoformat(),
+                period_start=sub['period_start'].isoformat(),
+                period_end=sub['period_end'].isoformat(),
                 days_left=0,
                 unlimited=True,
             )
 
-        # обычный режим биллинга
-        now = datetime.now(timezone.utc)
-        period_end: datetime = billing["period_end"]
-        days_left = max(0, (period_end.date() - now.date()).days)
+        # обычный режим биллинга - используем daysleft из usersubscription
+        # (он уже вычислен в SQL через GREATEST(0, CAST(EXTRACT(EPOCH FROM periodend - NOW()) / 86400 AS INTEGER)))
+        days_left = sub.get('days_left', 0)
 
         return BillingInfo(
-            instance_id=billing["instance_id"],
-            plan_code=billing["plan_code"],
-            plan_name=billing["plan_name"],
-            price_stars=billing["price_stars"],
-            tickets_used=billing["tickets_used"],
-            tickets_limit=billing["tickets_limit"],
-            over_limit=billing["over_limit"],
-            period_start=billing["period_start"].isoformat(),
-            period_end=billing["period_end"].isoformat(),
+            instance_id=instance_id,
+            plan_code=plan['plan_code'],
+            plan_name=plan['plan_name'],
+            price_stars=plan['price_stars'],
+            tickets_used=sub.get('instances_created', 0),
+            tickets_limit=plan['tickets_limit'],
+            over_limit=sub.get('service_paused', False),
+            period_start=sub['period_start'].isoformat(),
+            period_end=sub['period_end'].isoformat(),
             days_left=days_left,
             unlimited=False,
         )
+
 
     @app.get(
         "/api/billing/ton/status",

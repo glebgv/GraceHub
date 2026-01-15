@@ -1661,6 +1661,7 @@ select.form-control {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  color: var(--color-text);
 }
 
 .instance-username {

@@ -468,6 +468,44 @@ class MasterDatabase:
         )
         return [BotInstance(**row) for row in rows]
 
+
+    async def get_superadmin_metrics(self) -> Dict[str, Any]:
+        async with self.pool.acquire() as conn:
+            # Активные клиенты: уникальные owner_user_id из bot_instances (или user_id из user_subscription)
+            active_clients = await conn.fetchval(
+                "SELECT COUNT(DISTINCT owner_user_id) FROM bot_instances"
+            ) or 0
+            
+            # Активные боты: инстансы со status='running'
+            active_bots = await conn.fetchval(
+                "SELECT COUNT(*) FROM bot_instances WHERE status = 'running'"
+            ) or 0
+            
+            # Доход TON: сумма amount_ton для succeeded инвойсов (предполагая, что amount_minor_units в наноTON, делим на 1e9)
+            ton_income = await conn.fetchval(
+                """
+                SELECT COALESCE(SUM(amount_minor_units::numeric / 1000000000), 0)
+                FROM billing_invoices 
+                WHERE payment_method = 'ton' AND status = 'succeeded'
+                """
+            ) or 0.0
+            
+            # Доход Stars: сумма amount_stars для succeeded
+            stars_income = await conn.fetchval(
+                """
+                SELECT COALESCE(SUM(amount_stars), 0)
+                FROM billing_invoices 
+                WHERE payment_method = 'telegram_stars' AND status = 'succeeded'
+                """
+            ) or 0
+            
+        return {
+            "active_clients": active_clients,
+            "active_bots": active_bots,
+            "ton_income": float(ton_income),
+            "stars_income": int(stars_income)
+        }
+
     async def get_instance_settings(self, instance_id: str) -> Optional[Dict[str, Any]]:
         """
         Настройки инстанса для мастер-бота (как dict).
@@ -1673,6 +1711,11 @@ class MasterDatabase:
             """
             CREATE INDEX IF NOT EXISTS idx_billing_invoices_provider_tx_hash
             ON billing_invoices(provider_tx_hash) WHERE provider_tx_hash IS NOT NULL;
+            """
+        )
+        await conn.execute(
+            """
+            CREATE INDEX ON billing_invoices (payment_method, status);
             """
         )
 
