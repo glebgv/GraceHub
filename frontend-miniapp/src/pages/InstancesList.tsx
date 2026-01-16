@@ -34,7 +34,19 @@ interface InstancesListProps {
   limitMessage?: string | null;
   onGoHome?: () => void;
   onDismissLimitMessage?: () => void;
+  onGoToBilling?: () => void; // NEW: переход в Billing
   loading?: boolean;
+}
+
+interface UserSubscription {
+  plan_code: string;
+  plan_name: string;
+  period_start: string;
+  period_end: string;
+  days_left: number;
+  instances_limit: number;
+  instances_created: number;
+  unlimited: boolean;
 }
 
 const InstancesListSkeleton: React.FC = () => {
@@ -127,6 +139,7 @@ const InstancesList: React.FC<InstancesListProps> = ({
   limitMessage,
   onGoHome,
   onDismissLimitMessage,
+  onGoToBilling,
   loading = false,
 }) => {
   const { t, i18n } = useTranslation();
@@ -143,6 +156,11 @@ const InstancesList: React.FC<InstancesListProps> = ({
 
   const [addBotModalOpen, setAddBotModalOpen] = useState(false);
 
+  // NEW: состояние подписки пользователя
+  const [subscription, setSubscription] = useState<UserSubscription | null>(null);
+  const [loadingSubscription, setLoadingSubscription] = useState(true);
+  const [expiredModalOpen, setExpiredModalOpen] = useState(false);
+
   const normalizedLimitText = useMemo(() => {
     const txt = (limitMessage ?? '').trim();
     return txt.length ? txt : '';
@@ -151,6 +169,30 @@ const InstancesList: React.FC<InstancesListProps> = ({
   useEffect(() => {
     setLimitModalOpen(!!normalizedLimitText);
   }, [normalizedLimitText]);
+
+  // NEW: загрузка подписки пользователя
+  useEffect(() => {
+    const loadSubscription = async () => {
+      try {
+        setLoadingSubscription(true);
+        const sub = await apiClient.getUserSubscription();
+        setSubscription(sub);
+
+        // Если демо истекло и есть хотя бы один инстанс — показываем модалку
+        if (sub.days_left <= 0 && instances.length > 0) {
+          setExpiredModalOpen(true);
+        }
+      } catch (e: any) {
+        console.error('[InstancesList] Failed to load user subscription:', e);
+        // Не блокируем UI при ошибке
+        setSubscription(null);
+      } finally {
+        setLoadingSubscription(false);
+      }
+    };
+
+    loadSubscription();
+  }, [instances.length]);
 
   const closeLimitModal = () => {
     setLimitModalOpen(false);
@@ -230,8 +272,8 @@ const InstancesList: React.FC<InstancesListProps> = ({
 
   const isEmpty = !instances || instances.length === 0;
 
-  // Loading or deleting state (Skeleton)
-  if (loading || deleting) {
+  // Loading states (включаем загрузку подписки)
+  if (loading || deleting || loadingSubscription) {
     return <InstancesListSkeleton />;
   }
 
@@ -301,6 +343,24 @@ const InstancesList: React.FC<InstancesListProps> = ({
                 <div className="instances-subtitle">
                   {t('instances.available_count', { count: instances.length })}
                 </div>
+
+                {/* NEW: отображение остатка дней подписки */}
+                {subscription && (
+                  <div
+                    className="subscription-info"
+                    style={{
+                      marginTop: 8,
+                      fontSize: 14,
+                      color: subscription.days_left > 0 ? 'var(--tg-color-text-secondary)' : '#ff4444',
+                      fontWeight: subscription.days_left <= 0 ? 'bold' : 'normal',
+                    }}
+                  >
+                    {subscription.days_left > 0
+                      ? t('instances.subscription_days_left', { days: subscription.days_left }) ||
+                        `Осталось дней: ${subscription.days_left}`
+                      : t('instances.subscription_expired') || 'Подписка истекла'}
+                  </div>
+                )}
               </div>
 
               <div className="instances-actions">
@@ -388,7 +448,7 @@ const InstancesList: React.FC<InstancesListProps> = ({
         )}
       </div>
 
-      {/* AddBotModal с контролируемым состоянием */}
+      {/* AddBotModal */}
       <AddBotModal
         open={addBotModalOpen}
         onClose={closeAddBotModal}
@@ -397,7 +457,7 @@ const InstancesList: React.FC<InstancesListProps> = ({
         getErrorMessage={() => getTokenErrorMessage(currentLang)}
       />
 
-      {/* Shared Language Picker Drawer */}
+      {/* Language Picker Drawer */}
       <Drawer.Root
         open={langOpen}
         onOpenChange={(open) => {
@@ -438,7 +498,7 @@ const InstancesList: React.FC<InstancesListProps> = ({
         </Drawer.Portal>
       </Drawer.Root>
 
-      {/* Delete Confirmation Drawer (conditional) */}
+      {/* Delete Confirmation Drawer */}
       {!!instanceToDelete && (
         <Drawer.Root
           open={!!instanceToDelete}
@@ -486,7 +546,7 @@ const InstancesList: React.FC<InstancesListProps> = ({
         </Drawer.Root>
       )}
 
-      {/* Shared Limit Modal */}
+      {/* Limit Modal */}
       <Drawer.Root
         open={limitModalOpen && !!normalizedLimitText}
         onOpenChange={(open) => {
@@ -515,7 +575,7 @@ const InstancesList: React.FC<InstancesListProps> = ({
         </Drawer.Portal>
       </Drawer.Root>
 
-      {/* Shared Restart Modal */}
+      {/* Restart Modal */}
       <Drawer.Root
         open={restartModalOpen}
         onOpenChange={(open) => {
@@ -560,6 +620,50 @@ const InstancesList: React.FC<InstancesListProps> = ({
                 {t('settings.restart_hint') ||
                   'Если не перезапускать, часть интерфейса может остаться на старом языке.'}
               </small>
+            </div>
+          </Drawer.Content>
+        </Drawer.Portal>
+      </Drawer.Root>
+
+      {/* NEW: Модалка при истекшей демо-подписке */}
+      <Drawer.Root
+        open={expiredModalOpen}
+        onOpenChange={(open) => setExpiredModalOpen(open)}
+        modal
+        dismissible={false}
+      >
+        <Drawer.Portal>
+          <Drawer.Overlay className="drawer-overlay" />
+          <Drawer.Content className="drawer-content">
+            <div className="drawer-body">
+              <div className="drawer-handle" />
+
+              <h3 className="drawer-title">⚠️ {t('billing.demo_expired_title') || 'Демо-подписка истекла'}</h3>
+
+              <p className="drawer-text">
+                {t('billing.demo_expired_message') ||
+                  'Ваша демо-подписка закончилась. Чтобы продолжить использовать ботов, выберите платный тариф.'}
+              </p>
+
+              <div className="drawer-footer">
+                <button
+                  type="button"
+                  className="btn btn--outline"
+                  onClick={() => setExpiredModalOpen(false)}
+                >
+                  {t('common.later') || 'Позже'}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn--primary"
+                  onClick={() => {
+                    setExpiredModalOpen(false);
+                    onGoToBilling?.();
+                  }}
+                >
+                  {t('nav.billing') || 'Выбрать тариф'}
+                </button>
+              </div>
             </div>
           </Drawer.Content>
         </Drawer.Portal>

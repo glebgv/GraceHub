@@ -380,6 +380,15 @@ InstanceId = Annotated[
     ),
 ]
 
+class UserSubscriptionResponse(BaseModel):
+    plan_code: str
+    plan_name: str
+    period_start: str
+    period_end: str
+    days_left: int
+    instances_limit: int
+    instances_created: int
+    unlimited: bool = False
 
 # ========================================================================
 # Telegram Validation
@@ -2516,21 +2525,6 @@ def create_miniapp_app(
         return {"status": current_status}
 
     @app.get(
-        "/api/superadmin/metrics",
-        response_model=Dict[str, Any],
-        responses={**COMMON_AUTH_RESPONSES},
-    )
-    async def get_superadmin_metrics(
-        current_user: Dict[str, Any] = Depends(get_current_user),
-    ):
-        if not await is_superadmin(current_user):
-            raise HTTPException(status_code=403, detail="Forbidden")
-        
-        metrics = await miniapp_db.get_superadmin_metrics()
-        return metrics
-
-
-    @app.get(
         "/api/invoices/stripe/{invoice_id}/status",
         response_model=StripeInvoiceStatusResponse,
         responses={
@@ -2588,13 +2582,13 @@ def create_miniapp_app(
     ):
         """
         Метрики для дашборда супер-админа.
-        Подсчитывает данные из master_db и агрегирует тикеты из worker SQLite.
+        Подсчитывает данные из master_db и агрегирует тикеты из master_db (PostgreSQL).
         """
         if master_bot is None or master_bot.db is None:
             raise HTTPException(status_code=500, detail="MasterBot не инициализирован")
 
         # 1. Всего клиентов: уникальные user_id из bot_instances
-        total_clients = await master_bot.db.count_unique_users()  # Нужно добавить метод в database.py, см. ниже
+        total_clients = await master_bot.db.count_unique_users()  # Метод должен быть в database.py
 
         # 2. Активных ботов: COUNT WHERE status = 'running'
         active_bots_sql = "SELECT COUNT(*) FROM bot_instances WHERE status = 'running'"
@@ -2604,7 +2598,7 @@ def create_miniapp_app(
         # 3. Платные подписки: инстансы на non-demo планах, не paused
         # Сначала найди demo plan_id
         demo_plan_row = await master_bot.db.fetchone("SELECT plan_id FROM saas_plans WHERE code = 'demo'")
-        demo_plan_id = demo_plan_row["plan_id"] if demo_plan_row else 1  # Предполагаем ID=1 для demo, скорректируйте
+        demo_plan_id = demo_plan_row["plan_id"] if demo_plan_row else 1  # Скорректируйте ID, если нужно
 
         paid_subs_sql = """
             SELECT COUNT(*) 
@@ -2615,31 +2609,16 @@ def create_miniapp_app(
         paid_subs_row = await master_bot.db.fetchone(paid_subs_sql, (demo_plan_id,))
         paid_subscriptions = paid_subs_row[0] if paid_subs_row else 0
 
-        # 4. Тикетов за месяц: агрегация по всем инстансам (SQLite)
-        monthly_tickets = 0
-        instances = await master_bot.db.get_all_instances_for_monitor()  # Все инстансы
+        # 4. Тикетов за месяц: агрегация из master_db (PostgreSQL), без SQLite
         thirty_days_ago = datetime.now(timezone.utc) - timedelta(days=30)
-        thirty_days_ago_str = thirty_days_ago.isoformat()
+        thirty_days_ago_str = thirty_days_ago.isoformat()  # Или используйте параметр datetime напрямую
 
-        for instance in instances:
-            if instance.status != InstanceStatus.RUNNING:
-                continue  # Только активные
-
-            db_path = settings.get_worker_db_path(instance.instance_id)
-            if not db_path.exists():
-                logger.warning(f"SQLite not found for {instance.instance_id}, skipping")
-                continue
-
-            try:
-                async with aiosqlite.connect(db_path) as conn:
-                    cursor = await conn.execute(
-                        "SELECT COUNT(*) FROM tickets WHERE createdat > ?",
-                        (thirty_days_ago_str,)
-                    )
-                    row = await cursor.fetchone()
-                    monthly_tickets += row[0] if row else 0
-            except Exception as e:
-                logger.error(f"Error counting tickets for {instance.instance_id}: {e}")
+        monthly_tickets_sql = """
+            SELECT COUNT(*) FROM tickets 
+            WHERE created_at > $1  -- Предполагаем поле created_at в tickets
+        """
+        monthly_tickets_row = await master_bot.db.fetchone(monthly_tickets_sql, (thirty_days_ago,))
+        monthly_tickets = monthly_tickets_row[0] if monthly_tickets_row else 0
 
         return PlatformMetrics(
             total_clients=total_clients,
@@ -2647,6 +2626,28 @@ def create_miniapp_app(
             monthly_tickets=monthly_tickets,
             paid_subscriptions=paid_subscriptions,
         )
+
+
+    @app.get(
+        "/api/superadmin/clients",
+        response_model=dict,
+        responses={**COMMON_AUTH_RESPONSES, 403: {"description": "Only superadmin"}},
+    )
+    async def get_superadmin_clients(
+        offset: int = Query(0, ge=0),
+        limit: int = Query(50, ge=1, le=100),
+        search: Optional[str] = Query(None),
+        current_user: Dict[str, Any] = Depends(get_current_user),
+    ):
+        if "superadmin" not in current_user.get("roles", []):
+            raise HTTPException(status_code=403, detail="Доступ запрещён")
+
+        clients, total = await master_bot.db.get_superadmin_clients(
+            offset=offset, limit=limit, search=search
+        )
+        return {"clients": clients, "total": total}
+
+
 
     @app.get("/api/offer/settings", response_model=OfferSettingsOut)
     async def get_offer_settings():
@@ -3033,6 +3034,17 @@ def create_miniapp_app(
             user=user_response,
             default_instance_id=default_instance_id,
         )
+
+    @app.get(
+        "/api/superadmin/metrics",
+        response_model=Dict[str, Any],
+        responses={**COMMON_AUTH_RESPONSES},
+    )
+    async def get_superadmin_metrics(
+        current_user: Dict[str, Any] = Depends(require_superadmin),
+    ):
+        metrics = await miniapp_db.db.get_superadmin_metrics()
+        return metrics
 
     @app.post(
         "/api/billing/ton/cancel",
@@ -3478,56 +3490,76 @@ def create_miniapp_app(
         """
         await require_instance_access(instance_id, current_user, required_role=None)
 
-        # Получаем инстанс чтобы найти owner_user_id
-        instance = await masterbot.db.get_instance(instance_id)
-        if not instance:
-            raise HTTPException(status_code=404, detail="Instance not found")
-        
-        # Берем подписку владельца из usersubscription
-        sub = await masterbot.db.get_user_subscription(instance.owner_user_id)
-        if not sub:
-            raise HTTPException(status_code=404, detail="Subscription not found")
-        
-        # Получаем план
-        plan = await masterbot.db.get_saas_plan_by_id(sub['plan_id'])
-        if not plan:
-            raise HTTPException(status_code=500, detail="Plan not found")
+        billing = await miniapp_db.get_instance_billing(instance_id)
+        if not billing:
+            raise HTTPException(status_code=404, detail="Billing not found for this instance")
 
         # single-tenant режим: безлимитный тариф (config from DB)
         single_tenant = await get_single_tenant_config(miniapp_db.db)
         if single_tenant.enabled:
             return BillingInfo(
-                instance_id=instance_id,
-                plan_code=plan['plan_code'],
-                plan_name=plan['plan_name'],
-                price_stars=plan['price_stars'],
-                tickets_used=sub.get('instances_created', 0),
-                tickets_limit=plan['tickets_limit'],
+                instance_id=billing["instance_id"],
+                plan_code=billing["plan_code"],
+                plan_name=billing["plan_name"],
+                price_stars=billing["price_stars"],
+                tickets_used=billing["tickets_used"],
+                tickets_limit=billing["tickets_limit"],  # можно вернуть как есть или 0/None
                 over_limit=False,
-                period_start=sub['period_start'].isoformat(),
-                period_end=sub['period_end'].isoformat(),
+                period_start=billing["period_start"].isoformat(),
+                period_end=billing["period_end"].isoformat(),
                 days_left=0,
                 unlimited=True,
             )
 
-        # обычный режим биллинга - используем daysleft из usersubscription
-        # (он уже вычислен в SQL через GREATEST(0, CAST(EXTRACT(EPOCH FROM periodend - NOW()) / 86400 AS INTEGER)))
-        days_left = sub.get('days_left', 0)
+        # обычный режим биллинга
+        now = datetime.now(timezone.utc)
+        period_end: datetime = billing["period_end"]
+        days_left = max(0, (period_end.date() - now.date()).days)
 
         return BillingInfo(
-            instance_id=instance_id,
-            plan_code=plan['plan_code'],
-            plan_name=plan['plan_name'],
-            price_stars=plan['price_stars'],
-            tickets_used=sub.get('instances_created', 0),
-            tickets_limit=plan['tickets_limit'],
-            over_limit=sub.get('service_paused', False),
-            period_start=sub['period_start'].isoformat(),
-            period_end=sub['period_end'].isoformat(),
+            instance_id=billing["instance_id"],
+            plan_code=billing["plan_code"],
+            plan_name=billing["plan_name"],
+            price_stars=billing["price_stars"],
+            tickets_used=billing["tickets_used"],
+            tickets_limit=billing["tickets_limit"],
+            over_limit=billing["over_limit"],
+            period_start=billing["period_start"].isoformat(),
+            period_end=billing["period_end"].isoformat(),
             days_left=days_left,
             unlimited=False,
         )
 
+
+    @app.get(
+        "/api/user/subscription",
+        response_model=UserSubscriptionResponse,
+        responses={
+            **COMMON_AUTH_RESPONSES,
+        },
+    )
+    async def get_user_subscription_endpoint(
+        current_user: Dict[str, Any] = Depends(get_current_user),
+    ):
+        user_id = current_user["user_id"]
+        sub = await miniapp_db.get_user_subscription(user_id)
+        if not sub:
+            await miniapp_db.ensure_default_subscription(user_id)
+            sub = await miniapp_db.get_user_subscription(user_id)
+        
+        if not sub:
+            raise HTTPException(status_code=404, detail="Subscription not found")
+        
+        return UserSubscriptionResponse(
+            plan_code=sub["plan_code"],
+            plan_name=sub["plan_name"],
+            period_start=sub["period_start"].isoformat(),
+            period_end=sub["period_end"].isoformat(),
+            days_left=sub["days_left"],
+            instances_limit=sub["instances_limit"],
+            instances_created=sub["instances_created"],
+            unlimited=sub.get("unlimited", False),
+        )
 
     @app.get(
         "/api/billing/ton/status",

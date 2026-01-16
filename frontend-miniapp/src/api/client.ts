@@ -87,6 +87,17 @@ export interface CreateInvoiceResponse {
   session_id?: string;
 }
 
+export interface UserSubscription {
+  plan_code: string;
+  plan_name: string;
+  period_start: string;
+  period_end: string;
+  days_left: number;
+  instances_limit: number;
+  instances_created: number;
+  unlimited: boolean;
+}
+
 export interface TonInvoiceStatusResponse {
   invoice_id: number;
   status: 'pending' | 'paid' | 'failed';
@@ -407,6 +418,10 @@ class ApiClient {
     });
   }
 
+  async getSuperadminMetrics(): Promise<PlatformMetrics> {
+    return this.request<PlatformMetrics>('GET', '/api/superadmin/metrics');
+  }
+
   private async request<T>(method: string, path: string, body?: any): Promise<T> {
     const url = `${this.baseUrl}${path}`;
     const headers: Record<string, string> = {
@@ -517,6 +532,22 @@ class ApiClient {
     return this.request<InstanceDto[]>('GET', '/api/instances');
   }
 
+  async getSuperadminClients(
+    offset: number = 0,
+    limit: number = 50,
+    search?: string
+  ): Promise<{ clients: Array<any>; total: number }> {
+    const params = new URLSearchParams();
+    params.append('offset', String(offset));
+    params.append('limit', String(limit));
+    if (search) params.append('search', search.trim());
+
+    return this.request<{ clients: Array<any>; total: number }>(
+      'GET',
+      `/api/superadmin/clients?${params.toString()}`
+    );
+  }
+
   async createInstanceByToken(payload: CreateInstanceRequest): Promise<InstanceDto> {
     console.log('[ApiClient] createInstanceByToken payload:', {
       hasToken: !!payload.token,
@@ -578,6 +609,12 @@ class ApiClient {
   async getInstanceBilling(instanceId: string) {
     return this.request('GET', `/api/instances/${instanceId}/billing`);
   }
+
+  // Метод
+  async getUserSubscription(): Promise<UserSubscription> {
+    return this.request<UserSubscription>('GET', '/api/user/subscription');
+  }
+
 
   async getSaasPlans(): Promise<SaasPlanDTO[]> {
     return this.request<SaasPlanDTO[]>('GET', '/api/saas/plans');

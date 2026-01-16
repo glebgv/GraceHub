@@ -3054,3 +3054,85 @@ select.form-control {
   opacity: 1;
   pointer-events: all;
 }
+
+/* Таблица клиентов - адаптивно к light/dark Telegram теме */
+.table-responsive {
+  overflow-x: auto;
+  margin: 20px 0;
+  border-radius: var(--radius-base);
+  box-shadow: var(--shadow-md);
+  background: var(--color-surface);
+}
+
+.table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 15px;
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+.table thead th {
+  background: var(--color-background);
+  color: var(--color-text-secondary);
+  font-weight: var(--font-weight-semibold);
+  text-align: left;
+  padding: 14px 16px;
+  border-bottom: 2px solid var(--color-border);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.table tbody td {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--color-border);
+  transition: background var(--duration-fast) var(--ease-standard);
+}
+
+.table tbody tr:nth-child(even) {
+  background: var(--color-secondary);
+}
+
+.table tbody tr:hover {
+  background: var(--color-secondary-hover);
+  transition: background var(--duration-fast) var(--ease-standard);
+}
+
+/* Центрирование числовых колонок */
+.table td:nth-child(1), /* ID */
+.table td:nth-child(3), /* Ботов */
+.table td:nth-child(5)  /* Дней осталось */ {
+  text-align: center;
+  font-family: var(--font-family-mono);
+}
+
+/* Empty state */
+.empty-state {
+  text-align: center;
+  padding: 60px 20px;
+  color: var(--color-text-secondary);
+  font-size: 18px;
+  background: var(--color-secondary);
+  border-radius: var(--radius-base);
+}
+
+/* Скелетон загрузки (адаптирован под тему) */
+.skeleton-list .list-item {
+  border-radius: var(--radius-base);
+  margin-bottom: 8px;
+  height: 60px;
+  background: linear-gradient(90deg, 
+    var(--color-secondary) 25%, 
+    var(--color-secondary-hover) 50%, 
+    var(--color-secondary) 75%
+  );
+  background-size: 200% 100%;
+  animation: loading 1.8s infinite;
+}
+
+@keyframes loading {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}

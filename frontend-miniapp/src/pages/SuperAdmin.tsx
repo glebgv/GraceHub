@@ -423,6 +423,15 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
 
   const [clientsLoading, setClientsLoading] = useState(false);
 
+  const [clients, setClients] = useState<Array<any>>([]);
+  const [clientsTotal, setClientsTotal] = useState(0);
+  const [clientsPage, setClientsPage] = useState(0);
+  const [clientsSearch, setClientsSearch] = useState('');
+  const PAGE_SIZE = 50;
+
+  const [selectedClient, setSelectedClient] = useState<any | null>(null);
+  const [clientDrawerOpen, setClientDrawerOpen] = useState(false);
+
   const isSuperadmin = useMemo(() => {
     const roles = me?.roles || [];
     return Array.isArray(roles) && roles.includes('superadmin');
@@ -482,29 +491,40 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
   useEffect(() => {
     if (activeSection === 'dashboard') {
       setMetricsLoading(true);
-      apiClient.getPlatformMetrics()
+      apiClient.getSuperadminMetrics()  // Новый метод
         .then((metricsRes) => {
           setMetrics({
-            total_clients: metricsRes.data.total_clients,
-            active_bots: metricsRes.data.active_bots,
-            monthly_tickets: metricsRes.data.monthly_tickets,
-            paid_subscriptions: metricsRes.data.paid_subscriptions,
+            total_clients: metricsRes.total_clients,
+            active_bots: metricsRes.active_bots,
+            monthly_tickets: metricsRes.monthly_tickets,
+            paid_subscriptions: metricsRes.paid_subscriptions,
           });
         })
-        .catch((e) => console.error('Metrics error:', e))
+        .catch((e) => {
+          console.error('Superadmin metrics error:', e);
+          setError('Ошибка загрузки метрик для админа');
+        })
         .finally(() => setMetricsLoading(false));
     }
   }, [activeSection]);
 
+  // ←←← НОВЫЙ useEffect ↓↓↓
   useEffect(() => {
     if (activeSection === 'clients') {
       setClientsLoading(true);
-      // Simulate loading for clients section since it's in development
-      setTimeout(() => {
-        setClientsLoading(false);
-      }, 800); // Simulated delay
+      apiClient
+        .getSuperadminClients(clientsPage * PAGE_SIZE, PAGE_SIZE, clientsSearch)
+        .then((res) => {
+          setClients(res.clients);
+          setClientsTotal(res.total);
+        })
+        .catch((e) => {
+          console.error('Clients load error:', e);
+          setError('Ошибка загрузки списка клиентов');
+        })
+        .finally(() => setClientsLoading(false));
     }
-  }, [activeSection]);
+  }, [activeSection, clientsPage, clientsSearch]);
 
   const validatePayments = (v: MiniappPublicSettings): Record<string, string> => {
     const errs: Record<string, string> = {};
@@ -701,6 +721,16 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
     setAddSuperadminValue('');
   };
 
+  const openClientDrawer = (client: any) => {
+    setSelectedClient(client);
+    setClientDrawerOpen(true);
+  };
+
+  const closeClientDrawer = () => {
+    setClientDrawerOpen(false);
+    setSelectedClient(null);
+  };
+
   const openAddOwner = () => {
     setNewOwnerId('');
     setAddOwnerOpen(true);
@@ -832,63 +862,93 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
 
         {/* Clients Section */}
         {activeSection === 'clients' && (
-          <div className="card superadmin-main">
-            <div className="card-header">
-              <div className="card-title">Клиенты платформы</div>
+          <div className="section-content">
+            <div className="section-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '20px' }}>
+              <h2>Клиенты ({clientsTotal})</h2>
+              <input
+                className="form-input"
+                style={{ width: '300px' }}
+                placeholder="Поиск по имени, username или ID"
+                value={clientsSearch}
+                onChange={(e) => {
+                  setClientsSearch(e.target.value);
+                  setClientsPage(0);
+                }}
+              />
             </div>
 
-            <div className="info-banner">
-              🚧 Раздел в разработке. Здесь будет список всех клиентов GraceHub с информацией о:
-              <ul style={{ marginTop: '10px', paddingLeft: '20px' }}>
-                <li>Telegram user_id и username клиентов</li>
-                <li>Количество созданных инстансов ботов</li>
-                <li>Статус подписки (Free/Lite/Pro/Enterprise)</li>
-                <li>Дата регистрации и последней активности</li>
-                <li>Управление доступом и ограничениями</li>
-              </ul>
-            </div>
-
-            <div className="superadmin-section" style={{ marginTop: '20px' }}>
-              <h3 className="superadmin-section-title">Заглушка списка клиентов</h3>
-              
-              <div className="superadmin-list">
-                {clientsLoading ? (
-                  <>
-                    <div className="superadmin-list-item">
-                      <div className="superadmin-list-item-text">
-                        <Skeleton style={{ width: '80%', height: '20px' }} />
-                      </div>
-                      <Skeleton style={{ width: '100px', height: '32px' }} />
-                    </div>
-                    <div className="superadmin-list-item">
-                      <div className="superadmin-list-item-text">
-                        <Skeleton style={{ width: '80%', height: '20px' }} />
-                      </div>
-                      <Skeleton style={{ width: '100px', height: '32px' }} />
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <div className="superadmin-list-item">
-                      <div className="superadmin-list-item-text">
-                        <strong>User ID:</strong> 123456789 | <strong>Username:</strong> @example_user | <strong>Боты:</strong> 2 | <strong>План:</strong> Pro
-                      </div>
-                      <button type="button" className="btn btn--outline btn--sm" disabled>
-                        Управление
-                      </button>
-                    </div>
-                    <div className="superadmin-list-item">
-                      <div className="superadmin-list-item-text">
-                        <strong>User ID:</strong> 987654321 | <strong>Username:</strong> @demo_client | <strong>Боты:</strong> 1 | <strong>План:</strong> Lite
-                      </div>
-                      <button type="button" className="btn btn--outline btn--sm" disabled>
-                        Управление
-                      </button>
-                    </div>
-                  </>
-                )}
+            {clientsLoading ? (
+              <div className="skeleton-list">
+                {[...Array(10)].map((_, i) => (
+                  <Skeleton key={i} className="list-item" style={{ height: '60px', marginBottom: '8px' }} />
+                ))}
               </div>
-            </div>
+            ) : clients.length === 0 ? (
+              <div className="empty-state" style={{ textAlign: 'center', padding: '60px', color: '#888' }}>
+                Клиентов пока нет
+              </div>
+            ) : (
+              <>
+                <div className="table-responsive">
+                  <table className="table" style={{ width: '100%', borderCollapse: 'collapse' }}>
+                    <thead>
+                      <tr>
+                        <th style={{ padding: '12px', textAlign: 'left', borderBottom: '2px solid #ddd' }}>ID</th>
+                        <th style={{ padding: '12px', textAlign: 'left', borderBottom: '2px solid #ddd' }}>Имя</th>
+                        <th style={{ padding: '12px', textAlign: 'left', borderBottom: '2px solid #ddd' }}>Ботов</th>
+                        <th style={{ padding: '12px', textAlign: 'left', borderBottom: '2px solid #ddd' }}>Тариф</th>
+                        <th style={{ padding: '12px', textAlign: 'left', borderBottom: '2px solid #ddd' }}>Дней осталось</th>
+                        <th style={{ padding: '12px', textAlign: 'left', borderBottom: '2px solid #ddd' }}>Первый бот</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {clients.map((client) => (
+                          <tr key={client.user_id}
+                            onClick={() => openClientDrawer(client)}
+                            style={{ cursor: 'pointer' }}
+                          >
+                          <td style={{ padding: '12px', borderBottom: '1px solid #eee' }}>{client.user_id}</td>
+                          <td style={{ padding: '12px', borderBottom: '1px solid #eee' }}>{client.full_name}</td>
+                          <td style={{ padding: '12px', borderBottom: '1px solid #eee' }}>{client.instances_count}</td>
+                          <td style={{ padding: '12px', borderBottom: '1px solid #eee' }}>{client.plan_name}</td>
+                          <td style={{ padding: '12px', borderBottom: '1px solid #eee' }}>
+                            {client.days_left === 0 ? 'Истёк' : client.days_left}
+                          </td>
+                          <td style={{ padding: '12px', borderBottom: '1px solid #eee' }}>
+                            {client.first_instance_at
+                              ? new Date(client.first_instance_at).toLocaleDateString('ru-RU')
+                              : '-'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                {clientsTotal > PAGE_SIZE && (
+                  <div className="pagination" style={{ marginTop: '30px', textAlign: 'center' }}>
+                    <button
+                      className="btn btn--secondary"
+                      disabled={clientsPage === 0}
+                      onClick={() => setClientsPage((p) => Math.max(0, p - 1))}
+                      style={{ marginRight: '10px' }}
+                    >
+                      ← Назад
+                    </button>
+                    <span style={{ margin: '0 20px' }}>
+                      Страница {clientsPage + 1} из {Math.ceil(clientsTotal / PAGE_SIZE)}
+                    </span>
+                    <button
+                      className="btn btn--secondary"
+                      disabled={(clientsPage + 1) * PAGE_SIZE >= clientsTotal}
+                      onClick={() => setClientsPage((p) => p + 1)}
+                    >
+                      Вперед →
+                    </button>
+                  </div>
+                )}
+              </>
+            )}
           </div>
         )}
 
@@ -1997,6 +2057,72 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
           <button type="button" className="btn btn--primary" onClick={submitAddSuperadmin}>
             Add
           </button>
+        </div>
+      </BaseDrawer>
+
+      <BaseDrawer
+        open={clientDrawerOpen}
+        title={`Управление клиентом: ${selectedClient?.full_name || 'User'} (ID: ${selectedClient?.user_id || ''})`}
+        onClose={closeClientDrawer}
+      >
+        <div className="drawer-body">
+          {/* Начисление демо-дней */}
+          <div className="form-group">
+            <label className="form-label">Начислить демо-дни</label>
+            <div style={{ display: 'flex', gap: '12px', alignItems: 'end' }}>
+              <input
+                className="form-input"
+                type="number"
+                min={1}
+                defaultValue={7}
+                placeholder="Количество дней"
+                style={{ width: '120px' }}
+              />
+              <button
+                className="btn btn--primary"
+                onClick={() => alert(`Начислить демо-дни клиенту ${selectedClient?.user_id} (backend не реализовано)`)}
+              >
+                Начислить
+              </button>
+            </div>
+          </div>
+
+          {/* Изменение лимита инстансов */}
+          <div className="form-group">
+            <label className="form-label">Изменить лимит инстансов</label>
+            <div style={{ display: 'flex', gap: '12px', alignItems: 'end' }}>
+              <input
+                className="form-input"
+                type="number"
+                min={0}
+                placeholder="Новый лимит"
+                style={{ width: '120px' }}
+              />
+              <button
+                className="btn btn--primary"
+                onClick={() => alert(`Изменить лимит инстансов для ${selectedClient?.user_id} (backend не реализовано)`)}
+              >
+                Применить
+              </button>
+            </div>
+          </div>
+
+          {/* Блокировка аккаунта */}
+          <div className="form-group form-group-row">
+            <label className="form-label">Блокировка аккаунта</label>
+            <button
+              className="btn btn--danger"
+              onClick={() => alert(`Блокировка/разблокировка клиента ${selectedClient?.user_id} (backend не реализовано)`)}
+            >
+              Заблокировать / Разблокировать
+            </button>
+          </div>
+
+          <div className="drawer-footer drawer-footer-end">
+            <button className="btn btn--secondary" onClick={closeClientDrawer}>
+              Закрыть
+            </button>
+          </div>
         </div>
       </BaseDrawer>
 

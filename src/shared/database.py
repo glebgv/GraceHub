@@ -604,7 +604,7 @@ class MasterDatabase:
             UPDATE billing_invoices
             SET status = 'paid',
                 telegram_invoice_id = $1,
-                stars_amount = $2,
+                amount_stars = $2,
                 currency = $3,
                 paid_at = NOW(),
                 updated_at = NOW()
@@ -616,7 +616,7 @@ class MasterDatabase:
     async def find_billing_invoice_by_payload(self, payload: str) -> Optional[Dict[str, Any]]:
         row = await self.fetchone(
             """
-            SELECT invoice_id, instance_id, user_id, product_id, payload, invoice_link, stars_amount,
+            SELECT invoice_id, instance_id, user_id, product_id, payload, invoice_link, amount_stars,
                 amount_minor_units, currency, payment_method, provider_tx_hash, status,
                 created_at, updated_at, paid_at
             FROM billing_invoices
@@ -688,7 +688,7 @@ class MasterDatabase:
                 product_id,
                 payload,
                 invoice_link,
-                stars_amount,
+                amount_stars,
                 amount_minor_units,
                 currency,
                 payment_method,
@@ -1646,7 +1646,7 @@ class MasterDatabase:
                 telegram_invoice_id TEXT,
                 invoice_link        TEXT,
 
-                stars_amount        INTEGER NOT NULL,
+                amount_stars        INTEGER NOT NULL,
                 amount_minor_units  BIGINT,
 
                 currency            TEXT NOT NULL DEFAULT 'XTR',
@@ -1971,12 +1971,12 @@ class MasterDatabase:
         # Нормализация под метод
         if payment_method == "telegram_stars":
             currency = "XTR"
-            stars_amount_val = int(amount_stars)
+            amount_stars_val = int(amount_stars)
             amount_minor_val = None
 
         elif payment_method == "ton":
             currency = "TON"
-            stars_amount_val = 0  # stars_amount NOT NULL
+            amount_stars_val = 0  # amount_stars NOT NULL
             if amount_minor_units is None or int(amount_minor_units) <= 0:
                 raise ValueError("TON invoice requires amount_minor_units > 0 (nanoton)")
             amount_minor_val = int(amount_minor_units)
@@ -1988,7 +1988,7 @@ class MasterDatabase:
                 # чтобы не разъехались ожидания в остальном коде
                 raise ValueError(f"YooKassa invoice requires currency=RUB, got {currency}")
 
-            stars_amount_val = 0  # stars_amount NOT NULL
+            amount_stars_val = 0  # amount_stars NOT NULL
             if amount_minor_units is None or int(amount_minor_units) <= 0:
                 raise ValueError("YooKassa invoice requires amount_minor_units > 0 (kopeks)")
             amount_minor_val = int(amount_minor_units)
@@ -2000,7 +2000,7 @@ class MasterDatabase:
             if not currency:
                 raise ValueError("Stripe invoice requires currency (e.g. USD)")
 
-            stars_amount_val = 0  # stars_amount NOT NULL
+            amount_stars_val = 0  # amount_stars NOT NULL
             if amount_minor_units is None or int(amount_minor_units) <= 0:
                 raise ValueError("Stripe invoice requires amount_minor_units > 0 (cents)")
             amount_minor_val = int(amount_minor_units)
@@ -2019,7 +2019,7 @@ class MasterDatabase:
                 payload,
                 telegram_invoice_id,
                 invoice_link,
-                stars_amount,
+                amount_stars,
                 amount_minor_units,
                 currency,
                 payment_method,
@@ -2037,7 +2037,7 @@ class MasterDatabase:
                 payload,
                 None,
                 invoice_link,
-                stars_amount_val,
+                amount_stars_val,
                 amount_minor_val,
                 currency,
                 payment_method,
@@ -2078,6 +2078,88 @@ class MasterDatabase:
             (status, external_id),
         )
         logger.info(f"Updated invoice by external_id {external_id} status to {status}")
+
+
+    async def get_superadmin_clients(
+        self,
+        offset: int = 0,
+        limit: int = 50,
+        search: Optional[str] = None,
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        """
+        Возвращает список клиентов для SuperAdmin (без имён — их нет в БД).
+        Возвращает (clients_list, total_count)
+        """
+        async with self.pool.acquire() as conn:
+            # Базовый запрос без user_states (имён нет в БД)
+            base_select = """
+                SELECT 
+                    owners.user_id,
+                    COUNT(bi.instance_id) AS instances_count,
+                    sp.code AS plan_code,
+                    sp.name AS plan_name,
+                    us.period_end,
+                    GREATEST(0, CAST(EXTRACT(EPOCH FROM (us.period_end - NOW())) / 86400 AS INTEGER)) AS days_left,
+                    MIN(bi.created_at) AS first_instance_at
+                FROM 
+                    (SELECT DISTINCT owner_user_id AS user_id FROM bot_instances) AS owners
+                LEFT JOIN bot_instances bi ON bi.owner_user_id = owners.user_id
+                LEFT JOIN user_subscription us ON us.user_id = owners.user_id
+                LEFT JOIN saas_plans sp ON sp.plan_id = us.plan_id
+            """
+
+            where_clause = ""
+            params: List[Any] = []
+            count_params: List[Any] = []
+
+            # Поиск по user_id (поскольку имён нет — ищем только по ID)
+            if search:
+                try:
+                    search_id = int(search.strip())
+                    where_clause = " WHERE owners.user_id = $1 "
+                    params = [search_id, limit, offset]
+                    count_params = [search_id]
+                except ValueError:
+                    # Если не число — возвращаем пустой результат (поиск по имени невозможен)
+                    return [], 0
+            else:
+                params = [limit, offset]
+
+            group_order_limit = """
+                GROUP BY owners.user_id, sp.code, sp.name, us.period_end
+                ORDER BY instances_count DESC, owners.user_id
+                LIMIT $1 OFFSET $2
+            """
+
+            # Основной запрос
+            sql = f"{base_select} {where_clause} {group_order_limit}"
+            rows = await conn.fetch(sql, *params)
+
+            # Подсчёт total
+            count_sql = f"""
+                SELECT COUNT(*) AS total
+                FROM (SELECT DISTINCT owner_user_id FROM bot_instances) AS owners
+                {where_clause}
+            """
+            total_row = await conn.fetchrow(count_sql, *count_params)
+            total = int(total_row["total"]) if total_row else 0
+
+            clients = []
+            for row in rows:
+                clients.append({
+                    "user_id": row["user_id"],
+                    "full_name": f"User {row['user_id']}",  # Имени нет — показываем ID
+                    "username": None,
+                    "first_name": None,
+                    "last_name": None,
+                    "instances_count": int(row["instances_count"]),
+                    "plan_code": row["plan_code"] or "demo",
+                    "plan_name": row["plan_name"] or "Demo",
+                    "days_left": int(row["days_left"]),
+                    "first_instance_at": row["first_instance_at"].isoformat() if row["first_instance_at"] else None,
+                })
+
+            return clients, total
 
     async def apply_invoice_to_billing(self, invoice_id: int) -> None:
         """

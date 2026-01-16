@@ -671,6 +671,10 @@ const App: React.FC<AppProps> = ({
             setIsFirstLaunch(false);
             setCurrentPage('superadmin');
           }}
+          onGoToBilling={() => {
+            setIsFirstLaunch(false);
+            setCurrentPage('billing');
+          }}
         />
         {footerBranding}
       </div>
@@ -1010,6 +1014,15 @@ const App: React.FC<AppProps> = ({
               setShowAddModal(false);
               setCurrentPage('instances');
             }}
+            onGoToBilling={() => {
+              if (instances.length > 0) {
+                setSelectedInstance(instances[0]); // выбираем первый инстанс как прокси
+                setCurrentPage('billing');
+              } else {
+                // Опционально: можно показать toast/ошибку, но сейчас просто игнорируем
+                console.warn('No instances available to open Billing');
+              }
+            }}
             loading={loading || !!deletingInstanceId}
           />
         )}
@@ -1036,8 +1049,8 @@ const App: React.FC<AppProps> = ({
         )}
 
 
-        {currentPage === 'billing' && selectedInstance && (
-          <Billing instanceId={selectedInstance.instanceid} />
+        {currentPage === 'billing' && (
+          <Billing instanceId={selectedInstance?.instanceid ?? null} />
         )}
 
 

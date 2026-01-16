@@ -13,9 +13,9 @@ type LangCode = 'ru' | 'en' | 'es' | 'hi' | 'zh';
 interface FirstLaunchProps {
   onAddBotClick: (token: string) => Promise<void> | void;
   instanceId?: string | null;
-  // NEW (for superadmin without instances)
   isSuperadmin?: boolean;
   onOpenAdmin?: () => void;
+  onGoToBilling?: () => void;       
   loading?: boolean;
 }
 
@@ -122,6 +122,7 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
   instanceId,
   isSuperadmin,
   onOpenAdmin,
+  onGoToBilling,
   loading = false,
 }) => {
   const { t, i18n } = useTranslation();
@@ -473,7 +474,29 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
         <div className="card__body">
           <h3 style={{ marginTop: 0, marginBottom: 10, fontSize: 16 }}>{t('firstLaunch.actionsTitle')}</h3>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {onGoToBilling ? (
+            <div style={{ display: 'flex', flexDirection: 'row', gap: 8 }}>
+              <button
+                className="btn btn--primary"
+                style={{ flex: 1, minWidth: 0 }}
+                onClick={() => setShowAddModal(true)}
+                disabled={isOfferGateOpen}
+                title={isOfferGateOpen ? 'Требуется согласие с офертой' : undefined}
+              >
+                ➕ {t('firstLaunch.addBot')}
+              </button>
+
+              <button
+                className="btn btn--secondary"
+                style={{ flex: 1, minWidth: 0 }}
+                onClick={onGoToBilling}
+                disabled={isOfferGateOpen}
+                title={isOfferGateOpen ? 'Требуется согласие с офертой' : undefined}
+              >
+                💳 {t('nav.billing')}
+              </button>
+            </div>
+          ) : (
             <button
               className="btn btn--primary btn--full-width"
               onClick={() => setShowAddModal(true)}
@@ -482,7 +505,7 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
             >
               ➕ {t('firstLaunch.addBot')}
             </button>
-          </div>
+          )}
         </div>
       </div>
 
