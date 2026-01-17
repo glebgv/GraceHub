@@ -1,3 +1,13 @@
+[![Schemathesis](https://github.com/glebgv/GraceHub/actions/workflows/schemathesis.yml/badge.svg)](https://github.com/glebgv/GraceHub/actions/workflows/schemathesis.yml)
+
+[![Worker CI](https://github.com/glebgv/GraceHub/actions/workflows/worker-ci.yml/badge.svg)](https://github.com/glebgv/GraceHub/actions/workflows/worker-ci.yml)
+
+[![Master Bot CI](https://github.com/glebgv/GraceHub/actions/workflows/master-ci.yml/badge.svg)](https://github.com/glebgv/GraceHub/actions/workflows/master-ci.yml)
+
+[![Frontend CI](https://github.com/glebgv/GraceHub/actions/workflows/frontend-ci.yml/badge.svg)](https://github.com/glebgv/GraceHub/actions/workflows/frontend-ci.yml)
+
+[![Backend API CI](https://github.com/glebgv/GraceHub/actions/workflows/backend-api-ci.yml/badge.svg)](https://github.com/glebgv/GraceHub/actions/workflows/backend-api-ci.yml)
+
 <div align="right">
   <a href="README.md">🇷🇺 Русский</a> •
   <a href="README/README.en.md">🇬🇧 English</a> •
