@@ -3,12 +3,13 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { Drawer } from 'vaul';
-import { FaChartBar, FaUsers, FaCogs, FaCreditCard } from 'react-icons/fa'; // Added for tab bar icons
+import { FaChartBar, FaUsers, FaCogs, FaCreditCard, FaCalendarPlus, FaEdit, FaBan } from 'react-icons/fa';
 
 import { apiClient } from '../api/client';
 import type { MiniappPublicSettings } from '../api/client';
 import { useTranslation } from 'react-i18next';
 import logoRed from '../assets/logo-red.png';
+import { VisuallyHidden } from '@radix-ui/react-visually-hidden';
 
 interface SuperAdminProps {
   onBack?: () => void;
@@ -609,18 +610,19 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
       };
 
       const payErrs = validatePayments(normalized);
-      setPaymentErrors(payErrs);
-
       const offErrs = validateOffer(normalized);
+
+      setPaymentErrors(payErrs);
       setOfferErrors(offErrs);
 
-      const hasErrors = [...Object.keys(payErrs), ...Object.keys(offErrs)].some((k) => {
-        const v = (payErrs as any)[k] ?? (offErrs as any)[k];
-        return !!v;
-      });
+      const payErrorsCount = Object.keys(payErrs).length;
+      const offErrorsCount = Object.keys(offErrs).length;
 
-      if (hasErrors) {
-        setError('Исправь ошибки в настройках (Payments / Offer).');
+      if (payErrorsCount > 0 || offErrorsCount > 0) {
+        let errorMsg = 'Исправь ошибки в: ';
+        if (payErrorsCount > 0) errorMsg += 'Payments ';
+        if (offErrorsCount > 0) errorMsg += 'Offer ';
+        setError(errorMsg);
         return;
       }
 
@@ -903,10 +905,10 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
                     </thead>
                     <tbody>
                       {clients.map((client) => (
-                          <tr key={client.user_id}
-                            onClick={() => openClientDrawer(client)}
-                            style={{ cursor: 'pointer' }}
-                          >
+                        <tr key={client.user_id}
+                          onClick={() => openClientDrawer(client)}
+                          style={{ cursor: 'pointer' }}
+                        >
                           <td style={{ padding: '12px', borderBottom: '1px solid #eee' }}>{client.user_id}</td>
                           <td style={{ padding: '12px', borderBottom: '1px solid #eee' }}>{client.full_name}</td>
                           <td style={{ padding: '12px', borderBottom: '1px solid #eee' }}>{client.instances_count}</td>
@@ -2065,60 +2067,81 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
         title={`Управление клиентом: ${selectedClient?.full_name || 'User'} (ID: ${selectedClient?.user_id || ''})`}
         onClose={closeClientDrawer}
       >
-        <div className="drawer-body">
+        <div className="drawer-body client-management-drawer"> 
           {/* Начисление демо-дней */}
-          <div className="form-group">
-            <label className="form-label">Начислить демо-дни</label>
-            <div style={{ display: 'flex', gap: '12px', alignItems: 'end' }}>
+          <div className="client-action-card">
+            <div className="client-action-header">
+              <FaCalendarPlus className="client-action-icon" />
+              <h4 className="client-action-title">Начислить демо-дни</h4>
+            </div>
+            <div className="client-action-form">
               <input
-                className="form-input"
+                className="form-input client-action-input"
                 type="number"
                 min={1}
+                max={365} 
                 defaultValue={7}
                 placeholder="Количество дней"
-                style={{ width: '120px' }}
+                aria-label="Количество демо-дней"
               />
               <button
-                className="btn btn--primary"
+                className="btn btn--primary client-action-button"
                 onClick={() => alert(`Начислить демо-дни клиенту ${selectedClient?.user_id} (backend не реализовано)`)}
+                aria-label="Начислить демо-дни"
               >
                 Начислить
               </button>
             </div>
           </div>
 
+          {/* Разделитель */}
+          <hr className="drawer-divider" />
+
           {/* Изменение лимита инстансов */}
-          <div className="form-group">
-            <label className="form-label">Изменить лимит инстансов</label>
-            <div style={{ display: 'flex', gap: '12px', alignItems: 'end' }}>
+          <div className="client-action-card">
+            <div className="client-action-header">
+              <FaEdit className="client-action-icon" />
+              <h4 className="client-action-title">Изменить лимит инстансов</h4>
+            </div>
+            <div className="client-action-form">
               <input
-                className="form-input"
+                className="form-input client-action-input"
                 type="number"
                 min={0}
+                max={100} 
                 placeholder="Новый лимит"
-                style={{ width: '120px' }}
+                aria-label="Новый лимит инстансов"
               />
               <button
-                className="btn btn--primary"
+                className="btn btn--primary client-action-button"
                 onClick={() => alert(`Изменить лимит инстансов для ${selectedClient?.user_id} (backend не реализовано)`)}
+                aria-label="Применить новый лимит"
               >
                 Применить
               </button>
             </div>
           </div>
 
+          {/* Разделитель */}
+          <hr className="drawer-divider" />
+
           {/* Блокировка аккаунта */}
-          <div className="form-group form-group-row">
-            <label className="form-label">Блокировка аккаунта</label>
+          <div className="client-action-card">
+            <div className="client-action-header">
+              <FaBan className="client-action-icon" style={{ color: 'var(--color-error)' }} /> {/* Красный цвет для danger */}
+              <h4 className="client-action-title">Блокировка аккаунта</h4>
+            </div>
             <button
-              className="btn btn--danger"
+              className="btn btn--danger client-action-button"
               onClick={() => alert(`Блокировка/разблокировка клиента ${selectedClient?.user_id} (backend не реализовано)`)}
+              aria-label="Заблокировать или разблокировать аккаунт"
             >
               Заблокировать / Разблокировать
             </button>
           </div>
 
-          <div className="drawer-footer drawer-footer-end">
+          {/* Footer */}
+          <div className="drawer-footer">
             <button className="btn btn--secondary" onClick={closeClientDrawer}>
               Закрыть
             </button>
@@ -2131,6 +2154,11 @@ const SuperAdmin: React.FC<SuperAdminProps> = ({ onBack }) => {
         <Drawer.Root open={true} modal={false} dismissible={false}>
           <Drawer.Portal>
             <Drawer.Content className="sticky-save-button">
+              {/* Добавьте это для accessibility */}
+              <Drawer.Title asChild>
+                <VisuallyHidden>Сохранение изменений</VisuallyHidden>
+              </Drawer.Title>
+              
               <div className="sticky-save-inner">
                 <div className="sticky-save-container">
                   <div className="sticky-save-indicator">

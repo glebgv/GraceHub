@@ -3136,3 +3136,87 @@ select.form-control {
   0% { background-position: 200% 0; }
   100% { background-position: -200% 0; }
 }
+
+
+
+/* Client Management Drawer Styles */
+.client-management-drawer .drawer-body {
+  padding: var(--space-16);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-16);
+}
+
+.client-action-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-16);
+  box-shadow: var(--shadow-sm);
+  transition: box-shadow var(--duration-normal) var(--ease-in-out);
+}
+
+.client-action-card:hover {
+  box-shadow: var(--shadow-md);
+}
+
+.client-action-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  margin-bottom: var(--space-12);
+}
+
+.client-action-icon {
+  font-size: var(--font-size-xl);
+  color: var(--color-primary);
+}
+
+.client-action-title {
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text);
+}
+
+.client-action-form {
+  display: flex;
+  align-items: center;
+  gap: var(--space-12);
+}
+
+.client-action-input {
+  flex: 1;
+  min-width: 120px;
+  max-width: 200px;
+}
+
+.client-action-button {
+  flex-shrink: 0;
+}
+
+.drawer-divider {
+  border: none;
+  height: 1px;
+  background: var(--color-border);
+  margin: var(--space-16) 0;
+}
+
+.drawer-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-8);
+  padding-top: var(--space-16);
+}
+
+/* Responsive adjustments */
+@media (max-width: 480px) {
+  .client-action-form {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-8);
+  }
+
+  .client-action-input {
+    max-width: none;
+  }
+}
