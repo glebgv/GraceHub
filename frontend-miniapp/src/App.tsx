@@ -730,7 +730,8 @@ const App: React.FC<AppProps> = ({
       )}
 
 
-      {showGlobalHeader && (
+      {/* App Header - полностью скрываем на FirstLaunch (currentPage === 'instances' && instances.length === 0) */}
+      {!(currentPage === 'instances' && instances.length === 0) && (
         <header className="app-header">
           {headerMode === 'list' && (
             <div className="header-row">
@@ -811,7 +812,6 @@ const App: React.FC<AppProps> = ({
                     </div>
                   </div>
 
-
                   {/* Скелетон для правой части (кнопка Биллинг) */}
                   <div className="header-right">
                     <div 
@@ -841,7 +841,6 @@ const App: React.FC<AppProps> = ({
                         </span>
                       </div>
 
-
                       {!billing?.unlimited && (
                         <>
                           <div className="tariff-row">
@@ -858,7 +857,6 @@ const App: React.FC<AppProps> = ({
                       )}
                     </div>
                   </div>
-
 
                   <div className="header-right">
                     <button
@@ -877,7 +875,6 @@ const App: React.FC<AppProps> = ({
               )}
             </div>
           )}
-
 
           {headerMode === 'instance' && selectedInstance && (
             <div className="header-content">
@@ -996,35 +993,48 @@ const App: React.FC<AppProps> = ({
 
       <main className={`main-content ${pageAnim ? 'gh-page-animating' : ''}`}>
         {currentPage === 'instances' && (
-          <InstancesList
-            instances={instances}
-            onSelect={(inst) => {
-              setSelectedInstance(inst);
-              setCurrentPage('dashboard');
-            }}
-            onAddBotClick={() => {
-              setLimitMessage(null);
-              setShowAddModal(true);
-            }}
-            onDeleteInstance={handleDeleteInstance}
-            onOpenSuperAdmin={isSuperadmin ? () => setCurrentPage('superadmin') : undefined}
-            limitMessage={limitMessage}
-            onDismissLimitMessage={() => setLimitMessage(null)}
-            onGoHome={() => {
-              setShowAddModal(false);
-              setCurrentPage('instances');
-            }}
-            onGoToBilling={() => {
-              if (instances.length > 0) {
-                setSelectedInstance(instances[0]); // выбираем первый инстанс как прокси
+          instances.length === 0 ? (
+            <FirstLaunch
+              onAddBotClick={() => {
+                setLimitMessage(null);
+                setShowAddModal(true);
+              }}
+              onGoToBilling={() => {
+                setSelectedInstance(null);
                 setCurrentPage('billing');
-              } else {
-                // Опционально: можно показать toast/ошибку, но сейчас просто игнорируем
-                console.warn('No instances available to open Billing');
-              }
-            }}
-            loading={loading || !!deletingInstanceId}
-          />
+              }}
+              isSuperadmin={isSuperadmin}
+              onOpenAdmin={isSuperadmin ? () => setCurrentPage('superadmin') : undefined}
+              loading={loading || !!deletingInstanceId}
+            />
+          ) : (
+            <InstancesList
+              instances={instances}
+              onSelect={(inst) => {
+                setSelectedInstance(inst);
+                setCurrentPage('dashboard');
+              }}
+              onAddBotClick={() => {
+                setLimitMessage(null);
+                setShowAddModal(true);
+              }}
+              onDeleteInstance={handleDeleteInstance}
+              onOpenSuperAdmin={isSuperadmin ? () => setCurrentPage('superadmin') : undefined}
+              limitMessage={limitMessage}
+              onDismissLimitMessage={() => setLimitMessage(null)}
+              onGoHome={() => {
+                setShowAddModal(false);
+                setCurrentPage('instances');
+              }}
+              onGoToBilling={() => {
+                if (instances.length > 0) {
+                  setSelectedInstance(instances[0]);
+                  setCurrentPage('billing');
+                }
+              }}
+              loading={loading || !!deletingInstanceId}
+            />
+          )
         )}
 
 
@@ -1050,7 +1060,10 @@ const App: React.FC<AppProps> = ({
 
 
         {currentPage === 'billing' && (
-          <Billing instanceId={selectedInstance?.instanceid ?? null} />
+          <Billing
+            instanceId={selectedInstance?.instanceid ?? null}
+            onBack={() => setCurrentPage('instances')}
+          />
         )}
 
 

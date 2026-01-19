@@ -16,7 +16,8 @@ type SaasPlanDTO = {
 };
 
 interface BillingProps {
-  instanceId: string;
+  instanceId: string | null;
+  onBack?: () => void;
 }
 
 type PeriodOption = {
@@ -123,7 +124,7 @@ const SkeletonCard: React.FC = () => (
   </div>
 );
 
-const Billing: React.FC<BillingProps> = ({ instanceId }) => {
+const Billing: React.FC<BillingProps> = ({ instanceId, onBack }) => {
   const { t } = useTranslation();
 
   const [plans, setPlans] = useState<SaasPlanDTO[]>([]);
@@ -331,6 +332,9 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
   }, [instanceId]);
 
   const openPlanModal = (plan: SaasPlanDTO) => {
+    // Если нет instanceId — не открываем модалку (кнопка будет disabled)
+    if (!instanceId) return;
+
     setSelectedPlan(plan);
     setSelectedPeriod(periodOptions[0]);
     setPaymentMethod('');
@@ -614,6 +618,11 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
   };
 
   const handleCreateInvoice = async () => {
+    if (!instanceId) {
+      setSubmitError(t('billing.no_instance', 'Сначала добавьте бота'));
+      return;
+    }
+
     if (!selectedPlan || !selectedPeriod) return;
     if (!selectedPlan.productCode) return;
 
@@ -782,7 +791,38 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
 
   return (
     <>
+      {/* Локальный header с кнопкой назад — только когда нет instanceId (header из App.tsx не рендерится) */}
+      {onBack && !instanceId && (
+        <div className="header" style={{ padding: '12px 12px 0' }}>
+          <div className="header-inner" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <h1 className="header-title" style={{ margin: 0, fontSize: 18, fontWeight: 600 }}>
+              {t('nav.billing')}
+            </h1>
+            <button
+              type="button"
+              className="btn-back"
+              onClick={onBack}
+              aria-label={t('common.back', 'Назад')}
+              title={t('common.back', 'Назад')}
+            >
+              ←
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="billing-page">
+        {/* Сообщение, если нет бота */}
+        {!instanceId && (
+          <div className="card warning-card" style={{ marginBottom: 16 }}>
+            <div className="card__body">
+              <p style={{ margin: 0 }}>
+                {t('billing.no_instance_message', 'Чтобы приобрести подписку, сначала добавьте вашего бота.')}
+              </p>
+            </div>
+          </div>
+        )}
+
         {plans
           .filter((plan) => plan.planName !== 'Demo')
           .map((plan) => (
@@ -830,7 +870,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
                 </div>
                 <button
                   className="btn btn--primary"
-                  disabled={!plan.productCode}
+                  disabled={!plan.productCode || !instanceId}
                   onClick={() => openPlanModal(plan)}
                 >
                   {t('billing.button_details')}
@@ -840,7 +880,7 @@ const Billing: React.FC<BillingProps> = ({ instanceId }) => {
           ))}
       </div>
 
-      {/* Plan Selection Modal (Vaul) */}
+      {/* Все Drawer-модалки остаются без изменений */}
       <Drawer.Root
         open={isModalOpen && !!selectedPlan && !!selectedPeriod}
         onOpenChange={(open) => {
