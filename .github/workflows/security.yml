@@ -1,0 +1,33 @@
+name: Security Scan
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+
+jobs:
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Semgrep
+        uses: returntocorp/semgrep-action@v1
+        with:
+          config: auto
+          generateSarif: true
+      
+      - name: Upload SARIF to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: semgrep.sarif
+        if: always()
+      
+      - name: npm audit
+        working-directory: ./frontend
+        run: npm audit --audit-level=high --omit=dev
+      
+      - name: Bandit
+        uses: PyCQA/bandit-action@master
+        continue-on-error: true
+
