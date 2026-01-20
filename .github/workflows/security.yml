@@ -15,10 +15,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
-      - name: Semgrep
+      - name: Semgrep scan
         uses: returntocorp/semgrep-action@v1
         with:
           config: auto
+      
+      - name: Generate Semgrep SARIF
+        run: docker run --rm -v "${PWD}:/src" -w /src returntocorp/semgrep:semgrep semgrep scan --config=auto --sarif --output=semgrep.sarif .
       
       - name: Upload Semgrep SARIF
         uses: github/codeql-action/upload-sarif@v4
