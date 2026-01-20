@@ -3234,3 +3234,24 @@ select.form-control {
     max-width: none;
   }
 }
+
+
+/* Danger button variant */
+.btn-danger,
+.btn.btn-danger {
+  background: var(--color-error);
+  color: #ffffff;
+  border: none;
+}
+
+.btn-danger:hover,
+.btn.btn-danger:hover {
+  background: var(--color-error);
+  opacity: 0.9;
+}
+
+.btn-danger:active,
+.btn.btn-danger:active {
+  background: var(--color-error);
+  opacity: 0.8;
+}

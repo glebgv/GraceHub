@@ -594,9 +594,8 @@ class ApiClient {
   }
 
   async addOperator(instanceId: string, userId: number, role: string) {
-    // backend ожидает поля userid/username/role (а не user_id).
     return this.request('POST', `/api/instances/${instanceId}/operators`, {
-      userid: userId,
+      user_id: userId,
       role,
     });
   }

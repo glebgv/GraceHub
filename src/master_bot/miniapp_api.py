@@ -4163,22 +4163,26 @@ def create_miniapp_app(
         )
         return {"status": "ok"}
 
-    @app.get(
-        "/api/instances/{instance_id}/operators",
-        response_model=List[InstanceMember],
-        responses={
-            **COMMON_AUTH_RESPONSES,
-            **COMMON_NOT_FOUND_RESPONSES,
-        },
-    )
+    @app.get("/api/instances/{instance_id}/operators")
     async def get_operators(
         instance_id: InstanceId,
         current_user: Dict[str, Any] = Depends(get_current_user),
     ):
         await require_instance_access(instance_id, current_user)
-
+        
         members = await miniapp_db.get_instance_members(instance_id)
-        return [InstanceMember(**m) for m in members]
+        
+        # ✅ Фикс: datetime → str
+        return [
+            InstanceMember(
+                user_id=m["user_id"],
+                username=m.get("username"),
+                role=m["role"],
+                created_at=m["created_at"].isoformat() if m["created_at"] else "",
+            )
+            for m in members
+        ]
+
 
     @app.post(
         "/api/instances/{instance_id}/operators",
