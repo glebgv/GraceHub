@@ -3255,3 +3255,47 @@ select.form-control {
   background: var(--color-error);
   opacity: 0.8;
 }
+
+
+/* Minimal Table Styles for Operators - Plain, no fancy effects */
+
+/* Wrapper for responsiveness (handles overflow on small screens) */
+.table-responsive {
+  overflow-x: auto; /* Enables horizontal scrolling if table is too wide */
+  margin: 0; /* Removes any unnecessary spacing around the table */
+  border: none; /* No outer border or shadow */
+}
+
+/* Core table structure */
+.table {
+  width: 100%; /* Full width of container */
+  border-collapse: collapse; /* Merges adjacent borders into single lines */
+  font-size: 14px; /* Standard readable font size; adjust if needed */
+  background: transparent; /* No background color */
+}
+
+/* Shared styles for headers and cells */
+.table th,
+.table td {
+  border: 1px solid #ddd; /* Thin, light gray border for subtle separation (#ddd is a neutral, non-intrusive color) */
+  padding: 8px; /* Minimal internal spacing to prevent text from touching borders */
+  text-align: left; /* Left alignment for natural text flow; center numeric columns if needed */
+  vertical-align: top; /* Top-align content for consistency in multi-line cells */
+}
+
+/* Header-specific tweaks */
+.table th {
+  background-color: #f2f2f2; /* Very light gray background to distinguish headers without being "fancy" */
+  font-weight: bold; /* Bold text for emphasis */
+  text-transform: none; /* No uppercase or other transformations */
+}
+
+/* Optional: Remove even this light header background for ultra-minimalism */
+.table th.minimal-header {
+  background-color: transparent;
+}
+
+/* No hover or active states for plainness */
+.table tr:hover {
+  background-color: transparent; /* Overrides any potential hover from global styles */
+}
