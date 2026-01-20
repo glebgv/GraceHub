@@ -2671,7 +2671,8 @@ def create_miniapp_app(
             acceptedAt=acceptedat.isoformat() if acceptedat else None,
         )
 
-    @app.post("/api/offer/decision")
+    @app.post("/api/offer/decision", responses={**COMMON_AUTH_RESPONSES,
+    **COMMON_BAD_REQUEST_RESPONSES, 422: {"description": "Validation Error"}})
     async def post_offer_decision(
         payload: OfferDecisionIn,
         current_user: Dict[str, Any] = Depends(get_current_user),
@@ -2882,13 +2883,10 @@ def create_miniapp_app(
         # 7) возвращаем нормализованный конфиг
         return SingleTenantConfig(enabled=bool(payload.enabled), allowed_user_ids=allowed)
 
-    @app.post(
-        "/api/auth/telegram",
-        response_model=AuthResponse,
-        responses={
-            **COMMON_AUTH_RESPONSES,
-        },
-    )
+    @app.post("/api/auth/telegram", response_model=AuthResponse,
+    responses={**COMMON_AUTH_RESPONSES, **COMMON_BAD_REQUEST_RESPONSES, 422:
+    {"description": "Validation Error"}})
+
     async def auth_telegram(req: TelegramAuthRequest, request: Request):
         init_header = request.headers.get("X-Telegram-Init-Data")
         logger.info(
@@ -3531,21 +3529,17 @@ def create_miniapp_app(
         )
 
 
-    @app.get(
-        "/api/user/subscription",
-        response_model=UserSubscriptionResponse,
-        responses={
-            **COMMON_AUTH_RESPONSES,
-        },
-    )
+    @app.get("/api/user/subscription", response_model=UserSubscriptionResponse,
+    responses={**COMMON_AUTH_RESPONSES, 500: {"description": "Internal Server Error"}})
+
     async def get_user_subscription_endpoint(
         current_user: Dict[str, Any] = Depends(get_current_user),
     ):
         user_id = current_user["user_id"]
-        sub = await miniapp_db.get_user_subscription(user_id)
+        sub = await miniapp_db.db.get_user_subscription(user_id)
         if not sub:
-            await miniapp_db.ensure_default_subscription(user_id)
-            sub = await miniapp_db.get_user_subscription(user_id)
+            await miniapp_db.db.ensure_default_subscription(user_id)
+            sub = await miniapp_db.db.get_user_subscription(user_id)
         
         if not sub:
             raise HTTPException(status_code=404, detail="Subscription not found")
@@ -3608,7 +3602,10 @@ def create_miniapp_app(
             period_applied=False,
         )
 
-    @app.post("/api/resolve_instance", response_model=ResolveInstanceResponse)
+    @app.post("/api/resolve_instance", response_model=ResolveInstanceResponse,
+    responses={**COMMON_AUTH_RESPONSES, **COMMON_BAD_REQUEST_RESPONSES, 422:
+    {"description": "Validation Error"}})
+
     async def resolve_instance(
         payload: ResolveInstanceRequest,
         current_user: Dict[str, Any] = Depends(get_current_user),
