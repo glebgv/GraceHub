@@ -16,41 +16,51 @@ jobs:
       all-passed: ${{ steps.check-all.outputs.all-passed }}
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Semgrep scan
         id: semgrep
         uses: returntocorp/semgrep-action@v1
         continue-on-error: true
         with:
           config: auto
-      
-      - name: npm audit
-        id: npm-audit
-        working-directory: ./frontend
+
+      - name: npm audit (helpdesk)
+        id: npm-audit-helpdesk
+        working-directory: ./frontend-helpdesk
         continue-on-error: true
         run: npm audit --audit-level=high --omit=dev
-      
+
+      - name: npm audit (miniapp)
+        id: npm-audit-miniapp
+        working-directory: ./frontend-miniapp
+        continue-on-error: true
+        run: npm audit --audit-level=high --omit=dev
+
       - name: Bandit
         id: bandit
         uses: PyCQA/bandit-action@v1
         continue-on-error: true
-      
+
       - name: Check all scans passed
         id: check-all
         run: |
           SEMGREP_EXIT_CODE=${{ steps.semgrep.exit_code }}
-          NPM_EXIT_CODE=${{ steps.npm-audit.exit_code }}
+          NPM_HELPDESK_EXIT_CODE=${{ steps.npm-audit-helpdesk.exit_code }}
+          NPM_MINIAPP_EXIT_CODE=${{ steps.npm-audit-miniapp.exit_code }}
           BANDIT_EXIT_CODE=${{ steps.bandit.exit_code }}
-          
-          if [ "$SEMGREP_EXIT_CODE" = "0" ] && [ "$NPM_EXIT_CODE" = "0" ] && [ "$BANDIT_EXIT_CODE" = "0" ]; then
+
+          if [ "$SEMGREP_EXIT_CODE" = "0" ] && \
+             [ "$NPM_HELPDESK_EXIT_CODE" = "0" ] && \
+             [ "$NPM_MINIAPP_EXIT_CODE" = "0" ] && \
+             [ "$BANDIT_EXIT_CODE" = "0" ]; then
             echo "all-passed=true" >> $GITHUB_OUTPUT
             echo "✅ All security scans passed"
           else
             echo "all-passed=false" >> $GITHUB_OUTPUT
             echo "❌ Some scans failed:"
             echo "- Semgrep: $SEMGREP_EXIT_CODE"
-            echo "- npm audit: $NPM_EXIT_CODE" 
+            echo "- npm audit (helpdesk): $NPM_HELPDESK_EXIT_CODE"
+            echo "- npm audit (miniapp): $NPM_MINIAPP_EXIT_CODE"
             echo "- Bandit: $BANDIT_EXIT_CODE"
             exit 1
           fi
-

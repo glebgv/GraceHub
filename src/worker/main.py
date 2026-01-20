@@ -530,7 +530,11 @@ class GraceHubWorker:
         try:
             from aiogram.types import MenuButtonWebApp, WebAppInfo
             
-            helpdesk_url = f"https://app.gracehub.ru/helpdesk/?instance={self.instance_id}"
+            # Используем настройки из shared.settings
+            base_url = settings.MINIAPP_BASE_URL.rstrip('/')
+            path = settings.MINIAPP_HELPDESK_PATH.lstrip('/')
+            
+            helpdesk_url = f"{base_url}/{path}?instance={self.instance_id}"
             
             await self.bot.set_chat_menu_button(
                 chat_id=None,
@@ -549,7 +553,7 @@ class GraceHubWorker:
                 VALUES ($1, 'miniapp_configured', 'true')
                 ON CONFLICT (instance_id, key) DO UPDATE SET value = EXCLUDED.value
                 """,
-                (self.instance_id,)  # ← КОРТЕЖ С ЗАПЯТОЙ!
+                (self.instance_id,) 
             )
             
             return True
