@@ -3836,6 +3836,20 @@ def create_miniapp_app(
             logger.error("create_instance: master_bot is not initialized")
             raise HTTPException(status_code=500, detail="MasterBot не инициализирован")
 
+        # 👇 ДОБАВЛЕНО: Убедитесь что у юзера есть demo подписка ДО проверки в process_bot_token_from_miniapp
+        try:
+            sub = await master_bot.db.get_user_subscription(user_id)
+            if not sub:
+                logger.info("create_instance: creating default subscription for user_id=%s", user_id)
+                await master_bot.db.ensure_default_subscription(user_id)
+        except Exception as e:
+            logger.exception("create_instance: failed to ensure subscription for user_id=%s: %s", user_id, e)
+            raise HTTPException(
+                status_code=500,
+                detail="Ошибка при создании подписки пользователя",
+            )
+        # 👆 КОНЕЦ ДОБАВЛЕНИЯ
+
         # 1) Создаём инстанс в БД через MasterBot
         try:
             instance = await master_bot.process_bot_token_from_miniapp(
@@ -3905,6 +3919,7 @@ def create_miniapp_app(
             botname=instance.bot_name,
             role="owner",
         )
+
 
     @app.get(
         "/api/instances/{instance_id}/stats",

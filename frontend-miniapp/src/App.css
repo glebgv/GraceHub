@@ -2346,10 +2346,24 @@ select.form-control {
     background: linear-gradient(
       180deg,
       rgba(23, 33, 43, 0) 0%,
-      rgba(23, 33, 43, 0.8) 20%,
-      var(--color-background) 40%
+      rgba(23, 33, 43, 0.95) 15%,
+      var(--color-background) 35%
     );
+    /* Убираем blur в темной теме */
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
   }
+}
+
+[data-color-scheme="dark"] .sticky-save-inner {
+  background: linear-gradient(
+    180deg,
+    rgba(23, 33, 43, 0) 0%,
+    rgba(23, 33, 43, 0.95) 15%,
+    var(--color-background) 35%
+  );
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 
 .sticky-save-container {

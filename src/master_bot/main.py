@@ -225,29 +225,45 @@ class MasterBot:
 
         logger.info("BillingCron: %d user subscriptions expiring in <=5 days (fresh)", len(rows))
 
-        for r in rows:
-            owner_id = r["owner_user_id"]  # из bot_instances
-            admin_chat = r["admin_private_chat_id"]
-            bot_username = r["bot_username"]
-            days_left = r["days_left"]
-            user_id = r["user_id"]  # из user_subscription
+        notified_users = set()  # Чтобы избежать дубликатов уведомлений в одном запуске
 
-            if not owner_id and not admin_chat:
+        single_tenant = await self.get_single_tenant_config()  # Получаем конфиг (как в вашем коде)
+
+        for r in rows:
+            user_id = r["user_id"]
+            if user_id in notified_users:
+                continue  # Пропускаем, если уже уведомили
+
+            owner_id = r.get("owner_user_id")  # Может быть None, если нет инстансов
+            days_left = r["days_left"]
+            bot_usernames = r.get("bot_usernames") or []  # Список или пусто
+            admin_private_chat_ids = set(r.get("admin_private_chat_ids") or [])  # Уникальные чаты
+
+            if not owner_id and not admin_private_chat_ids:
+                logger.warning(f"BillingCron: No targets for user_id={user_id} (no owner/admin chats)")
                 continue
 
+            # Собираем targets: owner + уникальные admin chats
             targets = set()
             if owner_id:
                 targets.add(owner_id)
-            if admin_chat:
-                targets.add(admin_chat)
+            targets.update(admin_private_chat_ids)
+
+            # Если single_tenant enabled, уведомляем всех allowed (с dedup)
+            if single_tenant["enabled"]:
+                targets.update(single_tenant["allowed_user_ids"])
+
+            # Подготавливаем строку для ботов
+            bot_usernames_str = ', '.join([f'@{username}' for username in bot_usernames]) if bot_usernames else 'ваши боты (или аккаунт)'
 
             sent_ok = False
             for chat_id in targets:
                 try:
                     texts = await self.t(chat_id)
 
+                    # Адаптированный текст: используем bot_usernames_str вместо bot_username
                     text = texts.billing_expiring_title + texts.billing_expiring_body.format(
-                        bot_username=bot_username,
+                        bot_username=bot_usernames_str,  # Здесь меняем на строку с ботами
                         days_left=days_left,
                     )
 
@@ -259,21 +275,23 @@ class MasterBot:
                     sent_ok = True
                 except Exception as e:
                     logger.exception(
-                        "BillingCron: failed to send expiring notification to %s: %s",
+                        "BillingCron: failed to send expiring notification to %s (user_id=%s): %s",
                         chat_id,
+                        user_id,
                         e,
                     )
 
             if sent_ok:
                 try:
-                    await self.db.mark_user_expired_noticed_today(user_id)  # ← по user_id!
+                    await self.db.mark_user_expired_noticed_today(user_id)
+                    notified_users.add(user_id)  # Отмечаем как уведомлённого
+                    logger.info(f"BillingCron: Notified user_id={user_id} (bots: {len(bot_usernames)})")
                 except Exception as e:
                     logger.exception(
                         "BillingCron: failed to mark expiring notified for user_id %s: %s",
                         user_id,
                         e,
                     )
-
 
     async def _billing_notify_paused(self) -> None:
         # новый метод БД с учётом last_paused_notice_at
@@ -1051,6 +1069,22 @@ class MasterBot:
             await message.answer("Access denied in single-tenant mode.")
             return
 
+        # Проверка подписки перед началом процесса добавления
+        subscription = await self.db.get_user_subscription(user_id)
+        now = datetime.now(timezone.utc)
+        
+        if not subscription:
+            # Если нет подписки, создаём демо автоматически
+            await self.db.ensure_default_subscription(user_id)
+            subscription = await self.db.get_user_subscription(user_id)  # Перезагружаем
+
+        if subscription['period_end'] < now and subscription.get('plan_code') == 'demo':
+            texts = await self.t(user_id)
+            error_text = texts.demo_expired_message  # Шаблон: "Ваш демо-период истёк. Продлите подписку для создания новых ботов."
+            await message.answer(error_text)
+            logger.warning(f"Denied instance creation start for user {user_id}: demo expired")
+            return  # Блокируем начало процесса
+
         chat_id = message.chat.id
         logger.info(
             "cmd_add_bot: arg_user_id=%s message.from_user_id=%s is_bot=%s chat_id=%s",
@@ -1686,7 +1720,7 @@ class MasterBot:
             webhook_secret=webhook_secret,
             status=InstanceStatus.STARTING,
             created_at=datetime.now(timezone.utc),
-            owner_user_id=user_id,  # фиксируем владельца-интегратора
+            owner_user_id=user_id,  
             admin_private_chat_id=None,
         )
 

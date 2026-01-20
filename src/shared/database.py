@@ -7,7 +7,7 @@ import os
 import asyncio
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import asyncpg
 import base64
@@ -392,24 +392,27 @@ class MasterDatabase:
     async def get_user_subscriptions_expiring_in_5_days_for_notify(self) -> list[dict]:
         """
         Юзеры с подпиской <=5 дней, без уведомления сегодня.
-        JOIN с bot_instances для owner_user_id → bot_username/chat_id.
+        GROUP BY по user_id для избежания дубликатов, аггрегация bot_usernames и других полей.
         """
         sql = """
-        SELECT us.user_id,
+        SELECT 
+            us.user_id,
             us.period_end,
-            us.days_left,
-            bi.instance_id,
-            bi.bot_username,
-            bi.owner_user_id,
-            bi.admin_private_chat_id,
-            us.last_expiring_notice_date
+            GREATEST(0, CAST(EXTRACT(EPOCH FROM (us.period_end - NOW()) / 86400) AS INTEGER)) AS days_left,
+            array_agg(COALESCE(bi.instance_id, NULL)) AS instance_ids,
+            array_agg(COALESCE(bi.bot_username, NULL)) AS bot_usernames,
+            array_agg(COALESCE(bi.admin_private_chat_id, NULL)) AS admin_private_chat_ids,
+            us.last_expiring_notice_date,
+            MAX(COALESCE(bi.owner_user_id, us.user_id)) AS owner_user_id  -- Fallback на us.user_id
         FROM user_subscription us
-        JOIN bot_instances bi ON bi.owner_user_id = us.user_id
-        WHERE us.days_left <= 5  -- <=5 вместо =5 (гибче)
-        AND us.service_paused = FALSE
-        AND (us.last_expiring_notice_date IS NULL 
-            OR us.last_expiring_notice_date < CURRENT_DATE)
-        ORDER BY us.days_left ASC, bi.created_at DESC
+        LEFT JOIN bot_instances bi ON bi.owner_user_id = us.user_id
+        WHERE 
+            GREATEST(0, CAST(EXTRACT(EPOCH FROM (us.period_end - NOW()) / 86400) AS INTEGER)) <= 5
+            AND COALESCE(us.service_paused, FALSE) = FALSE  -- Защита от NULL
+            AND (us.last_expiring_notice_date IS NULL 
+                OR us.last_expiring_notice_date < CURRENT_DATE)
+        GROUP BY us.user_id, us.period_end, us.last_expiring_notice_date
+        ORDER BY days_left ASC, MIN(COALESCE(bi.created_at, us.created_at)) DESC NULLS LAST
         """
         rows = await self.fetchall(sql)
         return [dict(r) for r in rows]
@@ -1803,56 +1806,63 @@ class MasterDatabase:
     async def create_instance(self, instance: BotInstance) -> None:
         """
         Создаёт инстанс и сразу вешает Demo-план на 7 дней (если ещё не создан billing).
+        Всё в одной транзакции!
         """
         assert self.pool is not None
         async with self.pool.acquire() as conn:
             async with conn.transaction():
+                logger.info(f"🔄 Создание инстанса {instance.instance_id} для owner_user_id {instance.owner_user_id}")
+
+                # 1. bot_instances
                 await conn.execute(
                     """
                     INSERT INTO bot_instances (
-                        instance_id,
-                        user_id,
-                        token_hash,
-                        bot_username,
-                        bot_name,
-                        webhook_url,
-                        webhook_path,
-                        webhook_secret,
-                        status,
-                        created_at,
-                        owner_user_id,
-                        admin_private_chat_id
+                        instance_id, user_id, token_hash, bot_username, bot_name,
+                        webhook_url, webhook_path, webhook_secret, status,
+                        created_at, owner_user_id, admin_private_chat_id
                     )
                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
                     """,
-                    *(
-                        instance.instance_id,
-                        instance.user_id,
-                        instance.token_hash,
-                        instance.bot_username,
-                        instance.bot_name,
-                        instance.webhook_url,
-                        instance.webhook_path,
-                        instance.webhook_secret,
-                        instance.status.value
-                        if hasattr(instance.status, "value")
-                        else str(instance.status),
-                        instance.created_at,
-                        instance.owner_user_id,
-                        instance.admin_private_chat_id,
-                    ),
+                    instance.instance_id, instance.user_id, instance.token_hash,
+                    instance.bot_username, instance.bot_name, instance.webhook_url,
+                    instance.webhook_path, instance.webhook_secret,
+                    instance.status.value if hasattr(instance.status, "value") else str(instance.status),
+                    instance.created_at, instance.owner_user_id, instance.admin_private_chat_id,
                 )
+                logger.info(f"✅ bot_instances: {instance.instance_id}")
 
-        # после создания инстанса — инициализируем Demo-биллинг
-        # Проверяем/ставим демо-подписку юзера (НЕ сбрасывается при пересоздании инстанса)
-        if instance.owner_user_id:
-            await self.ensure_default_subscription(instance.owner_user_id)
-            sub = await self.get_user_subscription(instance.owner_user_id)
-            if sub and sub.get('days_left', 0) <= 0:
-                raise ValueError(f"Демо-период истёк для owner_user_id {instance.owner_user_id}")
+                # 2. user_subscription (НЕ сбрасывается при пересоздании инстанса)
+                if instance.owner_user_id:
+                    await self.ensure_default_subscription(conn, instance.owner_user_id)
+                    
+                    # ЧИТАЕМ ПРЯМО ИЗ ТРАНЗАКЦИИ (НЕ get_user_subscription)!
+                    sub_row = await conn.fetchrow("""
+                        SELECT 
+                            *,
+                            GREATEST(0, CAST(EXTRACT(EPOCH FROM (period_end - NOW()) / 86400) AS INTEGER)) AS daysleft
+                        FROM user_subscription 
+                        WHERE user_id = $1
+                    """, instance.owner_user_id)
+                    
+                    sub = dict(sub_row) if sub_row else None
+                    
+                    logger.info(f"📊 user_subscription: user_id={instance.owner_user_id}, daysleft={sub.get('daysleft') if sub else 'None'}")
+                    
+                    if not sub:
+                        raise RuntimeError(f"Не удалось создать user_subscription для owner_user_id {instance.owner_user_id}")
+                    if sub.get('daysleft', 0) <= 0:
+                        raise ValueError(f"Демо-период истёк для owner_user_id {instance.owner_user_id} (daysleft={sub.get('daysleft')})")
 
-        # instance_billing: метрики тикетов только для этого инстанса (остаётся как есть)
-        await self.ensure_default_billing(instance.instance_id)
+                # 3. instance_billing (метрики только для этого инстанса)
+                await self.ensure_default_billing(conn, instance.instance_id)
+                
+                # Проверка instance_billing
+                billing_row = await conn.fetchrow("SELECT 1 FROM instance_billing WHERE instance_id = $1", instance.instance_id)
+                if not billing_row:
+                    raise RuntimeError(f"Не удалось создать instance_billing для {instance.instance_id}")
+                
+                logger.info(f"✅ instance_billing: {instance.instance_id}")
+                logger.info(f"🎉 Инстанс {instance.instance_id} полностью создан!")
 
 
     async def delete_instance(self, instance_id: str) -> None:
@@ -2864,67 +2874,90 @@ class MasterDatabase:
             (code,),
         )
 
-    async def ensure_default_billing(self, instance_id: str) -> None:
+    async def ensure_default_billing(self, conn_or_instance_id: Union[asyncpg.Connection, str], instance_id: Optional[str] = None) -> None:
         """
         Гарантирует, что для инстанса есть запись instance_billing.
         По умолчанию выдаёт Demo-план на 7 дней с его лимитами.
+        Поддержка транзакций: conn или instance_id.
         """
+        instance_id = instance_id or conn_or_instance_id  # conn или instance_id напрямую
         now = datetime.now(timezone.utc)
 
-        async with self.pool.acquire() as conn:
-            async with conn.transaction():
-                # уже есть биллинг — ничего не делаем
-                row = await conn.fetchrow(
-                    "SELECT 1 FROM instance_billing WHERE instance_id = $1", *(instance_id,)
-                )
-                if row:
-                    return
+        if isinstance(conn_or_instance_id, asyncpg.Connection):
+            # В транзакции create_instance
+            row = await conn_or_instance_id.fetchrow(
+                "SELECT 1 FROM instance_billing WHERE instance_id = $1", instance_id
+            )
+            if row:
+                return  # Уже есть
 
-                # ищем demo-план
-                row = await conn.fetchrow(
-                    "SELECT plan_id, period_days, tickets_limit FROM saas_plans WHERE code = $1",
-                    *("demo",),
+            # Ищем demo-план
+            row = await conn_or_instance_id.fetchrow(
+                "SELECT plan_id, period_days, tickets_limit FROM saas_plans WHERE code = $1",
+                "demo",
+            )
+            if not row:
+                logger.error("ensure_default_billing (TX): demo plan not found, instance_id=%s", instance_id)
+                return
+
+            plan_id = row["plan_id"]
+            period_days = row["period_days"]
+            tickets_limit = row["tickets_limit"]
+
+            period_start = now
+            period_end = now + timedelta(days=period_days)
+
+            await conn_or_instance_id.execute(
+                """
+                INSERT INTO instance_billing (
+                    instance_id, plan_id, period_start, period_end, tickets_used,
+                    tickets_limit, over_limit, last_expiring_notice_date, last_paused_notice_at,
+                    created_at, updated_at
                 )
-                if not row:
-                    logger.error(
-                        "ensure_default_billing: demo plan not found, instance_id=%s", instance_id
+                VALUES ($1, $2, $3, $4, 0, $5, FALSE, NULL, NULL, $6, $7)
+                """,
+                instance_id, plan_id, period_start, period_end, tickets_limit, now, now,
+            )
+            logger.info(f"instance_billing (TX) для instance_id {instance_id}: demo {period_days}д")
+
+        else:
+            # Обычный вызов (не в транзакции)
+            async with self.pool.acquire() as conn:
+                async with conn.transaction():
+                    row = await conn.fetchrow(
+                        "SELECT 1 FROM instance_billing WHERE instance_id = $1", instance_id
                     )
-                    return
+                    if row:
+                        return
 
-                plan_id = row["plan_id"]
-                period_days = row["period_days"]
-                tickets_limit = row["tickets_limit"]
-
-                period_start = now
-                period_end = now + timedelta(days=period_days)
-
-                await conn.execute(
-                    """
-                    INSERT INTO instance_billing (
-                        instance_id,
-                        plan_id,
-                        period_start,
-                        period_end,
-                        tickets_used,
-                        tickets_limit,
-                        over_limit,
-                        last_expiring_notice_date,
-                        last_paused_notice_at,
-                        created_at,
-                        updated_at
+                    row = await conn.fetchrow(
+                        "SELECT plan_id, period_days, tickets_limit FROM saas_plans WHERE code = $1",
+                        "demo",
                     )
-                    VALUES ($1, $2, $3, $4, 0, $5, FALSE, NULL, NULL, $6, $7)
-                    """,
-                    *(
-                        instance_id,
-                        plan_id,
-                        period_start,
-                        period_end,
-                        tickets_limit,
-                        now,
-                        now,
-                    ),
-                )
+                    if not row:
+                        logger.error("ensure_default_billing: demo plan not found, instance_id=%s", instance_id)
+                        return
+
+                    plan_id = row["plan_id"]
+                    period_days = row["period_days"]
+                    tickets_limit = row["tickets_limit"]
+
+                    period_start = now
+                    period_end = now + timedelta(days=period_days)
+
+                    await conn.execute(
+                        """
+                        INSERT INTO instance_billing (
+                            instance_id, plan_id, period_start, period_end, tickets_used,
+                            tickets_limit, over_limit, last_expiring_notice_date, last_paused_notice_at,
+                            created_at, updated_at
+                        )
+                        VALUES ($1, $2, $3, $4, 0, $5, FALSE, NULL, NULL, $6, $7)
+                        """,
+                        instance_id, plan_id, period_start, period_end, tickets_limit, now, now,
+                    )
+                    logger.info(f"instance_billing для instance_id {instance_id}: demo {period_days}д")
+
 
     # === Row mapping ===
 
@@ -2966,26 +2999,45 @@ class MasterDatabase:
         )
 
 
-    async def ensure_default_subscription(self, owneruserid: int):
-        """Демо-подписка по user_id (7 дней, если истекла)"""
+    async def ensure_default_subscription(self, conn_or_user_id: Union[asyncpg.Connection, int], owner_user_id: Optional[int] = None):
+        """
+        Демо-подписка по user_id (7 дней, если истекла или отсутствует).
+        Поддержка транзакций: conn или user_id.
+        """
+        user_id = owner_user_id or conn_or_user_id  # conn или user_id напрямую
         now = datetime.now(timezone.utc)
-        row = await self.fetchone("SELECT * FROM user_subscription WHERE user_id = $1", (owneruserid,)) 
-        if not row or row['period_end'] < now:
-            demo_ends = now + timedelta(days=7)
-            await self.execute("""
-                INSERT INTO user_subscription (user_id, plan_id, period_start, period_end, instances_limit)
-                SELECT $1, plan_id, $2, $3, 3 FROM saas_plans WHERE code = 'demo'
-                ON CONFLICT (user_id) DO UPDATE SET 
-                    period_start = $2, period_end = $3, updated_at = NOW()
-            """, (owneruserid, now, demo_ends)) 
-            logger.info(f"Демо-подписка для user {owneruserid}: до {demo_ends}")
+        demo_ends = now + timedelta(days=7)
+        
+        if isinstance(conn_or_user_id, asyncpg.Connection):
+            # В транзакции create_instance
+            row = await conn_or_user_id.fetchrow("SELECT period_end FROM user_subscription WHERE user_id = $1", user_id)
+            if not row or row['period_end'] < now:
+                await conn_or_user_id.execute("""
+                    INSERT INTO user_subscription (user_id, plan_id, period_start, period_end, instances_limit)
+                    SELECT $1, plan_id, $2, $3, 3 FROM saas_plans WHERE code = 'demo'
+                    ON CONFLICT (user_id) DO UPDATE SET 
+                        period_start = $2, period_end = $3, updated_at = NOW()
+                """, user_id, now, demo_ends)
+                logger.info(f"Демо-подписка (TX) для user_id {user_id}: до {demo_ends}")
+        else:
+            # Обычный вызов (master-бот)
+            row = await self.fetchone("SELECT period_end FROM user_subscription WHERE user_id = $1", (user_id,))
+            if not row or row['period_end'] < now:
+                await self.execute("""
+                    INSERT INTO user_subscription (user_id, plan_id, period_start, period_end, instances_limit)
+                    SELECT $1, plan_id, $2, $3, 3 FROM saas_plans WHERE code = 'demo'
+                    ON CONFLICT (user_id) DO UPDATE SET 
+                        period_start = $2, period_end = $3, updated_at = NOW()
+                """, (user_id, now, demo_ends))
+                logger.info(f"Демо-подписка для user_id {user_id}: до {demo_ends}")
+
 
     async def get_user_subscription(self, owneruserid: int) -> Optional[Dict]:
         """Получить подписку юзера"""
         row = await self.fetchone("""
             SELECT *, GREATEST(0, CAST(EXTRACT(EPOCH FROM (period_end - NOW()) / 86400) AS INTEGER)) as days_left 
             FROM user_subscription WHERE user_id = $1
-        """, (owneruserid,))  # ✅ уже правильно
+        """, (owneruserid,)) 
         return dict(row) if row else None
 
     async def mark_user_expired_noticed_today(self, owneruserid: int):

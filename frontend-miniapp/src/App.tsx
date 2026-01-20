@@ -731,7 +731,7 @@ const App: React.FC<AppProps> = ({
 
 
       {/* App Header - полностью скрываем на FirstLaunch (currentPage === 'instances' && instances.length === 0) */}
-      {!(currentPage === 'instances' && instances.length === 0) && (
+      {selectedInstance && !(currentPage === 'instances' && instances.length === 0) && (
         <header className="app-header">
           {headerMode === 'list' && (
             <div className="header-row">

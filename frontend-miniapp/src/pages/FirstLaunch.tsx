@@ -15,7 +15,7 @@ interface FirstLaunchProps {
   instanceId?: string | null;
   isSuperadmin?: boolean;
   onOpenAdmin?: () => void;
-  onGoToBilling?: () => void;       
+  onGoToBilling?: () => void;
   loading?: boolean;
 }
 
@@ -44,24 +44,16 @@ const FLAGSTYLE: React.CSSProperties = {
 };
 
 // Telegram Bot Token validation regex
-// Format: 8-10 digits, colon, 35 alphanumeric characters plus underscore and hyphen
 const TELEGRAM_BOT_TOKEN_REGEX = /^[0-9]{8,10}:[a-zA-Z0-9_-]{35}$/;
 
-/**
- * Validates if the provided string is a valid Telegram Bot API token
- */
 const validateTelegramBotToken = (token: string): boolean => {
   if (!token || typeof token !== 'string') {
     return false;
   }
-  
   const trimmedToken = token.trim();
   return TELEGRAM_BOT_TOKEN_REGEX.test(trimmedToken);
 };
 
-/**
- * Get localized error message for invalid token
- */
 const getTokenErrorMessage = (language: LangCode): string => {
   const errorMessages: Record<LangCode, string> = {
     ru: 'Неверный формат токена',
@@ -70,7 +62,6 @@ const getTokenErrorMessage = (language: LangCode): string => {
     hi: 'अमान्य टोकन प्रारूप',
     zh: '令牌格式无效',
   };
-  
   return errorMessages[language] || errorMessages.en;
 };
 
@@ -99,7 +90,10 @@ const FirstLaunchSkeleton: React.FC = () => {
       <div className="card" style={{ marginBottom: 16 }}>
         <div className="card__body">
           <div className="skeleton animate-pulse" style={{ width: 140, height: 18, marginBottom: 10 }} />
-          <div className="skeleton animate-pulse" style={{ width: '100%', height: 44, borderRadius: 10 }} />
+          <div style={{ display: 'flex', flexDirection: 'row', gap: 8 }}>
+            <div className="skeleton animate-pulse" style={{ flex: 1, height: 44, borderRadius: 10 }} />
+            <div className="skeleton animate-pulse" style={{ flex: 1, height: 44, borderRadius: 10 }} />
+          </div>
         </div>
       </div>
 
@@ -131,6 +125,7 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
   const [language, setLanguage] = useState<LangCode>(initialLang);
 
   const [showAddModal, setShowAddModal] = useState(false);
+  const [addBotError, setAddBotError] = useState<string | null>(null);
 
   // --- Offer gate state ---
   const [offer, setOffer] = useState<OfferState>({
@@ -170,16 +165,13 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
         });
       } catch (e: any) {
         if (cancelled) return;
-
-        // Fail-open: если оферта не загрузилась из-за ошибки API, не блокируем вход.
         console.error('[FirstLaunch] getOfferStatus failed', e);
-
         setOffer({
           enabled: false,
           url: '',
           accepted: true,
           loading: false,
-          error: e?.message || 'Offer status load error',
+          error: null, // fail-open
         });
       }
     };
@@ -213,7 +205,6 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
       setOfferSubmitting(true);
       await apiClient.postOfferDecision(false);
     } catch (e: any) {
-      // даже если запрос не прошёл — всё равно закрываем mini app, т.к. пользователь отказался
       console.error('[FirstLaunch] postOfferDecision(false) failed', e);
     } finally {
       setOfferSubmitting(false);
@@ -221,42 +212,36 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
     }
   };
 
-  // ✅ ИЗМЕНЕНИЕ: убрали saveLanguage, теперь только локальное переключение
+  // Язык меняется только локально (не сохраняем на бэкенде в FirstLaunch)
   const handleLanguageClick = (lang: LangCode) => {
     setLanguage(lang);
-    i18n.changeLanguage(lang); // Только меняем язык в i18n, без API вызова
+    i18n.changeLanguage(lang);
   };
 
   const handleSubmitToken = async (token: string) => {
-    // Token is already validated in AddBotModal, so just proceed
-    const trimmedToken = token.trim();
-    await onAddBotClick(trimmedToken);
-    setShowAddModal(false);
+    setAddBotError(null);
+    try {
+      const trimmedToken = token.trim();
+      await onAddBotClick(trimmedToken);
+      setShowAddModal(false);
+    } catch (err: any) {
+      console.error('[FirstLaunch] Add bot failed', err);
+      setAddBotError(err?.message || 'Ошибка при добавлении бота');
+      // Модалка остаётся открытой, чтобы пользователь увидел ошибку в AddBotModal (если там есть)
+    }
   };
 
-  const currentLangMeta = LANGS.find((l) => l.code === language) ?? LANGS[0];
-
-  // Show skeleton while offer is loading or if loading prop is true
+  // Показ скелетона во время загрузки оферты или внешнего loading
   if (loading || offer.loading) {
     return <FirstLaunchSkeleton />;
   }
 
   return (
     <div style={{ padding: 12 }}>
-      {/* --- Offer Gate Bottom Sheet (Vaul) --- */}
-      <Drawer.Root 
-        open={isOfferGateOpen} 
-        onOpenChange={(open) => {
-          // Prevent manual closing - user must accept or decline
-          if (!open && isOfferGateOpen) return;
-        }}
-        dismissible={false}
-      >
+      {/* Offer Gate - Drawer */}
+      <Drawer.Root open={isOfferGateOpen} dismissible={false}>
         <Drawer.Portal>
-          <Drawer.Overlay 
-            className="fixed inset-0 bg-black/40" 
-            style={{ zIndex: 9998 }}
-          />
+          <Drawer.Overlay className="fixed inset-0 bg-black/40" style={{ zIndex: 9998 }} />
           <Drawer.Content
             className="fixed bottom-0 left-0 right-0 flex flex-col rounded-t-[16px] outline-none"
             style={{
@@ -265,8 +250,7 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
               backgroundColor: 'var(--tg-theme-bg-color, #ffffff)',
             }}
           >
-            {/* Drag Handle */}
-            <div 
+            <div
               style={{
                 width: 40,
                 height: 4,
@@ -279,12 +263,12 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
 
             <div className="overflow-y-auto p-4" style={{ WebkitOverflowScrolling: 'touch' }}>
               <div className="mx-auto max-w-md">
-                <Drawer.Title 
-                  style={{ 
+                <Drawer.Title
+                  style={{
                     marginBottom: 12,
                     fontSize: 18,
                     fontWeight: 600,
-                    color: 'var(--tg-theme-text-color, #000000)' 
+                    color: 'var(--tg-theme-text-color, #000000)',
                   }}
                 >
                   Публичная оферта
@@ -323,14 +307,7 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
                   </div>
                 )}
 
-                <div
-                  style={{
-                    display: 'flex',
-                    gap: 8,
-                    justifyContent: 'flex-end',
-                    paddingTop: 8,
-                  }}
-                >
+                <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', paddingTop: 8 }}>
                   <button
                     type="button"
                     className="btn btn--secondary"
@@ -385,7 +362,6 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
               <span style={{ fontSize: 22, fontWeight: 600 }}>{t('app.title')}</span>
             </div>
 
-            {/* NEW: Admin button (same markup as in App.tsx bottom menu) */}
             {isSuperadmin && onOpenAdmin && (
               <button
                 className="nav-button"
@@ -409,7 +385,6 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
             {t('firstLaunch.description')}
           </p>
 
-          {/* Быстрый выбор языка */}
           <div style={{ marginTop: 12 }}>
             <label
               className="form-label"
@@ -435,12 +410,8 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
                     style={{
                       padding: '6px 10px',
                       borderRadius: 999,
-                      border: active
-                        ? '1px solid var(--tg-color-accent)'
-                        : '1px solid var(--tg-color-hint)',
-                      backgroundColor: active
-                        ? 'var(--tg-color-accent)'
-                        : 'var(--tg-theme-bg-color, #ffffff)',
+                      border: active ? '1px solid var(--tg-color-accent)' : '1px solid var(--tg-color-hint)',
+                      backgroundColor: active ? 'var(--tg-color-accent)' : 'var(--tg-theme-bg-color, #ffffff)',
                       color: active ? '#ffffff' : 'var(--tg-color-text, #000000)',
                       fontSize: 12,
                       lineHeight: 1.2,
@@ -481,7 +452,6 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
                 style={{ flex: 1, minWidth: 0 }}
                 onClick={() => setShowAddModal(true)}
                 disabled={isOfferGateOpen}
-                title={isOfferGateOpen ? 'Требуется согласие с офертой' : undefined}
               >
                 ➕ {t('firstLaunch.addBot')}
               </button>
@@ -491,7 +461,6 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
                 style={{ flex: 1, minWidth: 0 }}
                 onClick={onGoToBilling}
                 disabled={isOfferGateOpen}
-                title={isOfferGateOpen ? 'Требуется согласие с офертой' : undefined}
               >
                 💳 {t('nav.billing')}
               </button>
@@ -501,10 +470,24 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
               className="btn btn--primary btn--full-width"
               onClick={() => setShowAddModal(true)}
               disabled={isOfferGateOpen}
-              title={isOfferGateOpen ? 'Требуется согласие с офертой' : undefined}
             >
               ➕ {t('firstLaunch.addBot')}
             </button>
+          )}
+
+          {addBotError && (
+            <div
+              style={{
+                marginTop: 12,
+                padding: 10,
+                background: 'rgba(255, 51, 51, 0.1)',
+                borderRadius: 8,
+                fontSize: 13,
+                color: 'var(--tg-color-destructive-text, #ff3b30)',
+              }}
+            >
+              {addBotError}
+            </div>
           )}
         </div>
       </div>
@@ -521,10 +504,12 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
         </div>
       </div>
 
-      {/* AddBotModal с контролируемым состоянием */}
-      <AddBotModal 
+      <AddBotModal
         open={showAddModal}
-        onClose={() => setShowAddModal(false)} 
+        onClose={() => {
+          setShowAddModal(false);
+          setAddBotError(null);
+        }}
         onSubmitToken={handleSubmitToken}
         validateToken={validateTelegramBotToken}
         getErrorMessage={() => getTokenErrorMessage(language)}
