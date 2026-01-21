@@ -1806,6 +1806,7 @@ class MasterDatabase:
     async def create_instance(self, instance: BotInstance) -> None:
         """
         Создаёт инстанс и сразу вешает Demo-план на 7 дней (если ещё не создан billing).
+        Также устанавливает дефолтное приветствие в instance_meta.
         Всё в одной транзакции!
         """
         assert self.pool is not None
@@ -1862,6 +1863,27 @@ class MasterDatabase:
                     raise RuntimeError(f"Не удалось создать instance_billing для {instance.instance_id}")
                 
                 logger.info(f"✅ instance_billing: {instance.instance_id}")
+
+                # 4. instance_meta с дефолтным приветствием
+                default_greeting = "👋 Здравствуйте! Я ваш персональный помощник. Чем могу помочь?"
+                await conn.execute(
+                    """
+                    INSERT INTO instance_meta (
+                        instance_id, 
+                        auto_reply_greeting, 
+                        auto_close_hours, 
+                        openchat_enabled, 
+                        created_at, 
+                        updated_at
+                    )
+                    VALUES ($1, $2, 12, FALSE, NOW(), NOW())
+                    ON CONFLICT (instance_id) DO NOTHING
+                    """,
+                    instance.instance_id,
+                    default_greeting,
+                )
+                logger.info(f"✅ instance_meta: {instance.instance_id} (default greeting set)")
+                
                 logger.info(f"🎉 Инстанс {instance.instance_id} полностью создан!")
 
 

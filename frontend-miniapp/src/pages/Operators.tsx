@@ -4,6 +4,7 @@ import React, { useEffect, useState } from 'react';
 import { apiClient } from '../api/client';
 import { useTranslation } from 'react-i18next';
 import { Drawer } from 'vaul';
+import { FiPlus, FiX, FiCheck, FiTrash2, FiUser, FiEye, FiAward } from 'react-icons/fi';
 
 interface OperatorsProps {
   instanceId: string;
@@ -24,8 +25,11 @@ const Operators: React.FC<OperatorsProps> = ({ instanceId }) => {
   const [newUserId, setNewUserId] = useState('');
   const [newRole, setNewRole] = useState('operator');
   const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
   const [showAddDrawer, setShowAddDrawer] = useState(false);
+  const [showRemoveDrawer, setShowRemoveDrawer] = useState(false);
+  const [showSuccessToast, setShowSuccessToast] = useState(false);
+  const [successMessage, setSuccessMessage] = useState('');
+  const [operatorToRemove, setOperatorToRemove] = useState<{ userId: number; username?: string } | null>(null);
 
   useEffect(() => {
     loadOperators();
@@ -45,6 +49,14 @@ const Operators: React.FC<OperatorsProps> = ({ instanceId }) => {
     }
   };
 
+  const showSuccessNotification = (message: string) => {
+    setSuccessMessage(message);
+    setShowSuccessToast(true);
+    setTimeout(() => {
+      setShowSuccessToast(false);
+    }, 2500);
+  };
+
   const handleAddOperator = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newUserId.trim()) {
@@ -54,37 +66,56 @@ const Operators: React.FC<OperatorsProps> = ({ instanceId }) => {
 
     try {
       setError(null);
-      setSuccess(null);
       const userId = parseInt(newUserId);
       await apiClient.addOperator(instanceId, userId, newRole);
-      setSuccess(t('operators.add_success'));
+      
+      // Закрываем drawer и очищаем форму
+      setShowAddDrawer(false);
       setNewUserId('');
       setNewRole('operator');
+      
+      // Обновляем список и показываем уведомление
       await loadOperators();
-      setTimeout(() => {
-        setSuccess(null);
-        setShowAddDrawer(false);
-      }, 3000);
+      showSuccessNotification(t('operators.add_success'));
     } catch (err: any) {
       setError(`${t('operators.error_prefix')} ${err.message}`);
     }
   };
 
-  const handleRemoveOperator = async (userId: number, username?: string) => {
-    const confirmMsg = t('operators.remove_confirm', {
-      name: username || userId,
-    });
-    if (!confirm(confirmMsg)) return;
+  const openRemoveDrawer = (userId: number, username?: string) => {
+    setOperatorToRemove({ userId, username });
+    setShowRemoveDrawer(true);
+  };
+
+  const confirmRemoveOperator = async () => {
+    if (!operatorToRemove) return;
 
     try {
       setError(null);
-      await apiClient.removeOperator(instanceId, userId);
-      setSuccess(t('operators.remove_success'));
+      await apiClient.removeOperator(instanceId, operatorToRemove.userId);
+      
+      // Закрываем drawer удаления
+      setShowRemoveDrawer(false);
+      setOperatorToRemove(null);
+      
+      // Обновляем список и показываем уведомление
       await loadOperators();
-      setTimeout(() => setSuccess(null), 3000);
+      showSuccessNotification(t('operators.remove_success'));
     } catch (err: any) {
       setError(`${t('operators.error_prefix')} ${err.message}`);
     }
+  };
+
+  const getRoleIcon = (role: string) => {
+    if (role === 'owner') return <FiAward style={{ color: '#FFD700' }} />;
+    if (role === 'operator') return <FiUser style={{ color: '#007AFF' }} />;
+    return <FiEye style={{ color: '#8E8E93' }} />;
+  };
+
+  const getRoleText = (role: string) => {
+    if (role === 'owner') return 'Owner';
+    if (role === 'operator') return 'Operator';
+    return 'Viewer';
   };
 
   if (loading) {
@@ -110,26 +141,11 @@ const Operators: React.FC<OperatorsProps> = ({ instanceId }) => {
           className="btn btn--icon"
           onClick={() => setShowAddDrawer(true)}
           aria-label={t('operators.add_title')}
-          style={{ fontSize: '20px', padding: '4px 8px' }}
+          style={{ fontSize: '20px', padding: '8px' }}
         >
-          ➕
+          <FiPlus />
         </button>
       </div>
-
-      {success && (
-        <div
-          style={{
-            padding: '8px',
-            background: 'rgba(76, 175, 80, 0.1)',
-            borderRadius: '8px',
-            marginBottom: '12px',
-            fontSize: '12px',
-            color: 'var(--tg-color-text)',
-          }}
-        >
-          {success}
-        </div>
-      )}
 
       {error && (
         <div
@@ -153,30 +169,43 @@ const Operators: React.FC<OperatorsProps> = ({ instanceId }) => {
           </p>
         </div>
       ) : (
-        <div className="table-responsive">
-          <table className="table">
-            <thead>
-              <tr>
-                <th>{t('operators.table_id')}</th>
-                <th>{t('operators.table_username')}</th>
-                <th>{t('operators.table_role')}</th>
-                <th>{t('operators.table_added')}</th>
-                <th>{t('operators.table_actions')}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {operators.map((op) => (
-                <tr key={op.user_id}>
-                  <td>{op.user_id}</td>
-                  <td>{op.username || '—'}</td>
-                  <td>
-                    {op.role === 'owner'
-                      ? '👑 Owner'
-                      : op.role === 'operator'
-                      ? '👤 Operator'
-                      : '👁️ Viewer'}
-                  </td>
-                  <td>
+        <div className="operators-list">
+          {operators.map((op) => (
+            <div key={op.user_id} className="operator-card">
+              <div className="operator-header">
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: 1 }}>
+                  <div style={{ fontSize: '20px', display: 'flex', alignItems: 'center' }}>
+                    {getRoleIcon(op.role)}
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: '16px', fontWeight: '600', marginBottom: '4px' }}>
+                      {op.username || `ID: ${op.user_id}`}
+                    </div>
+                    <div style={{ fontSize: '14px', color: 'var(--tg-theme-hint-color, #999)' }}>
+                      {getRoleText(op.role)}
+                    </div>
+                  </div>
+                </div>
+                {op.role !== 'owner' && (
+                  <button
+                    className="btn btn-danger btn-sm"
+                    onClick={() => openRemoveDrawer(op.user_id, op.username)}
+                    style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: '4px' }}
+                  >
+                    <FiTrash2 size={14} />
+                    {t('operators.remove_button')}
+                  </button>
+                )}
+              </div>
+              
+              <div className="operator-details">
+                <div className="detail-row">
+                  <span className="detail-label">{t('operators.table_id')}:</span>
+                  <span className="detail-value">{op.user_id}</span>
+                </div>
+                <div className="detail-row">
+                  <span className="detail-label">{t('operators.table_added')}:</span>
+                  <span className="detail-value">
                     {new Date(op.created_at).toLocaleString(
                       i18n.language === 'ru' ? 'ru-RU' : 'en-US',
                       {
@@ -187,21 +216,11 @@ const Operators: React.FC<OperatorsProps> = ({ instanceId }) => {
                         minute: '2-digit',
                       },
                     )}
-                  </td>
-                  <td>
-                    {op.role !== 'owner' && (
-                      <button
-                        className="btn btn-danger btn-sm"
-                        onClick={() => handleRemoveOperator(op.user_id, op.username)}
-                      >
-                        {t('operators.remove_button')}
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                  </span>
+                </div>
+              </div>
+            </div>
+          ))}
         </div>
       )}
 
@@ -212,7 +231,6 @@ const Operators: React.FC<OperatorsProps> = ({ instanceId }) => {
           if (!open) {
             setShowAddDrawer(false);
             setError(null);
-            setSuccess(null);
             setNewUserId('');
             setNewRole('operator');
           }
@@ -233,7 +251,7 @@ const Operators: React.FC<OperatorsProps> = ({ instanceId }) => {
                   className="drawer-close-btn"
                   aria-label="Close"
                 >
-                  ✕
+                  <FiX />
                 </button>
               </div>
 
@@ -249,21 +267,6 @@ const Operators: React.FC<OperatorsProps> = ({ instanceId }) => {
                   }}
                 >
                   {error}
-                </div>
-              )}
-
-              {success && (
-                <div
-                  style={{
-                    padding: '8px',
-                    background: 'rgba(76, 175, 80, 0.1)',
-                    borderRadius: '8px',
-                    marginBottom: '12px',
-                    fontSize: '12px',
-                    color: 'var(--tg-color-text)',
-                  }}
-                >
-                  {success}
                 </div>
               )}
 
@@ -299,10 +302,10 @@ const Operators: React.FC<OperatorsProps> = ({ instanceId }) => {
                     onChange={(e) => setNewRole(e.target.value)}
                   >
                     <option value="operator">
-                      👤 {t('operators.role_operator')}
+                      {t('operators.role_operator')}
                     </option>
                     <option value="viewer">
-                      👁️ {t('operators.role_viewer')}
+                      {t('operators.role_viewer')}
                     </option>
                   </select>
                 </div>
@@ -320,6 +323,101 @@ const Operators: React.FC<OperatorsProps> = ({ instanceId }) => {
                   </button>
                 </div>
               </form>
+            </div>
+          </Drawer.Content>
+        </Drawer.Portal>
+      </Drawer.Root>
+
+      {/* Drawer для подтверждения удаления */}
+      <Drawer.Root
+        open={showRemoveDrawer}
+        onOpenChange={(open) => {
+          if (!open) {
+            setShowRemoveDrawer(false);
+            setOperatorToRemove(null);
+          }
+        }}
+        modal
+      >
+        <Drawer.Portal>
+          <Drawer.Overlay className="drawer-overlay" />
+          <Drawer.Content className="drawer-content">
+            <div className="drawer-body">
+              <Drawer.Handle className="drawer-handle" />
+
+              <div className="drawer-header">
+                <h3 className="drawer-title">{t('operators.remove_confirm_title') || 'Удалить оператора?'}</h3>
+                <button
+                  type="button"
+                  onClick={() => setShowRemoveDrawer(false)}
+                  className="drawer-close-btn"
+                  aria-label="Close"
+                >
+                  <FiX />
+                </button>
+              </div>
+
+              <div style={{ padding: '16px 0', fontSize: '14px', color: 'var(--tg-theme-text-color)' }}>
+                {t('operators.remove_confirm', {
+                  name: operatorToRemove?.username || operatorToRemove?.userId || '',
+                })}
+              </div>
+
+              <div className="drawer-footer">
+                <button
+                  className="btn btn-danger"
+                  type="button"
+                  onClick={confirmRemoveOperator}
+                  style={{ display: 'flex', alignItems: 'center', gap: '6px', justifyContent: 'center' }}
+                >
+                  <FiTrash2 size={16} />
+                  {t('operators.remove_button')}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn--secondary"
+                  onClick={() => setShowRemoveDrawer(false)}
+                >
+                  {t('common.cancel')}
+                </button>
+              </div>
+            </div>
+          </Drawer.Content>
+        </Drawer.Portal>
+      </Drawer.Root>
+
+      {/* Toast уведомление об успехе */}
+      <Drawer.Root
+        open={showSuccessToast}
+        onOpenChange={setShowSuccessToast}
+        modal={false}
+      >
+        <Drawer.Portal>
+          <Drawer.Content 
+            className="drawer-content success-toast"
+            style={{
+              maxHeight: 'auto',
+              pointerEvents: 'none',
+            }}
+          >
+            <div style={{
+              padding: '16px 20px',
+              background: 'var(--tg-theme-bg-color, #fff)',
+              borderRadius: '12px 12px 0 0',
+              boxShadow: '0 -2px 16px rgba(0, 0, 0, 0.15)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '8px',
+            }}>
+              <FiCheck size={20} style={{ color: '#34C759' }} />
+              <span style={{ 
+                fontSize: '15px', 
+                fontWeight: '500',
+                color: 'var(--tg-theme-text-color, #000)',
+              }}>
+                {successMessage}
+              </span>
             </div>
           </Drawer.Content>
         </Drawer.Portal>

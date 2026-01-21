@@ -2328,42 +2328,33 @@ select.form-control {
 }
 
 .sticky-save-inner {
-  background: linear-gradient(
-    180deg,
-    rgba(255, 255, 255, 0) 0%,
-    rgba(255, 255, 255, 0.8) 20%,
-    var(--color-background) 40%
-  );
+  background: linear-gradient(180deg, rgba(var(--tg-theme-bg-color-rgb, 255, 255, 255), 0) 0%, rgba(var(--tg-theme-bg-color-rgb, 255, 255, 255), 0.8) 20%, var(--tg-theme-bg-color, var(--color-background)) 40%);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
-  padding: var(--space-24) var(--space-16) var(--space-16);
+  padding-top: 24px;
+  padding-bottom: 16px;
+  padding-left: 16px;
+  padding-right: 16px;
   border-top: 1px solid var(--color-card-border);
   box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.08), 0 -2px 8px rgba(0, 0, 0, 0.04);
 }
 
 @media (prefers-color-scheme: dark) {
   .sticky-save-inner {
-    background: linear-gradient(
-      180deg,
-      rgba(23, 33, 43, 0) 0%,
-      rgba(23, 33, 43, 0.95) 15%,
-      var(--color-background) 35%
-    );
-    /* Убираем blur в темной теме */
+    background: linear-gradient(180deg, rgba(var(--tg-theme-bg-color-rgb, 23, 33, 43), 0) 0%, rgba(var(--tg-theme-bg-color-rgb, 23, 33, 43), 0.95) 15%, var(--tg-theme-bg-color, var(--color-background)) 35%);
+    border-top: 1px solid rgba(255, 255, 255, 0.04); 
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
+    box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.2), 0 -2px 8px rgba(0, 0, 0, 0.1); 
   }
 }
 
 [data-color-scheme="dark"] .sticky-save-inner {
-  background: linear-gradient(
-    180deg,
-    rgba(23, 33, 43, 0) 0%,
-    rgba(23, 33, 43, 0.95) 15%,
-    var(--color-background) 35%
-  );
+  background: linear-gradient(180deg, rgba(var(--tg-theme-bg-color-rgb, 23, 33, 43), 0) 0%, rgba(var(--tg-theme-bg-color-rgb, 23, 33, 43), 0.95) 15%, var(--tg-theme-bg-color, var(--color-background)) 35%);
+  border-top: 1px solid rgba(255, 255, 255, 0.04); 
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
+  box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.2), 0 -2px 8px rgba(0, 0, 0, 0.1);
 }
 
 .sticky-save-container {
@@ -3257,45 +3248,93 @@ select.form-control {
 }
 
 
-/* Minimal Table Styles for Operators - Plain, no fancy effects */
-
 /* Wrapper for responsiveness (handles overflow on small screens) */
 .table-responsive {
-  overflow-x: auto; /* Enables horizontal scrolling if table is too wide */
-  margin: 0; /* Removes any unnecessary spacing around the table */
-  border: none; /* No outer border or shadow */
+  overflow-x: auto; 
+  margin: 0; 
+  border: none; 
 }
 
 /* Core table structure */
 .table {
-  width: 100%; /* Full width of container */
-  border-collapse: collapse; /* Merges adjacent borders into single lines */
-  font-size: 14px; /* Standard readable font size; adjust if needed */
-  background: transparent; /* No background color */
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px; 
+  background: transparent; 
 }
 
 /* Shared styles for headers and cells */
 .table th,
 .table td {
-  border: 1px solid #ddd; /* Thin, light gray border for subtle separation (#ddd is a neutral, non-intrusive color) */
-  padding: 8px; /* Minimal internal spacing to prevent text from touching borders */
-  text-align: left; /* Left alignment for natural text flow; center numeric columns if needed */
-  vertical-align: top; /* Top-align content for consistency in multi-line cells */
+  border: 1px solid #ddd; 
+  padding: 8px; 
+  text-align: left;
+  vertical-align: top; 
 }
 
 /* Header-specific tweaks */
 .table th {
-  background-color: #f2f2f2; /* Very light gray background to distinguish headers without being "fancy" */
-  font-weight: bold; /* Bold text for emphasis */
-  text-transform: none; /* No uppercase or other transformations */
+  background-color: #f2f2f2; 
+  font-weight: bold;
+  text-transform: none; 
 }
 
-/* Optional: Remove even this light header background for ultra-minimalism */
+
 .table th.minimal-header {
   background-color: transparent;
 }
 
-/* No hover or active states for plainness */
+
 .table tr:hover {
-  background-color: transparent; /* Overrides any potential hover from global styles */
+  background-color: transparent; 
+}
+
+
+/* Operators card layout */
+.operators-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.operator-card {
+  background: var(--tg-theme-bg-color, #fff);
+  border-radius: 12px;
+  padding: 16px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  border: 1px solid var(--tg-theme-hint-color, rgba(0, 0, 0, 0.1));
+}
+
+.operator-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 12px;
+  gap: 12px;
+}
+
+.operator-details {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--tg-theme-hint-color, rgba(0, 0, 0, 0.1));
+}
+
+.detail-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 14px;
+  gap: 8px;
+}
+
+.detail-label {
+  color: var(--tg-theme-hint-color, #999);
+  flex-shrink: 0;
+}
+
+.detail-value {
+  font-weight: 500;
+  color: var(--tg-theme-text-color, #000);
+  text-align: right;
 }

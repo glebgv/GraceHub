@@ -123,6 +123,7 @@ class InstanceStats(BaseModel):
 
 
 class AutoReplyConfig(BaseModel):
+    enabled: bool = False
     greeting: Optional[str] = None
     default_answer: Optional[str] = None
 
@@ -664,12 +665,16 @@ class MiniAppDB:
             raise HTTPException(status_code=404, detail="Instance not found")
 
         privacy_mode_enabled = await self.get_privacy_mode(instance_id)
+        
+        autoreply_enabled_str = await self.get_worker_setting(instance_id, 'auto_reply_enabled')
+        autoreply_enabled = (autoreply_enabled_str == 'True') if autoreply_enabled_str else False
 
         return InstanceSettings(
             openchat_enabled=data["openchat_enabled"],
             general_panel_chat_id=data["general_panel_chat_id"],
             autoclose_hours=data["auto_close_hours"],
             auto_reply=AutoReplyConfig(
+                enabled=autoreply_enabled,
                 greeting=data["greeting"],
                 default_answer=data["default_answer"],
             ),

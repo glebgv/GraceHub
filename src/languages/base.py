@@ -238,3 +238,4 @@ class Texts:
 
     first_message_forwarded: str
     session_flood_message: str
+    default_greeting: str

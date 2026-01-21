@@ -5,6 +5,7 @@ import React, { useEffect, useState } from 'react';
 import { Drawer } from 'vaul';
 import { apiClient } from '../api/client';
 import { useTranslation } from 'react-i18next';
+import { IoSettingsOutline, IoHandRightOutline, IoChatbubbleOutline, IoTimeOutline, IoLockClosedOutline } from 'react-icons/io5'; // Добавленный импорт иконок
 
 interface SettingsProps {
   instanceId: string;
@@ -36,6 +37,8 @@ const Settings: React.FC<SettingsProps> = ({ instanceId }) => {
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
 
+  const settingsFormId = 'settings-form';
+
   useEffect(() => {
     let isCancelled = false;
 
@@ -49,9 +52,9 @@ const Settings: React.FC<SettingsProps> = ({ instanceId }) => {
         if (isCancelled) return;
 
         const loadedAutoCloseHours = data.autoclose_hours ?? 12;
-        const loadedGreeting = data.autoreply?.greeting ?? '';
-        const loadedDefaultAnswer = data.autoreply?.defaultanswer ?? '';
-        const loadedAutoReplyEnabled = !!data.autoreply?.enabled;
+        const loadedGreeting = data.auto_reply?.greeting ?? ''
+        const loadedDefaultAnswer = data.auto_reply?.default_answer ?? ''
+        const loadedAutoReplyEnabled = !!data.auto_reply?.enabled
         const loadedPrivacyEnabled = !!data.privacymodeenabled;
 
         setAutoCloseHours(loadedAutoCloseHours);
@@ -106,12 +109,12 @@ const Settings: React.FC<SettingsProps> = ({ instanceId }) => {
 
       await apiClient.updateSettings(instanceId, {
         autoclose_hours: autoCloseHours,
-        autoreply: {
+        auto_reply: {
           enabled: autoReplyEnabled,
           greeting: greeting || null,
-          defaultanswer: defaultAnswer || null,
+          default_answer: defaultAnswer || null,
         },
-        privacymodeenabled: privacyEnabled,
+        privacy_mode_enabled: privacyEnabled,
       });
 
       setOriginal({
@@ -145,9 +148,12 @@ const Settings: React.FC<SettingsProps> = ({ instanceId }) => {
 
   return (
     <div style={{ padding: '12px', paddingBottom: 72 }}>
-      <form onSubmit={handleSave}>
+      <form id={settingsFormId} onSubmit={handleSave}>
         <div className="card">
-          <h2 style={{ margin: 0 }}>⚙️ {t('settings.title')}</h2>
+          <h2 style={{ margin: 0 }}>
+            <IoSettingsOutline size={20} style={{ marginRight: '8px', verticalAlign: 'middle' }} />
+            {t('settings.title')}
+          </h2>
         </div>
 
         {success && (
@@ -181,7 +187,10 @@ const Settings: React.FC<SettingsProps> = ({ instanceId }) => {
 
         {/* Приветствие */}
         <div className="card" style={{ marginTop: 12 }}>
-          <h3 style={{ margin: '0 0 12px 0', fontSize: 14 }}>👋 {t('settings.greeting_title')}</h3>
+          <h3 style={{ margin: '0 0 12px 0', fontSize: 14 }}>
+            <IoHandRightOutline size={20} style={{ marginRight: '8px', verticalAlign: 'middle' }} />
+            {t('settings.greeting_title')}
+          </h3>
 
           <div className="form-group">
             <label className="form-label">{t('settings.greeting_label')}</label>
@@ -201,6 +210,7 @@ const Settings: React.FC<SettingsProps> = ({ instanceId }) => {
                 borderRadius: '8px',
                 border: '1px solid var(--tg-color-hint)',
                 fontFamily: 'inherit',
+                resize: 'none'
               }}
             />
           </div>
@@ -208,7 +218,10 @@ const Settings: React.FC<SettingsProps> = ({ instanceId }) => {
 
         {/* Автоответ */}
         <div className="card" style={{ marginTop: 12 }}>
-          <h3 style={{ margin: '0 0 12px 0', fontSize: 14 }}>💬 {t('settings.autoreply_title')}</h3>
+          <h3 style={{ margin: '0 0 12px 0', fontSize: 14 }}>
+            <IoChatbubbleOutline size={20} style={{ marginRight: '8px', verticalAlign: 'middle' }} />
+            {t('settings.autoreply_title')}
+          </h3>
 
           <div
             className="form-group"
@@ -249,6 +262,7 @@ const Settings: React.FC<SettingsProps> = ({ instanceId }) => {
                 borderRadius: '8px',
                 border: '1px solid var(--tg-color-hint)',
                 fontFamily: 'inherit',
+                resize: 'none'
               }}
             />
           </div>
@@ -256,7 +270,10 @@ const Settings: React.FC<SettingsProps> = ({ instanceId }) => {
 
         {/* Автоматическое закрытие */}
         <div className="card" style={{ marginTop: 12 }}>
-          <h3 style={{ margin: '0 0 12px 0', fontSize: 14 }}>⏰ {t('settings.autoclose_title')}</h3>
+          <h3 style={{ margin: '0 0 12px 0', fontSize: 14 }}>
+            <IoTimeOutline size={20} style={{ marginRight: '8px', verticalAlign: 'middle' }} />
+            {t('settings.autoclose_title')}
+          </h3>
 
           <div className="form-group">
             <label className="form-label">{t('settings.autoclose_label')}</label>
@@ -288,7 +305,10 @@ const Settings: React.FC<SettingsProps> = ({ instanceId }) => {
 
         {/* Privacy Mode */}
         <div className="card" style={{ marginTop: 12 }}>
-          <h3 style={{ margin: '0 0 12px 0', fontSize: 14 }}>🔒 {t('settings.privacy_title')}</h3>
+          <h3 style={{ margin: '0 0 12px 0', fontSize: 14 }}>
+            <IoLockClosedOutline size={20} style={{ marginRight: '8px', verticalAlign: 'middle' }} />
+            {t('settings.privacy_title')}
+          </h3>
 
           <div
             className="form-group"
@@ -342,20 +362,7 @@ const Settings: React.FC<SettingsProps> = ({ instanceId }) => {
                 pointerEvents: 'auto',
               }}
             >
-              <div
-                style={{
-                  background:
-                    'linear-gradient(180deg, rgba(var(--tg-theme-bg-color-rgb, 255, 255, 255), 0) 0%, rgba(var(--tg-theme-bg-color-rgb, 255, 255, 255), 0.8) 20%, var(--tg-theme-bg-color, #fff) 40%)',
-                  backdropFilter: 'blur(12px)',
-                  WebkitBackdropFilter: 'blur(12px)',
-                  paddingTop: 24,
-                  paddingBottom: 16,
-                  paddingLeft: 16,
-                  paddingRight: 16,
-                  borderTop: '1px solid rgba(0, 0, 0, 0.06)',
-                  boxShadow: '0 -8px 32px rgba(0, 0, 0, 0.08), 0 -2px 8px rgba(0, 0, 0, 0.04)',
-                }}
-              >
+              <div className="sticky-save-inner"> {/* Добавлен класс для темной адаптации */}
                 <div
                   style={{
                     maxWidth: 480,
@@ -392,6 +399,7 @@ const Settings: React.FC<SettingsProps> = ({ instanceId }) => {
 
                   <button
                     type="submit"
+                    form={settingsFormId}
                     disabled={saving}
                     style={{
                       width: '100%',

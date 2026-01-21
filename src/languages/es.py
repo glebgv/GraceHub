@@ -304,4 +304,6 @@ TEXTS_ES = Texts(
     ticket_no_assignees="No hay operadores disponibles para asignar",
     first_message_forwarded="✅ Mensaje enviado al soporte. ¡Te responderemos pronto!",
     session_flood_message="⏳ Tus mensajes han sido entregados. ¡Esperando respuesta del operador!",
+    default_greeting= "👋 ¡Hola! Soy tu asistente personal. ¿En qué puedo ayudarte?",
+
 )
