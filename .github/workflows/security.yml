@@ -24,12 +24,6 @@ jobs:
         with:
           config: auto
 
-      - name: npm audit (helpdesk)
-        id: npm-audit-helpdesk
-        working-directory: ./frontend-helpdesk
-        continue-on-error: true
-        run: npm audit --audit-level=high --omit=dev
-
       - name: npm audit (miniapp)
         id: npm-audit-miniapp
         working-directory: ./frontend-miniapp
@@ -45,12 +39,10 @@ jobs:
         id: check-all
         run: |
           SEMGREP_EXIT_CODE=${{ steps.semgrep.exit_code }}
-          NPM_HELPDESK_EXIT_CODE=${{ steps.npm-audit-helpdesk.exit_code }}
           NPM_MINIAPP_EXIT_CODE=${{ steps.npm-audit-miniapp.exit_code }}
           BANDIT_EXIT_CODE=${{ steps.bandit.exit_code }}
 
-          if [ "$SEMGREP_EXIT_CODE" = "0" ] && \
-             [ "$NPM_HELPDESK_EXIT_CODE" = "0" ] && \
+          if [ [ "$SEMGREP_EXIT_CODE" = "0" ] && \
              [ "$NPM_MINIAPP_EXIT_CODE" = "0" ] && \
              [ "$BANDIT_EXIT_CODE" = "0" ]; then
             echo "all-passed=true" >> $GITHUB_OUTPUT
@@ -59,7 +51,6 @@ jobs:
             echo "all-passed=false" >> $GITHUB_OUTPUT
             echo "❌ Some scans failed:"
             echo "- Semgrep: $SEMGREP_EXIT_CODE"
-            echo "- npm audit (helpdesk): $NPM_HELPDESK_EXIT_CODE"
             echo "- npm audit (miniapp): $NPM_MINIAPP_EXIT_CODE"
             echo "- Bandit: $BANDIT_EXIT_CODE"
             exit 1

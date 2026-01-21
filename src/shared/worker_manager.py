@@ -64,10 +64,6 @@ class DockerWorkerManager:
                 "DATABASE_URL": db.dsn,  
                 "WORKER_INSTANCE_ID": instance_id,
                 "ENCRYPTION_KEY": os.getenv("ENCRYPTION_KEY", "DK2GpT43STFu463KTh4aUNLud5HPZ38YEBpD-ndhm3E="),
-
-                # 🔥 MINI APP URL - передаем из master-контейнера!
-                "MINIAPP_BASE_URL": os.getenv("MINIAPP_BASE_URL", "https://app.gracehub.ru"),
-                "MINIAPP_HELPDESK_PATH": os.getenv("MINIAPP_HELPDESK_PATH", "/helpdesk/"),
                 
                 # Настройки приложения
                 "APP_BASE_DIR": "/app",

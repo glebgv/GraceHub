@@ -69,10 +69,3 @@ if _SUPERADMIN_RAW.isdigit():
     _n = int(_SUPERADMIN_RAW)
     if _n > 0:
         GRACEHUB_SUPERADMIN_TELEGRAM_ID = _n
-
-# === MINI APP URL ===
-MINIAPP_BASE_URL = os.getenv("MINIAPP_BASE_URL")
-if not MINIAPP_BASE_URL:
-    raise RuntimeError("MINIAPP_BASE_URL environment variable is required!")
-
-MINIAPP_HELPDESK_PATH = os.getenv("MINIAPP_HELPDESK_PATH", "/helpdesk/")

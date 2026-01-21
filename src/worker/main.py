@@ -116,18 +116,6 @@ async def run_worker():
     logger.info(f"✅ Worker '{instance_id}' FULLY ready!")
     logger.info(f"✅ Bot ready: @{worker.bot_username}")
     
-    # 🆕 5. Автоматическая настройка Mini App кнопки
-    try:
-        logger.info(f"🔄 [Instance {instance_id}] Setting up Mini App button...")
-        miniapp_success = await worker.setup_dynamic_miniapp()
-        if miniapp_success:
-            logger.info(f"✅ [Instance {instance_id}] Mini App button configured")
-        else:
-            logger.warning(f"⚠️ [Instance {instance_id}] Running without Mini App button")
-    except Exception as e:
-        logger.error(f"❌ [Instance {instance_id}] Mini App setup failed: {e}", exc_info=True)
-        # Продолжаем работу без Mini App
-    
     # 🆕 6. Запускаем обработчик команд от API в фоне
     try:
         logger.info(f"🔄 [Instance {instance_id}] Starting bot commands processor...")
@@ -521,46 +509,6 @@ class GraceHubWorker:
             logger.info("Worker continues in minimal mode")
         
         logger.info(f"✅ Worker READY: {self.instance_id}")
-
-    async def setup_dynamic_miniapp(self):
-        """
-        Автоматически устанавливает кнопку Mini App в меню бота
-        через Bot API без ручной настройки в BotFather.
-        """
-        try:
-            from aiogram.types import MenuButtonWebApp, WebAppInfo
-            
-            # Используем настройки из shared.settings
-            base_url = settings.MINIAPP_BASE_URL.rstrip('/')
-            path = settings.MINIAPP_HELPDESK_PATH.lstrip('/')
-            
-            helpdesk_url = f"{base_url}/{path}?instance={self.instance_id}"
-            
-            await self.bot.set_chat_menu_button(
-                chat_id=None,
-                menu_button=MenuButtonWebApp(
-                    text="🎫 Helpdesk",
-                    web_app=WebAppInfo(url=helpdesk_url)
-                )
-            )
-            
-            logger.info(f"✅ [Instance {self.instance_id}] Mini App button set: {helpdesk_url}")
-            
-            # ИСПРАВЛЕНО: параметр обёрнут в кортеж
-            await self.db.execute(
-                """
-                INSERT INTO worker_settings (instance_id, key, value)
-                VALUES ($1, 'miniapp_configured', 'true')
-                ON CONFLICT (instance_id, key) DO UPDATE SET value = EXCLUDED.value
-                """,
-                (self.instance_id,) 
-            )
-            
-            return True
-            
-        except Exception as e:
-            logger.error(f"❌ [Instance {self.instance_id}] Failed to set Mini App button: {e}")
-            return False
 
         
     async def process_bot_commands_loop(self):
