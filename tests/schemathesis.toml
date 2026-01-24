@@ -135,6 +135,10 @@ enabled = false
 include-name = "POST /api/instances/{instance_id}/settings"
 enabled = false
 
+[[operations]]
+include-name = "GET /api/user/subscription"
+enabled = false
+
 # ============================================================================
 # СЛУЖЕБНЫЕ ЭНДПОИНТЫ
 # ============================================================================

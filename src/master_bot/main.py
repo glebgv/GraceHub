@@ -2246,7 +2246,7 @@ class MasterBot:
         runner = web.AppRunner(app)
         await runner.setup()
 
-        site = web.TCPSite(runner, "0.0.0.0", self.webhook_port)
+        site = web.TCPSite(runner, "127.0.0.1", self.webhook_port)
         await site.start()
 
         logger.info(f"Webhook server started on port {self.webhook_port}")
