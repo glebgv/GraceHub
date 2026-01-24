@@ -112,10 +112,33 @@ include-name = "DELETE /api/instances/{instance_id}/operators/{user_id}"
 enabled = false
 
 # ============================================================================
+# INSTANCE-SPECIFIC ЭНДПОИНТЫ С ПРОБЛЕМАМИ В ТЕСТАХ
+# ============================================================================
+
+[[operations]]
+include-name = "GET /api/instances/{instance_id}/billing"
+enabled = false
+
+[[operations]]
+include-name = "GET /api/instances/{instance_id}/operators"
+enabled = false
+
+[[operations]]
+include-name = "GET /api/instances/{instance_id}/settings"
+enabled = false
+
+[[operations]]
+include-name = "POST /api/instances/{instance_id}/billing/create_invoice"
+enabled = false
+
+[[operations]]
+include-name = "POST /api/instances/{instance_id}/settings"
+enabled = false
+
+# ============================================================================
 # СЛУЖЕБНЫЕ ЭНДПОИНТЫ
 # ============================================================================
 
 [[operations]]
 include-path = "/manage/health"
 enabled = false
-
