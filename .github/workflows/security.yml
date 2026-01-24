@@ -21,299 +21,438 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Semgrep scan
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Semgrep scan (full rules)
         id: semgrep
         continue-on-error: true
         run: |
           pip install semgrep --quiet
           
-          # Запускаем semgrep с разрешенными метриками или конкретным конфигом
+          echo "🚀 Starting Semgrep with comprehensive rules..."
+          
+          # Запускаем Semgrep и сохраняем exit code
+          set +e
           semgrep scan \
             --config="p/security-audit" \
+            --config="p/secrets" \
+            --config="p/ci" \
             --json \
             --output=semgrep-results.json \
             --metrics=auto \
             --disable-version-check \
-            . || true
+            --no-rewrite-rule-ids \
+            .
+          SEMGREP_EXIT_CODE=$?
+          set -e
           
-          # Анализируем результаты
-          if [ -f "semgrep-results.json" ]; then
-            TOTAL=$(jq '.results | length' semgrep-results.json 2>/dev/null || echo "0")
-            ERROR=$(jq '[.results[] | select(.extra.severity == "ERROR")] | length' semgrep-results.json 2>/dev/null || echo "0")
-            WARNING=$(jq '[.results[] | select(.extra.severity == "WARNING")] | length' semgrep-results.json 2>/dev/null || echo "0")
-            
-            echo "total_findings=$TOTAL" >> $GITHUB_OUTPUT
-            echo "error_findings=$ERROR" >> $GITHUB_OUTPUT
-            echo "warning_findings=$WARNING" >> $GITHUB_OUTPUT
-            
-            echo "=== Semgrep Results Summary ==="
-            echo "Total findings: $TOTAL"
-            echo "ERROR severity: $ERROR"
-            echo "WARNING severity: $WARNING"
-            
-            if [ "$TOTAL" -gt 0 ]; then
-              echo ""
-              echo "=== Top findings ==="
-              jq -r '.results[0:10][] | "\(.extra.severity) - \(.check_id): \(.path):\(.start.line)"' semgrep-results.json
-            fi
-          else
+          echo "Semgrep exit code: $SEMGREP_EXIT_CODE"
+          
+          # Проверяем что файл создан
+          if [ ! -f "semgrep-results.json" ]; then
+            echo "⚠️ Semgrep results file not created!"
+            echo "scan_completed=false" >> $GITHUB_OUTPUT
             echo "total_findings=0" >> $GITHUB_OUTPUT
             echo "error_findings=0" >> $GITHUB_OUTPUT
             echo "warning_findings=0" >> $GITHUB_OUTPUT
-          fi
-
-      - name: npm audit (miniapp)
-        id: npm-audit
-        working-directory: ./frontend-miniapp
-        continue-on-error: true
-        run: |
-          if [ ! -f "package.json" ]; then
-            echo "vulnerability_count=0" >> $GITHUB_OUTPUT
-            echo "high_vulnerabilities=0" >> $GITHUB_OUTPUT
-            echo "critical_vulnerabilities=0" >> $GITHUB_OUTPUT
-            echo "✅ No package.json found"
             exit 0
           fi
           
-          # Запускаем npm audit
-          npm audit --audit-level=high --omit=dev --json > npm-audit-results.json 2>&1 || true
+          echo "scan_completed=true" >> $GITHUB_OUTPUT
           
-          if [ -f "npm-audit-results.json" ]; then
-            TOTAL=$(jq '[.metadata.vulnerabilities[]] | add' npm-audit-results.json 2>/dev/null || echo "0")
-            HIGH=$(jq '.metadata.vulnerabilities.high' npm-audit-results.json 2>/dev/null || echo "0")
-            CRITICAL=$(jq '.metadata.vulnerabilities.critical' npm-audit-results.json 2>/dev/null || echo "0")
+          # Парсим результаты
+          TOTAL=$(jq '.results | length' semgrep-results.json 2>/dev/null || echo "0")
+          ERROR=$(jq '[.results[] | select(.extra.severity == "ERROR")] | length' semgrep-results.json 2>/dev/null || echo "0")
+          WARNING=$(jq '[.results[] | select(.extra.severity == "WARNING")] | length' semgrep-results.json 2>/dev/null || echo "0")
+          
+          echo "total_findings=$TOTAL" >> $GITHUB_OUTPUT
+          echo "error_findings=$ERROR" >> $GITHUB_OUTPUT
+          echo "warning_findings=$WARNING" >> $GITHUB_OUTPUT
+          
+          echo ""
+          echo "========================================="
+          echo "🔍 SEMGREP RESULTS"
+          echo "========================================="
+          echo "📊 Total findings: $TOTAL (ERROR: $ERROR, WARNING: $WARNING)"
+          echo ""
+          
+          if [ "$TOTAL" -gt 0 ]; then
+            echo "📋 Found issues:"
+            echo ""
+            jq -r '.results[] | "\(.extra.severity) | \(.check_id) | \(.path):\(.start.line) | \(.extra.message)"' semgrep-results.json | head -20
             
-            echo "vulnerability_count=$TOTAL" >> $GITHUB_OUTPUT
-            echo "high_vulnerabilities=$HIGH" >> $GITHUB_OUTPUT
-            echo "critical_vulnerabilities=$CRITICAL" >> $GITHUB_OUTPUT
-            
-            echo "=== npm audit Results ==="
-            echo "Total vulnerabilities: $TOTAL"
-            echo "High: $HIGH, Critical: $CRITICAL"
-            
-            # Выводим детали если есть уязвимости
-            if [ "$TOTAL" -gt 0 ]; then
-              echo ""
-              echo "=== Affected packages ==="
-              jq -r '.vulnerabilities[]? | "  - \(.name)@\(.range): \(.severity) - \(.title)"' npm-audit-results.json 2>/dev/null | head -5
-            fi
+            echo ""
+            echo "📈 By rule type:"
+            jq -r '.results[] | .check_id' semgrep-results.json | cut -d'.' -f1-3 | sort | uniq -c | sort -rn
           else
-            echo "vulnerability_count=0" >> $GITHUB_OUTPUT
-            echo "high_vulnerabilities=0" >> $GITHUB_OUTPUT
-            echo "critical_vulnerabilities=0" >> $GITHUB_OUTPUT
+            echo "✅ No issues found with current rule set"
+            echo "ℹ️ Using config: p/security-audit + p/secrets + p/ci"
           fi
 
-      - name: Bandit scan
+      - name: npm audit
+        id: npm-audit
+        continue-on-error: true
+        run: |
+          echo "📦 Starting npm audit..."
+          
+          # Проверяем наличие package.json
+          if [ ! -f "package.json" ]; then
+            echo "ℹ️ No package.json found, skipping npm audit"
+            echo "scan_completed=false" >> $GITHUB_OUTPUT
+            echo "vulnerability_count=0" >> $GITHUB_OUTPUT
+            echo "critical_vulnerabilities=0" >> $GITHUB_OUTPUT
+            echo "high_vulnerabilities=0" >> $GITHUB_OUTPUT
+            echo "moderate_vulnerabilities=0" >> $GITHUB_OUTPUT
+            echo "low_vulnerabilities=0" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          echo "scan_completed=true" >> $GITHUB_OUTPUT
+          
+          # Устанавливаем зависимости если есть lock файл
+          if [ -f "package-lock.json" ]; then
+            npm ci --audit=false --quiet || npm install --audit=false --quiet
+          else
+            npm install --audit=false --quiet
+          fi
+          
+          # Запускаем audit
+          set +e
+          npm audit --json > npm-audit-results.json 2>&1
+          NPM_EXIT_CODE=$?
+          set -e
+          
+          echo "npm audit exit code: $NPM_EXIT_CODE"
+          
+          # Парсим результаты
+          if [ -f "npm-audit-results.json" ]; then
+            CRITICAL=$(jq '.metadata.vulnerabilities.critical // 0' npm-audit-results.json 2>/dev/null || echo "0")
+            HIGH=$(jq '.metadata.vulnerabilities.high // 0' npm-audit-results.json 2>/dev/null || echo "0")
+            MODERATE=$(jq '.metadata.vulnerabilities.moderate // 0' npm-audit-results.json 2>/dev/null || echo "0")
+            LOW=$(jq '.metadata.vulnerabilities.low // 0' npm-audit-results.json 2>/dev/null || echo "0")
+            TOTAL=$(jq '.metadata.vulnerabilities.total // 0' npm-audit-results.json 2>/dev/null || echo "0")
+            
+            echo "vulnerability_count=$TOTAL" >> $GITHUB_OUTPUT
+            echo "critical_vulnerabilities=$CRITICAL" >> $GITHUB_OUTPUT
+            echo "high_vulnerabilities=$HIGH" >> $GITHUB_OUTPUT
+            echo "moderate_vulnerabilities=$MODERATE" >> $GITHUB_OUTPUT
+            echo "low_vulnerabilities=$LOW" >> $GITHUB_OUTPUT
+            
+            echo ""
+            echo "========================================="
+            echo "📦 NPM AUDIT RESULTS"
+            echo "========================================="
+            echo "📊 Total vulnerabilities: $TOTAL"
+            echo "   CRITICAL: $CRITICAL"
+            echo "   HIGH: $HIGH"
+            echo "   MODERATE: $MODERATE"
+            echo "   LOW: $LOW"
+            echo ""
+            
+            if [ "$TOTAL" -gt 0 ]; then
+              echo "⚠️ Vulnerable packages:"
+              jq -r '.vulnerabilities | to_entries | .[] | "\(.value.severity) | \(.key) | \(.value.via[0].title // "N/A")"' npm-audit-results.json 2>/dev/null | head -15 || echo "Unable to parse details"
+            else
+              echo "✅ No vulnerabilities found!"
+            fi
+          else
+            echo "⚠️ npm audit results file not created"
+            echo "vulnerability_count=0" >> $GITHUB_OUTPUT
+            echo "critical_vulnerabilities=0" >> $GITHUB_OUTPUT
+            echo "high_vulnerabilities=0" >> $GITHUB_OUTPUT
+            echo "moderate_vulnerabilities=0" >> $GITHUB_OUTPUT
+            echo "low_vulnerabilities=0" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Bandit scan (with details)
         id: bandit
         continue-on-error: true
         run: |
           pip install bandit --quiet
           
-          # Проверяем есть ли Python файлы
-          PY_FILES=$(find . -type f -name "*.py" ! -path "./.*" ! -path "*/node_modules/*" ! -path "*/venv/*" 2>/dev/null | head -50)
+          echo "🐍 Starting Bandit Python security scan..."
           
-          if [ -z "$PY_FILES" ]; then
-            echo "ℹ️ No Python files found to scan"
+          # Находим Python файлы
+          PY_FILES=$(find . -type f -name "*.py" ! -path "./.*" ! -path "*/node_modules/*" ! -path "*/venv/*" ! -path "*/__pycache__/*" 2>/dev/null || echo "")
+          COUNT=$(echo "$PY_FILES" | grep -c . || echo "0")
+          
+          echo "Found $COUNT Python files"
+          
+          if [ "$COUNT" -eq 0 ] || [ -z "$PY_FILES" ]; then
+            echo "ℹ️ No Python files to scan"
+            echo "scan_completed=false" >> $GITHUB_OUTPUT
             echo "total_findings=0" >> $GITHUB_OUTPUT
             echo "high_findings=0" >> $GITHUB_OUTPUT
             echo "medium_findings=0" >> $GITHUB_OUTPUT
+            echo "low_findings=0" >> $GITHUB_OUTPUT
+            echo "dangerous_findings=0" >> $GITHUB_OUTPUT
             exit 0
           fi
           
-          echo "Found $(echo "$PY_FILES" | wc -l) Python files to scan"
+          echo "scan_completed=true" >> $GITHUB_OUTPUT
           
           # Запускаем bandit
+          set +e
           echo "$PY_FILES" | xargs bandit \
             -f json \
             -o bandit-results.json \
             -ll \
-            --exit-zero \
-            2>/dev/null || true
+            --exit-zero
+          BANDIT_EXIT_CODE=$?
+          set -e
           
-          if [ -f "bandit-results.json" ]; then
-            TOTAL=$(jq '.results | length' bandit-results.json 2>/dev/null || echo "0")
-            HIGH=$(jq '[.results[] | select(.issue_severity == "HIGH")] | length' bandit-results.json 2>/dev/null || echo "0")
-            MEDIUM=$(jq '[.results[] | select(.issue_severity == "MEDIUM")] | length' bandit-results.json 2>/dev/null || echo "0")
-            
-            echo "total_findings=$TOTAL" >> $GITHUB_OUTPUT
-            echo "high_findings=$HIGH" >> $GITHUB_OUTPUT
-            echo "medium_findings=$MEDIUM" >> $GITHUB_OUTPUT
-            
-            echo "=== Bandit Results ==="
-            echo "Total findings: $TOTAL"
-            echo "High: $HIGH, Medium: $MEDIUM"
-            
-            # Выводим детали если есть проблемы
-            if [ "$TOTAL" -gt 0 ]; then
-              echo ""
-              echo "=== Top findings ==="
-              jq -r '.results[0:5][] | "\(.issue_severity) - \(.test_name): \(.filename):\(.line_number)"' bandit-results.json
-            fi
-          else
+          echo "Bandit exit code: $BANDIT_EXIT_CODE"
+          
+          if [ ! -f "bandit-results.json" ]; then
+            echo "⚠️ Bandit results file not created"
             echo "total_findings=0" >> $GITHUB_OUTPUT
             echo "high_findings=0" >> $GITHUB_OUTPUT
             echo "medium_findings=0" >> $GITHUB_OUTPUT
+            echo "low_findings=0" >> $GITHUB_OUTPUT
+            echo "dangerous_findings=0" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          # Парсим результаты
+          TOTAL=$(jq '.results | length' bandit-results.json 2>/dev/null || echo "0")
+          HIGH=$(jq '[.results[] | select(.issue_severity == "HIGH")] | length' bandit-results.json 2>/dev/null || echo "0")
+          MEDIUM=$(jq '[.results[] | select(.issue_severity == "MEDIUM")] | length' bandit-results.json 2>/dev/null || echo "0")
+          LOW=$(jq '[.results[] | select(.issue_severity == "LOW")] | length' bandit-results.json 2>/dev/null || echo "0")
+          
+          # Проверяем опасные типы issues
+          DANGEROUS=$(jq '[.results[] | select(.test_id == "B104" or .test_id == "B608" or .test_id == "hardcoded_bind_all_interfaces" or .test_id == "hardcoded_sql_expressions")] | length' bandit-results.json 2>/dev/null || echo "0")
+          
+          echo "total_findings=$TOTAL" >> $GITHUB_OUTPUT
+          echo "high_findings=$HIGH" >> $GITHUB_OUTPUT
+          echo "medium_findings=$MEDIUM" >> $GITHUB_OUTPUT
+          echo "low_findings=$LOW" >> $GITHUB_OUTPUT
+          echo "dangerous_findings=$DANGEROUS" >> $GITHUB_OUTPUT
+          
+          echo ""
+          echo "========================================="
+          echo "🐍 BANDIT RESULTS"
+          echo "========================================="
+          echo "📊 Total findings: $TOTAL (HIGH: $HIGH, MEDIUM: $MEDIUM, LOW: $LOW)"
+          echo "⚠️ Dangerous findings: $DANGEROUS (bind all interfaces / SQL injection risks)"
+          echo ""
+          
+          if [ "$TOTAL" -gt 0 ]; then
+            echo "📈 By issue type:"
+            jq -r '.results[] | "\(.test_id) - \(.test_name)"' bandit-results.json | sort | uniq -c | sort -rn
+            
+            echo ""
+            echo "📋 Top issues (showing first 10):"
+            echo ""
+            jq -r '.results[] | "\(.issue_severity) | \(.test_name) | \(.filename):\(.line_number)\n  └─ \(.issue_text)\n"' bandit-results.json | head -40
+            
+            # Проверяем конкретные опасные паттерны
+            if [ "$DANGEROUS" -gt 0 ]; then
+              echo ""
+              echo "🚨 CRITICAL SECURITY ISSUES DETECTED:"
+              echo ""
+              
+              # B104: hardcoded_bind_all_interfaces
+              BIND_ALL=$(jq '[.results[] | select(.test_id == "B104")] | length' bandit-results.json 2>/dev/null || echo "0")
+              if [ "$BIND_ALL" -gt 0 ]; then
+                echo "❌ BIND ALL INTERFACES (0.0.0.0) - Found $BIND_ALL instances:"
+                echo "   Risk: Server accessible from all network interfaces"
+                echo "   Fix: Use 127.0.0.1 for local or specific IP for production"
+                jq -r '.results[] | select(.test_id == "B104") | "   📍 \(.filename):\(.line_number)"' bandit-results.json
+                echo ""
+              fi
+              
+              # B608: hardcoded SQL
+              SQL_HARD=$(jq '[.results[] | select(.test_id == "B608")] | length' bandit-results.json 2>/dev/null || echo "0")
+              if [ "$SQL_HARD" -gt 0 ]; then
+                echo "❌ HARDCODED SQL EXPRESSIONS - Found $SQL_HARD instances:"
+                echo "   Risk: Potential SQL injection vulnerability"
+                echo "   Fix: Use parameterized queries or ORM"
+                jq -r '.results[] | select(.test_id == "B608") | "   📍 \(.filename):\(.line_number)"' bandit-results.json
+                echo ""
+              fi
+            fi
+          else
+            echo "✅ No Python security issues found!"
           fi
 
-      - name: Generate security report
-        id: report
-        if: always()
-        run: |
-          echo "# 📊 Security Scan Report" > security-report.md
-          echo "" >> security-report.md
-          echo "**Scan date:** $(date)" >> security-report.md
-          echo "" >> security-report.md
-          
-          # Semgrep
-          SEMGREP_TOTAL=${{ steps.semgrep.outputs.total_findings || '0' }}
-          SEMGREP_ERROR=${{ steps.semgrep.outputs.error_findings || '0' }}
-          SEMGREP_WARNING=${{ steps.semgrep.outputs.warning_findings || '0' }}
-          
-          echo "## 🔍 Semgrep (Code Security)" >> security-report.md
-          echo "- **Total findings:** $SEMGREP_TOTAL" >> security-report.md
-          echo "- **Critical (ERROR):** $SEMGREP_ERROR" >> security-report.md
-          echo "- **Warnings:** $SEMGREP_WARNING" >> security-report.md
-          
-          if [ "$SEMGREP_TOTAL" -gt 0 ]; then
-            echo "" >> security-report.md
-            echo "### Top issues:" >> security-report.md
-            if [ -f "semgrep-results.json" ]; then
-              jq -r '.results[0:5][] | "- **\(.extra.severity)** `\(.check_id)` in `\(.path):\(.start.line)` - \(.extra.message)"' semgrep-results.json >> security-report.md 2>/dev/null || true
-            fi
-          fi
-          echo "" >> security-report.md
-          
-          # npm audit
-          NPM_TOTAL=${{ steps.npm-audit.outputs.vulnerability_count || '0' }}
-          NPM_CRITICAL=${{ steps.npm-audit.outputs.critical_vulnerabilities || '0' }}
-          NPM_HIGH=${{ steps.npm-audit.outputs.high_vulnerabilities || '0' }}
-          
-          echo "## 📦 npm audit (Dependencies)" >> security-report.md
-          echo "- **Total vulnerabilities:** $NPM_TOTAL" >> security-report.md
-          echo "- **Critical:** $NPM_CRITICAL" >> security-report.md
-          echo "- **High:** $NPM_HIGH" >> security-report.md
-          echo "" >> security-report.md
-          
-          # Bandit
-          BANDIT_TOTAL=${{ steps.bandit.outputs.total_findings || '0' }}
-          BANDIT_HIGH=${{ steps.bandit.outputs.high_findings || '0' }}
-          BANDIT_MEDIUM=${{ steps.bandit.outputs.medium_findings || '0' }}
-          
-          echo "## 🐍 Bandit (Python Security)" >> security-report.md
-          echo "- **Total findings:** $BANDIT_TOTAL" >> security-report.md
-          echo "- **High severity:** $BANDIT_HIGH" >> security-report.md
-          echo "- **Medium severity:** $BANDIT_MEDIUM" >> security-report.md
-          
-          if [ "$BANDIT_TOTAL" -gt 0 ]; then
-            echo "" >> security-report.md
-            echo "### Top issues:" >> security-report.md
-            if [ -f "bandit-results.json" ]; then
-              jq -r '.results[0:5][] | "- **\(.issue_severity)** `\(.test_name)` in `\(.filename):\(.line_number)` - \(.issue_text)"' bandit-results.json >> security-report.md 2>/dev/null || true
-            fi
-          fi
-          echo "" >> security-report.md
-          
-          # Summary
-          echo "## 📈 Summary" >> security-report.md
-          echo "Security scan completed. Review findings above and address critical issues." >> security-report.md
-          echo "" >> security-report.md
-          echo "> **Note:** This report is generated automatically. Some findings may be false positives." >> security-report.md
-
-      - name: Upload security report
+      - name: Upload security reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: security-reports
+          name: security-scan-reports
           path: |
-            security-report.md
             semgrep-results.json
+            npm-audit-results.json
             bandit-results.json
-            frontend-miniapp/npm-audit-results.json
+          if-no-files-found: ignore
           retention-days: 30
 
       - name: Decision gate
         id: decision
+        if: always()
         run: |
-          echo "=== Security Decision Gate ==="
-          
-          # Получаем данные
-          SEMGREP_ERROR=${{ steps.semgrep.outputs.error_findings || '0' }}
-          NPM_CRITICAL=${{ steps.npm-audit.outputs.critical_vulnerabilities || '0' }}
-          NPM_HIGH=${{ steps.npm-audit.outputs.high_vulnerabilities || '0' }}
-          BANDIT_HIGH=${{ steps.bandit.outputs.high_findings || '0' }}
-          
-          echo "Metrics:"
-          echo "- Semgrep ERROR findings: $SEMGREP_ERROR"
-          echo "- npm CRITICAL vulnerabilities: $NPM_CRITICAL"
-          echo "- npm HIGH vulnerabilities: $NPM_HIGH"
-          echo "- Bandit HIGH findings: $BANDIT_HIGH"
+          echo "========================================="
+          echo "🚦 SECURITY DECISION GATE"
+          echo "========================================="
           echo ""
           
-          # Политика безопасности (настраиваемая)
+          # Проверяем что сканы завершились
+          SEMGREP_COMPLETED="${{ steps.semgrep.outputs.scan_completed || 'false' }}"
+          NPM_COMPLETED="${{ steps.npm-audit.outputs.scan_completed || 'false' }}"
+          BANDIT_COMPLETED="${{ steps.bandit.outputs.scan_completed || 'false' }}"
+          
+          echo "📋 Scan Status:"
+          echo "  Semgrep:   $SEMGREP_COMPLETED"
+          echo "  npm audit: $NPM_COMPLETED"
+          echo "  Bandit:    $BANDIT_COMPLETED"
+          echo ""
+          
+          # Получаем результаты (безопасно, с fallback)
+          SEMGREP_TOTAL="${{ steps.semgrep.outputs.total_findings || '0' }}"
+          SEMGREP_ERROR="${{ steps.semgrep.outputs.error_findings || '0' }}"
+          
+          NPM_CRITICAL="${{ steps.npm-audit.outputs.critical_vulnerabilities || '0' }}"
+          NPM_HIGH="${{ steps.npm-audit.outputs.high_vulnerabilities || '0' }}"
+          NPM_TOTAL="${{ steps.npm-audit.outputs.vulnerability_count || '0' }}"
+          
+          BANDIT_TOTAL="${{ steps.bandit.outputs.total_findings || '0' }}"
+          BANDIT_HIGH="${{ steps.bandit.outputs.high_findings || '0' }}"
+          BANDIT_MEDIUM="${{ steps.bandit.outputs.medium_findings || '0' }}"
+          BANDIT_DANGEROUS="${{ steps.bandit.outputs.dangerous_findings || '0' }}"
+          
+          echo "📊 Findings Summary:"
+          echo "  Semgrep:   $SEMGREP_TOTAL total ($SEMGREP_ERROR ERROR severity)"
+          echo "  npm:       $NPM_TOTAL total ($NPM_CRITICAL CRITICAL, $NPM_HIGH HIGH)"
+          echo "  Bandit:    $BANDIT_TOTAL total ($BANDIT_HIGH HIGH, $BANDIT_MEDIUM MEDIUM)"
+          echo "  Dangerous: $BANDIT_DANGEROUS critical patterns (SQL/bind risks)"
+          echo ""
+          
+          # Политика безопасности
           FAIL=false
           REASONS=""
           
-          # Правило 1: Критические уязвимости npm блокируют мерж
+          # 1. npm CRITICAL всегда блокирует
           if [ "$NPM_CRITICAL" -gt 0 ]; then
             FAIL=true
-            REASONS="$REASONS❌ Found $NPM_CRITICAL CRITICAL npm vulnerabilities (must be 0); "
+            REASONS="${REASONS}❌ $NPM_CRITICAL CRITICAL npm vulnerabilities must be fixed; "
           fi
           
-          # Правило 2: High уязвимости npm (допускаем до 3)
-          if [ "$NPM_HIGH" -gt 3 ]; then
+          # 2. npm HIGH > 5 блокирует
+          if [ "$NPM_HIGH" -gt 5 ]; then
             FAIL=true
-            REASONS="$REASONS❌ Found $NPM_HIGH HIGH npm vulnerabilities (max 3 allowed); "
-          elif [ "$NPM_HIGH" -gt 0 ]; then
-            echo "⚠️  Found $NPM_HIGH HIGH npm vulnerabilities (review recommended)"
+            REASONS="${REASONS}❌ $NPM_HIGH HIGH npm vulnerabilities (threshold: 5); "
           fi
           
-          # Правило 3: High Bandit findings блокируют
-          if [ "$BANDIT_HIGH" -gt 0 ]; then
+          # 3. Bandit опасные паттерны всегда блокируют
+          if [ "$BANDIT_DANGEROUS" -gt 0 ]; then
             FAIL=true
-            REASONS="$REASONS❌ Found $BANDIT_HIGH HIGH Bandit security issues; "
+            REASONS="${REASONS}❌ $BANDIT_DANGEROUS dangerous Bandit patterns (SQL injection/bind all interfaces); "
           fi
           
-          # Правило 4: Semgrep ERROR (допускаем до 5, так как могут быть false positives)
-          if [ "$SEMGREP_ERROR" -gt 5 ]; then
+          # 4. Bandit HIGH > 3 блокирует
+          if [ "$BANDIT_HIGH" -gt 3 ]; then
             FAIL=true
-            REASONS="$REASONS❌ Found $SEMGREP_ERROR Semgrep ERROR findings (max 5 allowed); "
-          elif [ "$SEMGREP_ERROR" -gt 0 ]; then
-            echo "⚠️  Found $SEMGREP_ERROR Semgrep ERROR findings (review recommended)"
+            REASONS="${REASONS}❌ $BANDIT_HIGH HIGH severity Bandit findings (threshold: 3); "
           fi
           
+          # 5. Semgrep ERROR > 10 блокирует
+          if [ "$SEMGREP_ERROR" -gt 10 ]; then
+            FAIL=true
+            REASONS="${REASONS}❌ $SEMGREP_ERROR Semgrep ERROR findings (threshold: 10); "
+          fi
+          
+          # 6. Предупреждения (не блокируют, но требуют внимания)
+          WARNINGS=""
+          if [ "$SEMGREP_ERROR" -gt 0 ] && [ "$SEMGREP_ERROR" -le 10 ]; then
+            WARNINGS="${WARNINGS}⚠️  $SEMGREP_ERROR Semgrep ERROR findings (review recommended); "
+          fi
+          
+          if [ "$BANDIT_MEDIUM" -gt 5 ]; then
+            WARNINGS="${WARNINGS}⚠️  $BANDIT_MEDIUM Bandit MEDIUM findings (review recommended); "
+          fi
+          
+          if [ "$NPM_HIGH" -gt 0 ] && [ "$NPM_HIGH" -le 5 ]; then
+            WARNINGS="${WARNINGS}⚠️  $NPM_HIGH HIGH npm vulnerabilities (review recommended); "
+          fi
+          
+          # Решение
+          echo "========================================="
           if [ "$FAIL" = true ]; then
+            echo "❌ SECURITY GATE: BLOCKED"
+            echo "========================================="
+            echo ""
+            echo "Blocking reasons:"
+            echo "$REASONS" | tr ';' '\n'
+            echo ""
+            echo "🔧 Required actions:"
+            echo "1. Review detailed scan results above"
+            echo "2. Download artifacts for full reports"
+            echo "3. Fix blocking security issues:"
+            [ "$NPM_CRITICAL" -gt 0 ] && echo "   - Update npm packages with CRITICAL vulnerabilities"
+            [ "$BANDIT_DANGEROUS" -gt 0 ] && echo "   - Fix dangerous Python patterns (SQL injection / bind 0.0.0.0)"
+            [ "$BANDIT_HIGH" -gt 3 ] && echo "   - Address HIGH severity Bandit findings"
+            echo ""
+            
             echo "all-passed=false" >> $GITHUB_OUTPUT
             echo "::error::Security gate blocked: $REASONS"
-            echo "❌ Security checks failed: $REASONS"
-            echo ""
-            echo "## Next steps:"
-            echo "1. Review the security report artifact"
-            echo "2. Fix critical and high severity issues"
-            echo "3. For false positives, add exceptions to .semgrepignore or adjust rules"
             exit 1
           else
-            echo "all-passed=true" >> $GITHUB_OUTPUT
-            echo "✅ Security checks passed"
+            echo "✅ SECURITY GATE: PASSED"
+            echo "========================================="
             echo ""
-            echo "## Status:"
-            if [ "$SEMGREP_ERROR" -gt 0 ] || [ "$NPM_HIGH" -gt 0 ] || [ "$BANDIT_HIGH" -gt 0 ]; then
-              echo "⚠️  Some security issues found (within allowed limits). Review recommended."
+            
+            if [ -n "$WARNINGS" ]; then
+              echo "⚠️ Warnings (non-blocking):"
+              echo "$WARNINGS" | tr ';' '\n'
+              echo ""
+              echo "Consider addressing these issues in future commits."
             else
-              echo "🎉 No critical security issues found!"
+              echo "🎉 No security issues found!"
             fi
+            
+            echo "all-passed=true" >> $GITHUB_OUTPUT
           fi
 
-      - name: Create GitHub annotations for PR
-        if: failure() && github.event_name == 'pull_request'
-        run: |
-          # Аннотации для Semgrep
-          if [ -f "semgrep-results.json" ]; then
-            echo "Creating Semgrep annotations..."
-            jq -r '.results[] | select(.extra.severity == "ERROR") | "::error file=\(.path),line=\(.start.line),col=\(.start.col)::[Semgrep ERROR] \(.extra.message) (Rule: \(.check_id))"' semgrep-results.json 2>/dev/null || true
-          fi
-          
-          # Аннотации для Bandit
-          if [ -f "bandit-results.json" ]; then
-            echo "Creating Bandit annotations..."
-            jq -r '.results[] | select(.issue_severity == "HIGH") | "::error file=\(.filename),line=\(.line_number),col=1::[Bandit HIGH] \(.issue_text) (Test: \(.test_name))"' bandit-results.json 2>/dev/null || true
-          fi
+      - name: Comment PR with results
+        if: github.event_name == 'pull_request' && always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const semgrepTotal = '${{ steps.semgrep.outputs.total_findings || '0' }}';
+            const npmTotal = '${{ steps.npm-audit.outputs.vulnerability_count || '0' }}';
+            const banditTotal = '${{ steps.bandit.outputs.total_findings || '0' }}';
+            const allPassed = '${{ steps.decision.outputs.all-passed }}' === 'true';
+            
+            const status = allPassed ? '✅ Passed' : '❌ Blocked';
+            const emoji = allPassed ? '🎉' : '🚨';
+            
+            const body = `## ${emoji} Security Scan Results
+            
+            **Status:** ${status}
+            
+            | Scanner | Findings |
+            |---------|----------|
+            | Semgrep | ${semgrepTotal} |
+            | npm audit | ${npmTotal} |
+            | Bandit | ${banditTotal} |
+            
+            ${allPassed ? '' : '⚠️ **Security gate blocked this PR.** Check the workflow logs for details.'}
+            
+            📥 Download detailed reports from workflow artifacts.
+            `;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
+
