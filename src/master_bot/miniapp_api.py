@@ -960,8 +960,8 @@ class MiniAppDB:
 
         where_sql = " WHERE " + " AND ".join(where_clauses) if where_clauses else ""
 
-        # total
-        count_sql = f"SELECT COUNT(*) AS cnt FROM tickets{where_sql}"
+        # # Безопасно: where_sql содержит только плейсхолдеры, данные передаются через params
+        count_sql = f"SELECT COUNT(*) AS cnt FROM tickets{where_sql}"   # nosec B608
         row = await self.db.fetchone(count_sql, tuple(params))
         total = int(row["cnt"]) if row else 0
         if total == 0:
@@ -982,7 +982,7 @@ class MiniAppDB:
             {where_sql}
             ORDER BY created_at DESC
             LIMIT ${len(params) + 1} OFFSET ${len(params) + 2}
-            """
+            """  # nosec B608
         rows = await self.db.fetchall(list_sql, tuple(params + [limit, offset]))
 
         status_norm_map = {
@@ -1104,6 +1104,9 @@ class MiniAppDB:
     async def update_instance_settings(
         self, instance_id: str, payload: UpdateInstanceSettings
     ) -> None:
+        """
+        Обновляет настройки инстанса в instance_meta и синхронизирует с worker_settings.
+        """
         existing = await self.db.fetchone(
             "SELECT * FROM instance_meta WHERE instance_id = $1",
             (instance_id,),
@@ -1122,12 +1125,12 @@ class MiniAppDB:
             "language": payload.language if payload.language is not None else None,
         }
 
-        # синхронизация greeting с worker_settings.greeting_text
+        # Синхронизация greeting с worker_settings.greeting_text
         if payload.auto_reply and payload.auto_reply.greeting is not None:
             greeting_text = payload.auto_reply.greeting or ""
             await self.set_worker_setting(instance_id, "greeting_text", greeting_text)
 
-        # синхронизация автоответа с worker_settings.autoreply_*
+        # Синхронизация автоответа с worker_settings.autoreply_*
         if payload.auto_reply:
             enabled = getattr(payload.auto_reply, "enabled", None)
             if enabled is not None:
@@ -1145,7 +1148,7 @@ class MiniAppDB:
                     auto_text,
                 )
 
-        # синхронизация Privacy Mode
+        # Синхронизация Privacy Mode
         if payload.privacy_mode_enabled is not None:
             await self.set_worker_setting(
                 instance_id,
@@ -1153,6 +1156,7 @@ class MiniAppDB:
                 "True" if payload.privacy_mode_enabled else "False",
             )
 
+        # INSERT если записи нет
         if not existing:
             await self.db.execute(
                 """
@@ -1175,32 +1179,53 @@ class MiniAppDB:
                     fields["auto_reply_greeting"],  # $3 (auto_reply_greeting)
                     fields["auto_reply_default_answer"],  # $4 (auto_reply_default_answer)
                     fields["branding_bot_name"],  # $5 (branding_bot_name)
-                    fields["openchat_enabled"] if fields["openchat_enabled"] is not None else False, 
+                    fields["openchat_enabled"] if fields["openchat_enabled"] is not None else False,  # $6
                     fields["language"],  # $7 (language)
                     datetime.now(timezone.utc),  # $8 (updated_at)
                 ),
             )
 
+        # UPDATE если запись существует
         else:
+            # Whitelist допустимых колонок для защиты от SQL injection
+            # при возможных будущих рефакторингах
+            ALLOWED_COLUMNS = {
+                "auto_close_hours",
+                "auto_reply_greeting",
+                "auto_reply_default_answer",
+                "branding_bot_name",
+                "openchat_enabled",
+                "language",
+            }
+
             set_parts = []
             params: List[Any] = []
 
             for col, value in fields.items():
                 if value is not None:
-                    set_parts.append(f"{col} = ${len(params) + 1}")
+                    # Валидация имени колонки через whitelist
+                    if col not in ALLOWED_COLUMNS:
+                        raise ValueError(f"Attempted to update invalid column: {col}")
+                    
+                    # Безопасно: col проверен через whitelist, value параметризован
+                    set_parts.append(f"{col} = ${len(params) + 1}")  # nosec B608
                     params.append(value)
 
+            # Всегда обновляем updated_at
             set_parts.append(f"updated_at = ${len(params) + 1}")
             params.append(datetime.now(timezone.utc))
-            params.append(instance_id)
+            params.append(instance_id)  # Для WHERE clause
 
             if set_parts:
+                # Безопасно: все имена колонок валидированы через ALLOWED_COLUMNS whitelist,
+                # значения передаются как параметры через params tuple
                 sql = f"""
                 UPDATE instance_meta
                 SET {", ".join(set_parts)}
                 WHERE instance_id = ${len(params)}
-                """
+                """  # nosec B608
                 await self.db.execute(sql, tuple(params))
+
 
 # ========================================================================
 # FastAPI App
