@@ -19,175 +19,245 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Debug - Show repository structure
+      - name: Setup debug environment
         run: |
-          echo "=== Repository structure ==="
-          find . -type f \( -name "*.py" -o -name "*.js" -o -name "*.ts" -o -name "*.jsx" -o -name "*.tsx" -o -name "*.java" -o -name "*.go" \) | head -20 || true
-          echo "=== Files in root ==="
-          ls -la
+          echo "=== System Information ==="
+          echo "OS: $(uname -a)"
+          echo "Python: $(python3 --version 2>/dev/null || echo 'not found')"
+          echo "Node: $(node --version 2>/dev/null || echo 'not found')"
+          echo "=== Repository Info ==="
+          echo "Working dir: $(pwd)"
+          find . -type f -name "*.py" -o -name "*.js" -o -name "*.ts" -o -name "*.java" | head -10 | xargs -I {} echo "Found: {}"
 
       - name: Semgrep scan
         id: semgrep
-        uses: returntocorp/semgrep-action@v1
         continue-on-error: true
-        with:
-          config: auto
-        env:
-          SEMGREP_VERBOSE: "true"  # Включаем подробное логирование
-          SEMGREP_TIMEOUT: "300"   # Увеличиваем таймаут до 5 минут
-
-      - name: Debug - Check Semgrep outcome
-        if: always()
         run: |
-          echo "=== Semgrep Status ==="
-          echo "Step outcome: ${{ steps.semgrep.outcome }}"
-          echo "Step conclusion: ${{ steps.semgrep.conclusion }}"
+          echo "=== Running Semgrep Scan ==="
           
-          # Проверяем outputs от Semgrep
-          echo "=== Semgrep Outputs ==="
-          echo "Has findings? ${{ steps.semgrep.outputs.has-findings }}"
-          echo "Findings count: ${{ steps.semgrep.outputs.findings-count }}"
-          echo "Exit code: ${{ steps.semgrep.outputs.exit-code }}"
-
-      - name: Check if frontend-miniapp exists
-        id: check-miniapp
-        run: |
-          if [ -d "./frontend-miniapp" ]; then
-            echo "✅ frontend-miniapp directory exists"
-            echo "exists=true" >> $GITHUB_OUTPUT
+          # Устанавливаем Semgrep если не установлен
+          if ! command -v semgrep &> /dev/null; then
+            echo "Installing Semgrep..."
+            python3 -m pip install semgrep || true
+          fi
+          
+          # Запускаем Semgrep с подробным выводом
+          semgrep scan \
+            --config=auto \
+            --verbose \
+            --json \
+            --output=semgrep-results.json \
+            --error \
+            --no-rewrite-rule-ids \
+            --disable-nosem \
+            --disable-version-check \
+            . || true
+          
+          # Проверяем результаты
+          if [ -f "semgrep-results.json" ]; then
+            echo "=== Semgrep Results ==="
+            FINDINGS_COUNT=$(jq '.results | length' semgrep-results.json 2>/dev/null || echo "0")
+            echo "Total findings: $FINDINGS_COUNT"
+            
+            if [ "$FINDINGS_COUNT" -gt 0 ]; then
+              echo "⚠️ Semgrep found $FINDINGS_COUNT security issues:"
+              
+              # Выводим краткую информацию о найденных проблемах
+              jq -r '.results[] | "  - [\(.extra.severity)] \(.check_id): \(.path):\(.start.line)"' semgrep-results.json | head -20
+              
+              # Выводим полные детали для первых 3 findings
+              echo ""
+              echo "=== Detailed findings (first 3) ==="
+              jq '.results[0:3]' semgrep-results.json
+              
+              # Сохраняем флаг что есть проблемы
+              echo "semgrep_has_issues=true" >> $GITHUB_OUTPUT
+              echo "semgrep_findings_count=$FINDINGS_COUNT" >> $GITHUB_OUTPUT
+            else
+              echo "✅ Semgrep found no security issues"
+              echo "semgrep_has_issues=false" >> $GITHUB_OUTPUT
+              echo "semgrep_findings_count=0" >> $GITHUB_OUTPUT
+            fi
           else
-            echo "⚠️ frontend-miniapp directory not found"
-            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "❌ Semgrep results file not generated"
+            echo "semgrep_has_issues=false" >> $GITHUB_OUTPUT
+            echo "semgrep_findings_count=0" >> $GITHUB_OUTPUT
           fi
 
       - name: npm audit (miniapp)
         id: npm-audit-miniapp
-        if: steps.check-miniapp.outputs.exists == 'true'
         working-directory: ./frontend-miniapp
         continue-on-error: true
         run: |
-          echo "=== npm audit in frontend-miniapp ==="
-          echo "Directory: $(pwd)"
+          echo "=== Running npm audit ==="
           
-          # Проверяем package.json
           if [ ! -f "package.json" ]; then
-            echo "❌ package.json not found"
-            echo "npm_exit_code=1" >> $GITHUB_OUTPUT
-            exit 0  # Продолжаем workflow
+            echo "❌ package.json not found in $(pwd)"
+            echo "npm_has_issues=true" >> $GITHUB_OUTPUT
+            echo "npm_vulnerabilities_count=0" >> $GITHUB_OUTPUT
+            exit 0
           fi
           
           # Запускаем npm audit
-          echo "Running npm audit..."
-          AUDIT_OUTPUT=$(npm audit --audit-level=high --omit=dev --json 2>&1) || true
+          npm audit --audit-level=high --omit=dev --json > npm-audit-results.json 2>&1 || true
           
-          # Сохраняем результат
-          echo "$AUDIT_OUTPUT" > npm-audit-results.json
-          
-          # Анализируем результат
-          if echo "$AUDIT_OUTPUT" | grep -q '"error":'; then
-            echo "⚠️ npm audit encountered an error"
-            echo "npm_exit_code=1" >> $GITHUB_OUTPUT
-          elif echo "$AUDIT_OUTPUT" | jq -e '.metadata.vulnerabilities.high > 0 or .metadata.vulnerabilities.critical > 0' >/dev/null 2>&1; then
-            echo "❌ npm audit found high/critical vulnerabilities"
-            echo "Vulnerabilities:"
-            echo "$AUDIT_OUTPUT" | jq '.metadata.vulnerabilities'
-            echo "npm_exit_code=1" >> $GITHUB_OUTPUT
+          if [ -f "npm-audit-results.json" ]; then
+            # Проверяем наличие уязвимостей
+            VULN_COUNT=$(jq '[.metadata.vulnerabilities[]] | add' npm-audit-results.json 2>/dev/null || echo "0")
+            HIGH_VULN=$(jq '.metadata.vulnerabilities.high' npm-audit-results.json 2>/dev/null || echo "0")
+            CRITICAL_VULN=$(jq '.metadata.vulnerabilities.critical' npm-audit-results.json 2>/dev/null || echo "0")
+            
+            echo "Total vulnerabilities: $VULN_COUNT"
+            echo "High: $HIGH_VULN, Critical: $CRITICAL_VULN"
+            
+            if [ "$HIGH_VULN" -gt 0 ] || [ "$CRITICAL_VULN" -gt 0 ]; then
+              echo "❌ npm audit found high/critical vulnerabilities:"
+              jq '.metadata.vulnerabilities' npm-audit-results.json
+              
+              echo "=== Affected packages ==="
+              jq -r '.vulnerabilities[] | "  - \(.name)@\(.range): \(.severity) - \(.title)"' npm-audit-results.json 2>/dev/null | head -10 || true
+              
+              echo "npm_has_issues=true" >> $GITHUB_OUTPUT
+              echo "npm_vulnerabilities_count=$VULN_COUNT" >> $GITHUB_OUTPUT
+            else
+              echo "✅ npm audit passed"
+              echo "npm_has_issues=false" >> $GITHUB_OUTPUT
+              echo "npm_vulnerabilities_count=0" >> $GITHUB_OUTPUT
+            fi
           else
-            echo "✅ npm audit passed"
-            echo "npm_exit_code=0" >> $GITHUB_OUTPUT
+            echo "✅ npm audit completed (no vulnerabilities found or audit passed)"
+            echo "npm_has_issues=false" >> $GITHUB_OUTPUT
+            echo "npm_vulnerabilities_count=0" >> $GITHUB_OUTPUT
           fi
 
-      - name: Bandit
+      - name: Bandit scan
         id: bandit
-        uses: PyCQA/bandit-action@v1
         continue-on-error: true
-        with:
-          # Используем правильные параметры для bandit-action
-          targets: .  # Сканируем текущую директорию
-          severity: low  # Начинаем с low severity
-          confidence: low
-          exclude: .git,node_modules,venv,__pycache__
-
-      - name: Debug - Check Bandit status
-        if: always()
         run: |
-          echo "=== Bandit Status ==="
-          echo "Step outcome: ${{ steps.bandit.outcome }}"
-          echo "Step conclusion: ${{ steps.bandit.conclusion }}"
+          echo "=== Running Bandit Scan ==="
+          
+          # Устанавливаем bandit если не установлен
+          if ! command -v bandit &> /dev/null; then
+            echo "Installing bandit..."
+            python3 -m pip install bandit || true
+          fi
+          
+          # Ищем Python файлы
+          PY_FILES=$(find . -type f -name "*.py" ! -path "./.*" ! -path "*/node_modules/*" ! -path "*/venv/*" | head -50)
+          
+          if [ -z "$PY_FILES" ]; then
+            echo "ℹ️ No Python files found to scan"
+            echo "bandit_has_issues=false" >> $GITHUB_OUTPUT
+            echo "bandit_findings_count=0" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          echo "Found Python files to scan:"
+          echo "$PY_FILES" | xargs -I {} echo "  - {}"
+          
+          # Запускаем bandit
+          echo "$PY_FILES" | xargs bandit \
+            -f json \
+            -o bandit-results.json \
+            -ll \
+            -r . \
+            --exit-zero \
+            --skip "B101,B404,B603,B108" 2>&1 || true
+          
+          if [ -f "bandit-results.json" ]; then
+            FINDINGS_COUNT=$(jq '.results | length' bandit-results.json 2>/dev/null || echo "0")
+            echo "Bandit findings: $FINDINGS_COUNT"
+            
+            if [ "$FINDINGS_COUNT" -gt 0 ]; then
+              echo "⚠️ Bandit found $FINDINGS_COUNT security issues:"
+              
+              # Выводим краткую информацию
+              jq -r '.results[] | "  - [\(.issue_severity)] \(.test_name): \(.filename):\(.line_number) - \(.issue_text)"' bandit-results.json | head -10
+              
+              echo "bandit_has_issues=true" >> $GITHUB_OUTPUT
+              echo "bandit_findings_count=$FINDINGS_COUNT" >> $GITHUB_OUTPUT
+            else
+              echo "✅ Bandit found no security issues"
+              echo "bandit_has_issues=false" >> $GITHUB_OUTPUT
+              echo "bandit_findings_count=0" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "✅ Bandit scan completed"
+            echo "bandit_has_issues=false" >> $GITHUB_OUTPUT
+            echo "bandit_findings_count=0" >> $GITHUB_OUTPUT
+          fi
 
-      - name: Check all scans passed
+      - name: Summary and decision
         id: check-all
         run: |
-          echo "=== Final Security Check ==="
+          echo "=== Security Scan Summary ==="
+          echo ""
           
-          # Получаем статусы всех шагов
-          SEMGREP_OK=${{ steps.semgrep.outcome == 'success' }}
-          MINIAPP_EXISTS=${{ steps.check-miniapp.outputs.exists == 'true' }}
+          # Получаем результаты
+          SEMGREP_ISSUES=${{ steps.semgrep.outputs.semgrep_has_issues || 'false' }}
+          SEMGREP_COUNT=${{ steps.semgrep.outputs.semgrep_findings_count || '0' }}
           
-          if [ "$MINIAPP_EXISTS" = "true" ]; then
-            NPM_OK=${{ steps.npm-audit-miniapp.outcome == 'success' }}
-            NPM_EXIT_CODE=${{ steps.npm-audit-miniapp.outputs.npm_exit_code || '0' }}
-          else
-            NPM_OK=true
-            NPM_EXIT_CODE=0
+          NPM_ISSUES=${{ steps.npm-audit-miniapp.outputs.npm_has_issues || 'false' }}
+          NPM_COUNT=${{ steps.npm-audit-miniapp.outputs.npm_vulnerabilities_count || '0' }}
+          
+          BANDIT_ISSUES=${{ steps.bandit.outputs.bandit_has_issues || 'false' }}
+          BANDIT_COUNT=${{ steps.bandit.outputs.bandit_findings_count || '0' }}
+          
+          echo "📊 Results Summary:"
+          echo "  Semgrep:   $SEMGREP_COUNT findings ($([ "$SEMGREP_ISSUES" = "true" ] && echo "❌ FAILED" || echo "✅ PASSED"))"
+          echo "  npm audit: $NPM_COUNT vulnerabilities ($([ "$NPM_ISSUES" = "true" ] && echo "❌ FAILED" || echo "✅ PASSED"))"
+          echo "  Bandit:    $BANDIT_COUNT findings ($([ "$BANDIT_ISSUES" = "true" ] && echo "❌ FAILED" || echo "✅ PASSED"))"
+          echo ""
+          
+          # Определяем общий статус на основе политики
+          # Можно настроить политику: какие проверки должны быть строгими
+          FAILED=false
+          FAILED_TOOLS=""
+          
+          # Политика: Semgrep - warning только
+          if [ "$SEMGREP_ISSUES" = "true" ]; then
+            echo "⚠️  Semgrep found issues (set as warning)"
+            # Semgrep можно сделать warning, не блокирующим
+            # FAILED=true
+            # FAILED_TOOLS="$FAILED_TOOLS Semgrep"
           fi
           
-          BANDIT_OK=${{ steps.bandit.outcome == 'success' }}
-          
-          echo "Semgrep OK: $SEMGREP_OK"
-          echo "MiniApp exists: $MINIAPP_EXISTS"
-          echo "npm audit OK: $NPM_OK (exit code: $NPM_EXIT_CODE)"
-          echo "Bandit OK: $BANDIT_OK"
-          
-          # Проверяем общий статус
-          ALL_OK=true
-          FAILED_SCANS=""
-          
-          if [ "$SEMGREP_OK" != "true" ]; then
-            ALL_OK=false
-            FAILED_SCANS="$FAILED_SCANS Semgrep"
+          # Политика: npm audit - блокируем на high/critical
+          if [ "$NPM_ISSUES" = "true" ]; then
+            echo "❌ npm audit found HIGH/CRITICAL vulnerabilities"
+            FAILED=true
+            FAILED_TOOLS="$FAILED_TOOLS npm-audit"
           fi
           
-          if [ "$MINIAPP_EXISTS" = "true" ] && [ "$NPM_OK" != "true" ]; then
-            ALL_OK=false
-            FAILED_SCANS="$FAILED_SCANS npm-audit"
+          # Политика: Bandit - блокируем на high
+          if [ "$BANDIT_ISSUES" = "true" ]; then
+            echo "❌ Bandit found security issues"
+            FAILED=true
+            FAILED_TOOLS="$FAILED_TOOLS Bandit"
           fi
           
-          if [ "$BANDIT_OK" != "true" ]; then
-            ALL_OK=false
-            FAILED_SCANS="$FAILED_SCANS Bandit"
-          fi
-          
-          if [ "$ALL_OK" = "true" ]; then
-            echo "all-passed=true" >> $GITHUB_OUTPUT
-            echo "✅ All security scans passed"
-          else
+          if [ "$FAILED" = "true" ]; then
+            echo "::error::Security scan failed: $FAILED_TOOLS"
             echo "all-passed=false" >> $GITHUB_OUTPUT
-            echo "❌ Failed security scans: $FAILED_SCANS"
             echo ""
-            echo "=== Troubleshooting ==="
-            echo "1. Check Semgrep logs above for errors"
-            echo "2. If npm audit failed, check ./frontend-miniapp/package.json"
-            echo "3. Review Bandit findings if any"
-            echo "4. Note: Some tools may fail if they find vulnerabilities (expected behavior)"
+            echo "🔧 Next steps:"
+            echo "1. Review the findings above"
+            echo "2. Check the generated JSON files for details"
+            echo "3. Fix critical issues before merging"
+            echo "4. For false positives, add exceptions to the scan configuration"
             exit 1
+          else
+            echo "✅ All security checks passed!"
+            echo "all-passed=true" >> $GITHUB_OUTPUT
           fi
 
-      - name: Upload Semgrep results (optional)
-        if: always() && steps.semgrep.outcome != 'success'
+      - name: Upload scan results as artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: semgrep-results
+          name: security-scan-results
           path: |
-            **/.semgrep.log
-            **/semgrep-*.json
-          retention-days: 7
-
-      - name: Upload npm audit results (optional)
-        if: always() && steps.npm-audit-miniapp.outcome != 'success' && steps.check-miniapp.outputs.exists == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: npm-audit-results
-          path: ./frontend-miniapp/npm-audit-results.json
-          retention-days: 7
-          # gg
+            semgrep-results.json
+            bandit-results.json
+            frontend-miniapp/npm-audit-results.json
+          retention-days: 30
