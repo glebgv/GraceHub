@@ -1,7 +1,6 @@
 [![Schemathesis](https://github.com/glebgv/GraceHub/actions/workflows/schemathesis.yml/badge.svg?branch=dev)](https://github.com/glebgv/GraceHub/actions/workflows/schemathesis.yml) [![Frontend CI](https://github.com/glebgv/GraceHub/actions/workflows/frontend-ci.yml/badge.svg?branch=dev)](https://github.com/glebgv/GraceHub/actions/workflows/frontend-ci.yml) [![Backend CI](https://github.com/glebgv/GraceHub/actions/workflows/backend-ci.yml/badge.svg?branch=dev)](https://github.com/glebgv/GraceHub/actions/workflows/backend-ci.yml) [![Security Scan](https://github.com/glebgv/GraceHub/actions/workflows/security.yml/badge.svg?branch=dev)](https://github.com/glebgv/GraceHub/actions/workflows/security.yml) 
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-
 <div align="right">
   <a href="README.md">🇷🇺 Русский</a> •
   <a href="README/README.en.md">🇬🇧 English</a> •
