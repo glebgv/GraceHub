@@ -3609,34 +3609,134 @@ def create_miniapp_app(
 
 
     @app.get("/api/user/subscription", response_model=UserSubscriptionResponse,
-    responses={
-        **COMMON_AUTH_RESPONSES, 
-        404: {"description": "Subscription not found"},
-        500: {"description": "Internal Server Error"}
-    })
-
+        responses={
+            **COMMON_AUTH_RESPONSES, 
+            404: {"description": "Subscription not found"},
+            500: {"description": "Internal Server Error"}
+        })
     async def get_user_subscription_endpoint(
         current_user: Dict[str, Any] = Depends(get_current_user),
     ):
-        user_id = current_user["user_id"]
-        sub = await miniapp_db.db.get_user_subscription(user_id)
-        if not sub:
-            await miniapp_db.db.ensure_default_subscription(user_id)
+        """
+        Получение информации о подписке пользователя.
+        Если подписка не найдена, создается дефолтная подписка.
+        """
+        try:
+            # 1. Получаем ID пользователя
+            user_id = current_user["user_id"]
+            logger.info(f"[Subscription] Начало обработки запроса для user_id={user_id}")
+            logger.debug(f"[Subscription] Текущий пользователь: {current_user.get('username', 'unknown')}")
+            
+            # 2. Пытаемся получить существующую подписку
+            logger.info(f"[Subscription] Поиск существующей подписки...")
             sub = await miniapp_db.db.get_user_subscription(user_id)
-        
-        if not sub:
-            raise HTTPException(status_code=404, detail="Subscription not found")
-        
-        return UserSubscriptionResponse(
-            plan_code=sub["plan_code"],
-            plan_name=sub["plan_name"],
-            period_start=sub["period_start"].isoformat(),
-            period_end=sub["period_end"].isoformat(),
-            days_left=sub["days_left"],
-            instances_limit=sub["instances_limit"],
-            instances_created=sub["instances_created"],
-            unlimited=sub.get("unlimited", False),
-        )
+            
+            if sub:
+                logger.info(f"[Subscription] Найдена существующая подписка: plan={sub.get('plan_code')}, "
+                        f"status={sub.get('status', 'unknown')}")
+                logger.debug(f"[Subscription] Данные подписки: {sub}")
+            else:
+                logger.warning(f"[Subscription] Подписка не найдена для user_id={user_id}")
+                
+                # 3. Создаем дефолтную подписку
+                logger.info(f"[Subscription] Создание дефолтной подписки...")
+                try:
+                    await miniapp_db.db.ensure_default_subscription(user_id)
+                    logger.info(f"[Subscription] Дефолтная подписка создана успешно")
+                except Exception as create_error:
+                    logger.error(f"[Subscription] Ошибка при создании дефолтной подписки: {create_error}", 
+                            exc_info=True)
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Failed to create default subscription: {str(create_error)}"
+                    )
+                
+                # 4. Пытаемся получить созданную подписку
+                logger.info(f"[Subscription] Получение созданной подписки...")
+                sub = await miniapp_db.db.get_user_subscription(user_id)
+                
+                if not sub:
+                    logger.error(f"[Subscription] Критическая ошибка: подписка не создана после ensure_default_subscription")
+                    logger.error(f"[Subscription] user_id={user_id}, проверьте логи базы данных")
+                    raise HTTPException(
+                        status_code=500,
+                        detail="Subscription creation failed - no subscription found after creation attempt"
+                    )
+            
+            # 5. Проверяем обязательные поля подписки
+            logger.info(f"[Subscription] Проверка структуры данных подписки...")
+            required_fields = ['plan_code', 'plan_name', 'period_start', 'period_end', 'days_left', 
+                            'instances_limit', 'instances_created']
+            missing_fields = [field for field in required_fields if field not in sub]
+            
+            if missing_fields:
+                logger.error(f"[Subscription] Отсутствуют обязательные поля: {missing_fields}")
+                logger.error(f"[Subscription] Полученные данные: {sub}")
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Subscription data is incomplete. Missing fields: {missing_fields}"
+                )
+            
+            # 6. Преобразуем даты в строки (с проверкой)
+            try:
+                period_start_str = sub["period_start"].isoformat() if isinstance(sub["period_start"], datetime) else sub["period_start"]
+                period_end_str = sub["period_end"].isoformat() if isinstance(sub["period_end"], datetime) else sub["period_end"]
+                
+                logger.debug(f"[Subscription] Дата начала: {period_start_str}")
+                logger.debug(f"[Subscription] Дата окончания: {period_end_str}")
+            except (AttributeError, ValueError) as date_error:
+                logger.error(f"[Subscription] Ошибка форматирования дат: {date_error}")
+                logger.error(f"[Subscription] period_start type: {type(sub['period_start'])}, value: {sub['period_start']}")
+                logger.error(f"[Subscription] period_end type: {type(sub['period_end'])}, value: {sub['period_end']}")
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Invalid date format in subscription data: {str(date_error)}"
+                )
+            
+            # 7. Формируем ответ
+            response_data = {
+                "plan_code": sub["plan_code"],
+                "plan_name": sub["plan_name"],
+                "period_start": period_start_str,
+                "period_end": period_end_str,
+                "days_left": sub["days_left"],
+                "instances_limit": sub["instances_limit"],
+                "instances_created": sub["instances_created"],
+                "unlimited": sub.get("unlimited", False),
+            }
+            
+            logger.info(f"[Subscription] Успешный ответ для user_id={user_id}: "
+                    f"plan={response_data['plan_code']}, days_left={response_data['days_left']}")
+            logger.debug(f"[Subscription] Полный ответ: {response_data}")
+            
+            return UserSubscriptionResponse(**response_data)
+            
+        except HTTPException as http_exc:
+            # Пробрасываем HTTP исключения как есть
+            logger.warning(f"[Subscription] HTTPException: {http_exc.status_code} - {http_exc.detail}")
+            raise http_exc
+            
+        except KeyError as key_err:
+            logger.error(f"[Subscription] Отсутствует ключ в данных: {key_err}")
+            logger.error(f"[Subscription] current_user keys: {list(current_user.keys()) if current_user else 'None'}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Internal data structure error: missing key {str(key_err)}"
+            )
+            
+        except Exception as e:
+            logger.error(f"[Subscription] Неожиданная ошибка: {e}", exc_info=True)
+            logger.error(f"[Subscription] Тип ошибки: {type(e).__name__}")
+            logger.error(f"[Subscription] Traceback:", exc_info=True)
+            
+            # Для отладки - возвращаем больше информации в режиме разработки
+            import os
+            if os.getenv("ENVIRONMENT") == "development":
+                detail = f"Internal Server Error: {type(e).__name__}: {str(e)}"
+            else:
+                detail = "Internal Server Error"
+                
+            raise HTTPException(status_code=500, detail=detail)
 
     @app.get(
         "/api/billing/ton/status",
