@@ -38,11 +38,19 @@ jobs:
       - name: Check all scans passed
         id: check-all
         run: |
-          SEMGREP_EXIT_CODE=${{ steps.semgrep.exit_code }}
-          NPM_MINIAPP_EXIT_CODE=${{ steps.npm-audit-miniapp.exit_code }}
-          BANDIT_EXIT_CODE=${{ steps.bandit.exit_code }}
-
-          if [ [ "$SEMGREP_EXIT_CODE" = "0" ] && \
+          # Получаем коды завершения
+          SEMGREP_EXIT_CODE=${{ steps.semgrep.outputs.exit-code }}
+          # Для npm audit используем outcome, так как continue-on-error: true
+          # Если успешно - 0, если ошибка - 1
+          NPM_MINIAPP_EXIT_CODE=${{ steps.npm-audit-miniapp.outcome == 'success' && '0' || '1' }}
+          BANDIT_EXIT_CODE=${{ steps.bandit.outputs.exit-code }}
+          
+          echo "SEMGREP_EXIT_CODE: $SEMGREP_EXIT_CODE"
+          echo "NPM_MINIAPP_EXIT_CODE: $NPM_MINIAPP_EXIT_CODE"
+          echo "BANDIT_EXIT_CODE: $BANDIT_EXIT_CODE"
+          
+          # Проверяем все коды завершения
+          if [ "$SEMGREP_EXIT_CODE" = "0" ] && \
              [ "$NPM_MINIAPP_EXIT_CODE" = "0" ] && \
              [ "$BANDIT_EXIT_CODE" = "0" ]; then
             echo "all-passed=true" >> $GITHUB_OUTPUT

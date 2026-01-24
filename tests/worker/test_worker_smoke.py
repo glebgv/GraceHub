@@ -4,6 +4,7 @@ import os
 import types
 
 import pytest
+from unittest.mock import AsyncMock
 
 from worker.main import GraceHubWorker  # с pytest.ini (pythonpath = src)
 
@@ -24,6 +25,16 @@ class DummyDB:
     async def execute(self, *args, **kwargs):
         return None
 
+    async def get_decrypted_token(self, instance_id: str):
+        # Возвращаем токен для теста
+        return "123456789:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+
+    async def get_instance(self, instance_id: str):
+        # Возвращаем фейковый инстанс
+        mock_instance = types.SimpleNamespace()
+        mock_instance.bot_username = "test_bot"
+        return mock_instance
+
 
 def _set_minimal_env():
     # валидный по формату токен, как и в тесте мастер-бота
@@ -38,7 +49,8 @@ def _set_minimal_env():
     os.environ.setdefault("LOG_LEVEL", "INFO")
 
 
-def test_worker_can_be_created():
+@pytest.mark.asyncio
+async def test_worker_can_be_created():
     _set_minimal_env()
 
     instance_id = os.environ["WORKER_INSTANCE_ID"]
@@ -46,6 +58,9 @@ def test_worker_can_be_created():
 
     db = DummyDB()
     worker = GraceHubWorker(instance_id=instance_id, token=token, db=db)
+    
+    # Инициализируем воркера
+    await worker.initialize()
 
     assert worker.instance_id == instance_id
     assert worker.token == token
@@ -69,6 +84,9 @@ async def test_worker_core_utils():
         token=os.environ["WORKER_TOKEN"],
         db=DummyDB(),
     )
+    
+    # Инициализируем воркера
+    await worker.initialize()
 
     # методы настроек существуют и не падают при простом вызове
     assert hasattr(worker, "get_setting")
@@ -83,4 +101,3 @@ async def test_worker_core_utils():
     # is_admin с пустой БД должен вернуть False
     is_admin = await worker.is_admin(user_id=42)
     assert is_admin is False
-
