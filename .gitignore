@@ -73,4 +73,6 @@ frontend/node_modules/
 deploy_git.sh
 scripts/
 examples/
+.python-version
 .requirements.hash
+deploy.sh

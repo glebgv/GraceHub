@@ -34,7 +34,7 @@ interface InstancesListProps {
   limitMessage?: string | null;
   onGoHome?: () => void;
   onDismissLimitMessage?: () => void;
-  onGoToBilling?: () => void; // NEW: переход в Billing
+  onGoToBilling?: () => void;
   loading?: boolean;
 }
 
@@ -52,7 +52,6 @@ interface UserSubscription {
 const InstancesListSkeleton: React.FC = () => {
   return (
     <div style={{ padding: 12 }}>
-      {/* Top section with title and actions */}
       <div style={{ marginBottom: 20 }}>
         <div style={{ marginBottom: 12 }}>
           <div
@@ -65,7 +64,6 @@ const InstancesListSkeleton: React.FC = () => {
           />
         </div>
 
-        {/* Action buttons skeleton */}
         <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
           <div
             className="skeleton animate-pulse"
@@ -82,7 +80,6 @@ const InstancesListSkeleton: React.FC = () => {
         </div>
       </div>
 
-      {/* Instance cards skeleton */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
         {[1, 2, 3].map((i) => (
           <div
@@ -155,8 +152,8 @@ const InstancesList: React.FC<InstancesListProps> = ({
   const [restartModalOpen, setRestartModalOpen] = useState(false);
 
   const [addBotModalOpen, setAddBotModalOpen] = useState(false);
+  const [addBotError, setAddBotError] = useState<string | null>(null);
 
-  // NEW: состояние подписки пользователя
   const [subscription, setSubscription] = useState<UserSubscription | null>(null);
   const [loadingSubscription, setLoadingSubscription] = useState(true);
   const [expiredModalOpen, setExpiredModalOpen] = useState(false);
@@ -170,7 +167,7 @@ const InstancesList: React.FC<InstancesListProps> = ({
     setLimitModalOpen(!!normalizedLimitText);
   }, [normalizedLimitText]);
 
-  // NEW: загрузка подписки пользователя
+  // Загрузка подписки пользователя
   useEffect(() => {
     const loadSubscription = async () => {
       try {
@@ -178,13 +175,11 @@ const InstancesList: React.FC<InstancesListProps> = ({
         const sub = await apiClient.getUserSubscription();
         setSubscription(sub);
 
-        // Если демо истекло и есть хотя бы один инстанс — показываем модалку
         if (sub.days_left <= 0 && instances.length > 0) {
           setExpiredModalOpen(true);
         }
       } catch (e: any) {
         console.error('[InstancesList] Failed to load user subscription:', e);
-        // Не блокируем UI при ошибке
         setSubscription(null);
       } finally {
         setLoadingSubscription(false);
@@ -213,9 +208,11 @@ const InstancesList: React.FC<InstancesListProps> = ({
     try {
       setDeleting(true);
       await onDeleteInstance(instanceToDelete);
+      setInstanceToDelete(null);
+    } catch (error) {
+      console.error('[InstancesList] Delete failed:', error);
     } finally {
       setDeleting(false);
-      setInstanceToDelete(null);
     }
   };
 
@@ -255,25 +252,39 @@ const InstancesList: React.FC<InstancesListProps> = ({
   };
 
   const handleSubmitToken = async (token: string) => {
-    await apiClient.post('/instances', { token });
-    window.location.reload();
+    try {
+      setAddBotError(null);
+      await apiClient.createInstanceByToken({ 
+        token,
+        language: i18n.language 
+      });
+      window.location.reload();
+    } catch (err: any) {
+      console.error('[InstancesList] Add bot failed', err);
+      setAddBotError(err?.message || 'Ошибка при добавлении бота');
+      throw err;
+    }
   };
 
   const handleAddBotClick = () => {
+    setAddBotError(null);
     setAddBotModalOpen(true);
     onAddBotClick?.();
   };
 
   const closeAddBotModal = () => {
     setAddBotModalOpen(false);
+    setAddBotError(null);
   };
 
-  const addBotDisabled = deleting || limitModalOpen;
+  const addBotDisabled = deleting;
 
   const isEmpty = !instances || instances.length === 0;
 
-  // Loading states (включаем загрузку подписки)
-  if (loading || deleting || loadingSubscription) {
+  // ✅ Ключевое исправление: показываем скелетон только при начальной загрузке,
+  const shouldShowSkeleton = loading && instances.length > 0 && !deleting;
+
+  if (shouldShowSkeleton || loadingSubscription) {
     return <InstancesListSkeleton />;
   }
 
@@ -320,8 +331,8 @@ const InstancesList: React.FC<InstancesListProps> = ({
                   type="button"
                   onClick={handleAddBotClick}
                   className="btn btn--primary instances-pill"
-                  disabled={addBotDisabled}
-                  title={addBotDisabled ? 'Недоступно во время операции' : undefined}
+                  disabled={deleting}
+                  title={deleting ? 'Недоступно во время операции' : undefined}
                 >
                   <span aria-hidden>➕</span>
                   <span>{t('instances.bot')}</span>
@@ -344,7 +355,6 @@ const InstancesList: React.FC<InstancesListProps> = ({
                   {t('instances.available_count', { count: instances.length })}
                 </div>
 
-                {/* NEW: отображение остатка дней подписки */}
                 {subscription && (
                   <div
                     className="subscription-info"
@@ -391,8 +401,8 @@ const InstancesList: React.FC<InstancesListProps> = ({
                     type="button"
                     onClick={handleAddBotClick}
                     className="btn btn--primary instances-pill"
-                    disabled={addBotDisabled}
-                    title={addBotDisabled ? 'Недоступно во время операции' : undefined}
+                    disabled={deleting}
+                    title={deleting ? 'Недоступно во время операции' : undefined}
                   >
                     <span aria-hidden>➕</span>
                     <span>{t('instances.bot')}</span>
@@ -414,6 +424,7 @@ const InstancesList: React.FC<InstancesListProps> = ({
                   type="button"
                   className="card instance-card"
                   onClick={() => onSelect(inst)}
+                  disabled={deleting}
                 >
                   <div className="instance-left">
                     <div className="instance-name">
@@ -625,7 +636,7 @@ const InstancesList: React.FC<InstancesListProps> = ({
         </Drawer.Portal>
       </Drawer.Root>
 
-      {/* NEW: Модалка при истекшей демо-подписке */}
+      {/* Модалка при истекшей демо-подписке */}
       <Drawer.Root
         open={expiredModalOpen}
         onOpenChange={(open) => setExpiredModalOpen(open)}

@@ -92,6 +92,7 @@ const App: React.FC<AppProps> = ({
     username: string | null;
   } | null>(null);
 
+  const [deletingInstanceId, setDeletingInstanceId] = useState<string | null>(null);
 
   const [showAddModal, setShowAddModal] = useState(false);
   const [showBindHelpModal, setShowBindHelpModal] = useState(false);
@@ -120,8 +121,11 @@ const App: React.FC<AppProps> = ({
   const [instanceDataLoading, setInstanceDataLoading] = useState(false);
 
 
-  // NEW: состояние для удаления инстанса (чтобы показывать скелетон во время DELETE)
-  const [deletingInstanceId, setDeletingInstanceId] = useState<string | null>(null);
+  // NEW: состояние для фоновых ошибок при удалении
+  const [backgroundError, setBackgroundError] = useState<string | null>(null);
+
+  // NEW: флаг, показывающий, что идет процесс удаления (для предотвращения загрузки данных)
+  const [isDeleting, setIsDeleting] = useState(false);
 
 
   const isSuperadmin = useMemo(() => {
@@ -370,6 +374,12 @@ const App: React.FC<AppProps> = ({
 
 
   useEffect(() => {
+    // Не загружаем данные инстанса, если идет удаление
+    if (isDeleting) {
+      console.log('[App] Пропускаем загрузку данных инстанса, т.к. идет удаление');
+      return;
+    }
+
     if (!selectedInstance) {
       setChatInfo(null);
       setBilling(null);
@@ -430,7 +440,7 @@ const App: React.FC<AppProps> = ({
 
 
     loadAll();
-  }, [selectedInstance?.instanceid]);
+  }, [selectedInstance?.instanceid, isDeleting]); // Добавляем зависимость от isDeleting
 
 
   // Добавленный useEffect для динамической установки темы
@@ -573,41 +583,93 @@ const App: React.FC<AppProps> = ({
   const handleDeleteInstance = async (inst: Instance) => {
     try {
       console.log('[App] delete instance', inst);
-      setError(null);
-      setDeletingInstanceId(inst.instanceid);
-
-
-      await apiClient.deleteInstance(inst.instanceid);
-
-
+      
+      // ✅ Устанавливаем флаг удаления
+      setIsDeleting(true);
+      
+      // ✅ Сохраняем предыдущее состояние для возможного отката
+      const previousInstances = [...instances];
+      const previousSelectedInstance = selectedInstance;
+      const previousSelectedInstanceId = selectedInstance?.instanceid;
+      const wasFirstLaunch = isFirstLaunch;
+      const wasOnDashboard = currentPage === 'dashboard';
+      
+      // ✅ Оптимистичное обновление - сразу обновляем UI
       setInstances((prev) => {
         const filtered = prev.filter((i) => i.instanceid !== inst.instanceid);
-
-
-        if (selectedInstance?.instanceid === inst.instanceid) {
+        
+        // Если удаляем выбранный инстанс
+        if (previousSelectedInstanceId === inst.instanceid) {
           if (filtered.length > 0) {
-            setSelectedInstance(filtered[0]);
-            setCurrentPage('instances');
+            // Выбираем следующий доступный инстанс, но НЕ запускаем загрузку его данных
+            const nextInstance = filtered[0];
+            setSelectedInstance(nextInstance);
+            
+            // Если были на Dashboard, остаемся там, но с новым инстансом
+            if (wasOnDashboard) {
+              setCurrentPage('dashboard');
+            } else {
+              setCurrentPage('instances');
+            }
           } else {
+            // Больше нет инстансов
             setSelectedInstance(null);
             setIsFirstLaunch(true);
             setCurrentPage('instances');
           }
         }
-
-
+        
         return filtered;
       });
+      
+      // ✅ Удаление в фоне
+      const deletePromise = apiClient.deleteInstance(inst.instanceid);
+      
+      // Обрабатываем успешное удаление
+      deletePromise.then(() => {
+        console.log('[App] Фоновое удаление успешно завершено');
+      }).catch((err: any) => {
+        console.error('[App] Фоновое удаление не удалось', err);
+        
+        // ✅ Возвращаем инстанс обратно
+        setInstances(previousInstances);
+        
+        // Если удаляли выбранный инстанс, возвращаем его
+        if (previousSelectedInstanceId === inst.instanceid) {
+          setSelectedInstance(previousSelectedInstance);
+          setIsFirstLaunch(wasFirstLaunch);
+          
+          // Если были на Dashboard, возвращаемся с тем же инстансом
+          if (wasOnDashboard && previousSelectedInstance) {
+            setCurrentPage('dashboard');
+          }
+        }
+        
+        // Показываем уведомление об ошибке
+        const fallback = t('firstLaunch.create_error_fallback');
+        const message =
+          typeof err?.message === 'string' && err.message.trim().length > 0
+            ? err.message
+            : fallback;
+        
+        // Используем небольшой таймаут, чтобы пользователь видел откат
+        setTimeout(() => {
+          setBackgroundError(message);
+        }, 300);
+      }).finally(() => {
+        // ✅ Сбрасываем флаг удаления после завершения операции
+        setIsDeleting(false);
+      });
+      
     } catch (err: any) {
-      console.error('[App] deleteInstance error', err);
+      console.error('[App] Ошибка при обработке удаления', err);
       const fallback = t('firstLaunch.create_error_fallback');
       const message =
         typeof err?.message === 'string' && err.message.trim().length > 0
           ? err.message
           : fallback;
       setError(message);
-    } finally {
-      setDeletingInstanceId(null);
+      setIsDeleting(false);
     }
   };
 
@@ -675,12 +737,12 @@ const App: React.FC<AppProps> = ({
             setIsFirstLaunch(false);
             setCurrentPage('billing');
           }}
+          loading={loading && !deletingInstanceId} 
         />
         {footerBranding}
       </div>
     );
   }
-
 
   const showInstancesPage = currentPage === 'instances';
   const showSuperAdminPage = currentPage === 'superadmin';
@@ -713,11 +775,28 @@ const App: React.FC<AppProps> = ({
     !!selectedInstance;
 
 
-  const isHeaderLoading = isCreatingInstance || instanceDataLoading;
+  // Исключаем загрузку данных из isHeaderLoading во время удаления
+  const isHeaderLoading = (isCreatingInstance || instanceDataLoading) && !isDeleting;
 
 
   return (
     <div className="app-container">
+      {/* Уведомление о фоновой ошибке удаления */}
+      {backgroundError && (
+        <div className="notification-error">
+          <div className="notification-content">
+            <span>⚠️ Ошибка при удалении: {backgroundError}</span>
+            <button 
+              className="notification-close"
+              onClick={() => setBackgroundError(null)}
+              aria-label="Закрыть"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+      )}
+
       {maintenance.enabled && (
         <div className="card maintenance-banner">
           <div className="maintenance-title">
@@ -1005,7 +1084,7 @@ const App: React.FC<AppProps> = ({
               }}
               isSuperadmin={isSuperadmin}
               onOpenAdmin={isSuperadmin ? () => setCurrentPage('superadmin') : undefined}
-              loading={loading || !!deletingInstanceId}
+              loading={loading && !deletingInstanceId} 
             />
           ) : (
             <InstancesList
@@ -1032,7 +1111,7 @@ const App: React.FC<AppProps> = ({
                   setCurrentPage('billing');
                 }
               }}
-              loading={loading || !!deletingInstanceId}
+              loading={loading || !!deletingInstanceId} 
             />
           )
         )}

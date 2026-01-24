@@ -2368,6 +2368,25 @@ class MasterDatabase:
         inst["role"] = "owner"
         return inst
 
+    async def update_instance_meta_language(self, instance_id: str, language: str) -> None:
+        """
+        Обновляет только поле language в instance_meta.
+        Если записи нет — создаёт её с дефолтными значениями.
+        """
+        await self.execute(
+            """
+            INSERT INTO instance_meta (instance_id, language, created_at, updated_at)
+            VALUES ($1, $2, NOW(), NOW())
+            ON CONFLICT (instance_id)
+            DO UPDATE SET
+                language = EXCLUDED.language,
+                updated_at = NOW()
+            """,
+            instance_id,
+            language,
+        )
+        logger.info("update_instance_meta_language: instance_id=%s lang=%s", instance_id, language)
+
 
     async def enqueue_tg_update(self, instance_id: str, update_id: int, payload: dict) -> bool:
         """

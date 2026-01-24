@@ -171,7 +171,6 @@ TEXTS_ZH = Texts(
     master_add_bot_warning="❗️ 请确保令牌正确且未在其他地方使用。",
     master_menu_add_bot="➕ 添加机器人",
     master_menu_list_bots="📋 机器人列表",
-    master_menu_help="❓ 帮助",
     master_start_hint="使用 /start 查看可用命令",
     master_help_text=(
         "GraceHub 平台允许你添加自己的机器人，通过它来管理客服并回复用户。\n\n"
@@ -288,4 +287,8 @@ TEXTS_ZH = Texts(
     first_message_forwarded="✅ 消息已转发至客服，很快回复！",
     session_flood_message="⏳ 您的消息已送达，请等待客服回复！",
     default_greeting= "👋 您好！我是您的专属助手，请问需要我帮您做什么？",
+    master_menu_open_panel = "🚀 启动 / 面板",
+    master_menu_open_panel_disabled = "🚀 启动 (未配置)",
+    master_menu_help = "📚 帮助",
+    lang_code="zh",
 )

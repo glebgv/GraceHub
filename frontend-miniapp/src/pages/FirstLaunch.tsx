@@ -7,6 +7,7 @@ import { Drawer } from 'vaul';
 import { apiClient } from '../api/client';
 import AddBotModal from '../components/AddBotModal';
 import logo from '../assets/logo.png';
+import { FaPlus, FaCreditCard } from 'react-icons/fa';
 
 type LangCode = 'ru' | 'en' | 'es' | 'hi' | 'zh';
 
@@ -449,20 +450,22 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
             <div style={{ display: 'flex', flexDirection: 'row', gap: 8 }}>
               <button
                 className="btn btn--primary"
-                style={{ flex: 1, minWidth: 0 }}
+                style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
                 onClick={() => setShowAddModal(true)}
                 disabled={isOfferGateOpen}
               >
-                ➕ {t('firstLaunch.addBot')}
+                <FaPlus size={20} color="white" />
+                {t('firstLaunch.addBot')}
               </button>
 
               <button
                 className="btn btn--secondary"
-                style={{ flex: 1, minWidth: 0 }}
+                style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
                 onClick={onGoToBilling}
                 disabled={isOfferGateOpen}
               >
-                💳 {t('nav.billing')}
+                <FaCreditCard size={20} color="var(--tg-theme-text-color, #000000)" />
+                {t('nav.billing')}
               </button>
             </div>
           ) : (
@@ -470,8 +473,10 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
               className="btn btn--primary btn--full-width"
               onClick={() => setShowAddModal(true)}
               disabled={isOfferGateOpen}
+              style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
             >
-              ➕ {t('firstLaunch.addBot')}
+              <FaPlus size={20} color="white" />
+              {t('firstLaunch.addBot')}
             </button>
           )}
 

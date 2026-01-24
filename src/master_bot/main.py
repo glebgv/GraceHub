@@ -23,6 +23,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     Message,
     Update,
+    WebAppInfo,
 )
 from aiohttp import web
 from dotenv import load_dotenv
@@ -215,6 +216,20 @@ class MasterBot:
                 logger.warning(
                     f"Failed to clear webhook fields in DB for instance {instance.instance_id}: {e}"
                 )
+
+    async def get_miniapp_url_for_user(self, user_id: int) -> str:
+        """
+        Возвращает URL мини-приложения для пользователя.
+        Теперь возвращает простую ссылку без параметров.
+        """
+        base_url = os.getenv("MINIAPP_BASE_URL", "").rstrip("/")
+        if not base_url:
+            logger.warning("MINIAPP_BASE_URL is not set; mini app link will be empty")
+            return ""
+        
+        # Возвращаем просто базовый URL без параметров
+        return base_url
+
 
     # ====================== БИЛЛИНГ: CRON-ЗАДАЧИ ======================
 
@@ -722,61 +737,134 @@ class MasterBot:
 
     # ====================== НАСТРОЙКА ХЭНДЛЕРОВ МАСТЕРА ======================
 
+    # В методе setup_handlers закомментируйте или удалите ненужные команды:
     def setup_handlers(self):
         """Setup command and callback handlers"""
         self.dp.message(Command("start"))(self.cmd_start)
         self.dp.callback_query(F.data == "offer_accept")(self.handle_offer_accept)
         self.dp.callback_query(F.data == "offer_decline")(self.handle_offer_decline)
 
-        self.dp.message(Command("add_bot"))(self.cmd_add_bot_entry)
-        self.dp.message(Command("list_bots"))(self.cmd_list_bots_entry)
-        self.dp.message(Command("remove_bot"))(self.cmd_remove_bot)
+        # УБРАТЬ эти команды - они не нужны в меню Master Bot
+        # self.dp.message(Command("add_bot"))(self.cmd_add_bot_entry)
+        # self.dp.message(Command("list_bots"))(self.cmd_list_bots_entry)
+        # self.dp.message(Command("remove_bot"))(self.cmd_remove_bot)
+        
         self.dp.callback_query(F.data.startswith("lang_"))(self.handle_language_choice)
 
-        # Входной хендлер для instance_<id>
-        self.dp.callback_query(F.data.startswith("instance_"))(self.handle_instance_entry)
-        self.dp.callback_query(F.data.startswith("remove_"))(self.handle_remove_instance)
-        self.dp.callback_query(F.data.startswith("toggle_"))(self.handle_toggle_instance)
-        self.dp.callback_query(F.data.startswith("remove_confirm_"))(self.handle_remove_confirm)
-        self.dp.callback_query(F.data.startswith("remove_yes_"))(self.handle_remove_instance)
-        self.dp.callback_query(F.data.startswith("remove_no_"))(self.handle_remove_cancel)
+        # УБРАТЬ связанные колбэки для меню добавления/удаления ботов
+        # self.dp.callback_query(F.data.startswith("instance_"))(self.handle_instance_entry)
+        # self.dp.callback_query(F.data.startswith("remove_"))(self.handle_remove_instance)
+        # self.dp.callback_query(F.data.startswith("toggle_"))(self.handle_toggle_instance)
+        # self.dp.callback_query(F.data.startswith("remove_confirm_"))(self.handle_remove_confirm)
+        # self.dp.callback_query(F.data.startswith("remove_yes_"))(self.handle_remove_instance)
+        # self.dp.callback_query(F.data.startswith("remove_no_"))(self.handle_remove_cancel)
 
         # Общий handler для меню callbacks
         self.dp.callback_query()(self.handle_menu_callback)
 
-        # Text handler for adding bot tokens
-        self.dp.message(F.text)(self.handle_text)
+        # УБРАТЬ text handler для токенов ботов
+        # self.dp.message(F.text)(self.handle_text)
 
         # === Stars / оплата тарифов ===
         self.dp.message(F.successful_payment)(self.handle_successful_payment)
 
     # ====================== МЕНЮ МАСТЕРА ======================
 
+
+    async def get_master_bot_username(self) -> str:
+        """Получаем username мастер-бота"""
+        me = await self.bot.get_me()
+        return me.username
+
     async def handle_menu_callback(self, callback: CallbackQuery):
-        """Handle menu callbacks like add_bot, list_bots etc."""
+        """Handle menu callbacks like help, change_language, open_panel etc."""
         data = callback.data
         user_id = callback.from_user.id
+        
         if not await self._is_master_allowed_user(user_id):
             await callback.answer("Доступ только владельцу", show_alert=True)
             return
 
         texts = await self.t(user_id)
 
-        if data == "add_bot":
-            await self.cmd_add_bot(callback.message, user_id=user_id)
-
-        elif data == "list_bots":
-            await self.cmd_list_bots(callback.message, user_id=user_id)
-
+        if data == "open_panel":
+            base_url = os.getenv("MINIAPP_BASE_URL", "").rstrip("/")
+            
+            if not base_url:
+                await callback.answer(
+                    "Мини-приложение не настроено (MINIAPP_BASE_URL отсутствует)",
+                    show_alert=True
+                )
+                return
+            
+            try:
+                # Добавляем / для Telegram WebApp
+                if not base_url.endswith("/"):
+                    tma_url = base_url + "/"
+                else:
+                    tma_url = base_url
+                
+                logger.info(f"Opening Mini App with URL: {tma_url}")
+                
+                keyboard = InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [
+                            InlineKeyboardButton(
+                                text="📱 Открыть панель управления" if texts.lang_code == "ru" 
+                                else "📱 Open Control Panel",
+                                web_app=WebAppInfo(url=tma_url),
+                            )
+                        ],
+                        [
+                            InlineKeyboardButton(
+                                text="← Назад" if texts.lang_code == "ru" 
+                                else "← Back",
+                                callback_data="main_menu",
+                            )
+                        ]
+                    ]
+                )
+                
+                message_text = (
+                    "Нажмите кнопку ниже, чтобы открыть панель управления в Telegram:" 
+                    if texts.lang_code == "ru"
+                    else "Click the button below to open the control panel in Telegram:"
+                )
+                
+                await callback.message.edit_text(message_text, reply_markup=keyboard)
+                
+            except Exception as e:
+                logger.error(f"Error creating Mini App link: {e}", exc_info=True)
+                # Альтернатива: простая ссылка
+                try:
+                    await callback.message.edit_text(
+                        f"Откройте мини-приложение по ссылке: {base_url}",
+                        reply_markup=InlineKeyboardMarkup(
+                            inline_keyboard=[
+                                [
+                                    InlineKeyboardButton(
+                                        text="← Назад",
+                                        callback_data="main_menu",
+                                    )
+                                ]
+                            ]
+                        )
+                    )
+                except:
+                    pass
+            
+            await callback.answer()
+            return
+            
         elif data == "help":
             await callback.message.answer(
                 texts.master_help_text,
                 reply_markup=self.get_main_menu_for_lang(texts),
             )
-
+            
         elif data == "change_language":
             base_texts = LANGS.get(self.default_lang)
-
+            
             keyboard = InlineKeyboardMarkup(
                 inline_keyboard=[
                     [
@@ -802,18 +890,43 @@ class MasterBot:
                     ],
                 ]
             )
-
+            
             await callback.message.edit_text(
                 base_texts.language_menu_title,
                 reply_markup=keyboard,
             )
             await callback.answer()
             return
+            
+        elif data == "offer_accept":
+            # Обработка принятия оферты
+            st = await self.db.get_offer_settings()
+            url = str(st.get("url") or "").strip()
+            
+            # source: "bot" чтобы отличать от miniapp ("miniapp" например)
+            await self.db.upsert_user_offer(user_id, url, True, source="bot")
 
-        elif data == "main_menu":
-            # передаём user_id явно, чтобы cmd_start не опирался на message.from_user.id
+            await callback.answer("Принято.")
+            # возвращаем в старт/меню
             await self.cmd_start(callback.message, user_id=user_id)
+            return
+            
+        elif data == "offer_decline":
+            # Обработка отказа от оферты
+            user_id = callback.from_user.id
+            st = await self.db.get_offer_settings()
+            url = str(st.get("url") or "").strip()
 
+            await self.db.upsert_user_offer(user_id, url, False, source="bot")
+
+            await callback.answer("Отменено.", show_alert=True)
+            await callback.message.answer("Без принятия оферты использование сервиса невозможно.")
+            return
+            
+        elif data == "main_menu":
+            # возвращаемся в главное меню
+            await self.cmd_start(callback.message, user_id=user_id)
+            
         else:
             await callback.answer(texts.master_unknown_command)
 
@@ -857,8 +970,76 @@ class MasterBot:
 
         return False
 
+    async def get_main_menu_for_user(self, user_id: int, texts) -> InlineKeyboardMarkup:
+        """
+        Генерирует меню с динамической кнопкой для мини-приложения.
+        """
+        base_url = os.getenv("MINIAPP_BASE_URL", "").rstrip("/")
+        has_miniapp_url = bool(base_url)
+        
+        keyboard_rows = []
+        
+        if has_miniapp_url:
+            try:
+                open_panel_text = getattr(texts, 'master_menu_open_panel', '🚀 Старт / Панель')
+                
+                # Telegram требует URL с / в конце для WebAppInfo
+                if not base_url.endswith("/"):
+                    tma_url = base_url + "/"
+                else:
+                    tma_url = base_url
+                
+                logger.info(f"Creating WebAppInfo with URL: {tma_url}")
+                
+                keyboard_rows.append([
+                    InlineKeyboardButton(
+                        text=open_panel_text,
+                        web_app=WebAppInfo(url=tma_url),  # URL должен быть с / в конце
+                    )
+                ])
+                
+            except Exception as e:
+                logger.error(f"Error creating Telegram Mini App link: {e}", exc_info=True)
+                # Fallback: кнопка-колбэк вместо web_app
+                open_panel_text = getattr(texts, 'master_menu_open_panel_disabled', '🚀 Старт (не настроен)')
+                keyboard_rows.append([
+                    InlineKeyboardButton(
+                        text=open_panel_text,
+                        callback_data="open_panel",
+                    )
+                ])
+        else:
+            open_panel_text = getattr(texts, 'master_menu_open_panel_disabled', '🚀 Старт (не настроен)')
+            keyboard_rows.append([
+                InlineKeyboardButton(
+                    text=open_panel_text,
+                    callback_data="open_panel",
+                )
+            ])
+        
+        # Кнопка "Помощь"
+        help_text = getattr(texts, 'master_menu_help', 'Помощь')
+        keyboard_rows.append([
+            InlineKeyboardButton(
+                text=help_text,
+                callback_data="help",
+            ),
+        ])
+        
+        # Кнопка "Язык"
+        language_text = getattr(texts, 'menu_language', '🌐 Язык')
+        keyboard_rows.append([
+            InlineKeyboardButton(
+                text=language_text,
+                callback_data="change_language",
+            ),
+        ])
+        
+        return InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
+
+
     async def cmd_start(self, message: Message, user_id: int | None = None):
-        """Handle /start command"""
+        """Handle /start command - только для уведомлений и настроек"""
         if user_id is None:
             user_id = message.from_user.id
 
@@ -980,43 +1161,204 @@ class MasterBot:
                         )
         # ----------------------------------------------------------
 
+        # Проверяем наличие MINIAPP_BASE_URL
+        base_url = os.getenv("MINIAPP_BASE_URL", "").rstrip("/")
+        has_miniapp_url = bool(base_url)
+        
         text = f"{texts.master_title}\n\n"
 
         if plan_line:
             text += f"{plan_line}\n\n"
 
+        # Обновленное описание
         text += (
-            f"<b>{texts.admin_panel_choose_section}</b>\n"
-            f"{texts.master_start_howto_title}\n"
-            f"• {texts.master_start_cmd_add_bot}\n"
-            f"• {texts.master_start_cmd_list_bots}\n"
-            f"• {texts.master_start_cmd_remove_bot}\n"
+            f"<b>Это сервисный бот GraceHub</b>\n\n"
+            f"Основные функции:\n"
+            f"• Получение уведомлений о статусе ваших ботов\n"
+            f"• Уведомления об истечении подписок\n"
+            f"• Управление настройками языка\n"
+            f"• Быстрый доступ к панели управления\n"
+            f"• Справка по системе\n\n"
         )
+        
+        if has_miniapp_url:
+            # Получаем правильный текст в зависимости от языка
+            if texts.lang_code == "ru":
+                text += f"<i>Нажмите кнопку 'Старт', чтобы открыть панель управления в Telegram Mini App</i>\n"
+            elif texts.lang_code == "en":
+                text += f"<i>Click the 'Start' button to open the control panel in Telegram Mini App</i>\n"
+            elif texts.lang_code == "es":
+                text += f"<i>Haz clic en el botón 'Iniciar' para abrir el panel de control en Telegram Mini App</i>\n"
+            elif texts.lang_code == "hi":
+                text += f"<i>टेलीग्राम मिनी ऐप में कंट्रोल पैनल खोलने के लिए 'प्रारंभ' बटन पर क्लिक करें</i>\n"
+            elif texts.lang_code == "zh":
+                text += f"<i>点击'启动'按钮在Telegram Mini App中打开控制面板</i>\n"
+        else:
+            if texts.lang_code == "ru":
+                text += f"<i>Мини-приложение не настроено (MINIAPP_BASE_URL отсутствует)</i>\n"
+            elif texts.lang_code == "en":
+                text += f"<i>Mini app is not configured (MINIAPP_BASE_URL is missing)</i>\n"
+            elif texts.lang_code == "es":
+                text += f"<i>La mini aplicación no está configurada (falta MINIAPP_BASE_URL)</i>\n"
+            elif texts.lang_code == "hi":
+                text += f"<i>मिनी ऐप कॉन्फ़िगर नहीं है (MINIAPP_BASE_URL गायब है)</i>\n"
+            elif texts.lang_code == "zh":
+                text += f"<i>迷你应用程序未配置（缺少MINIAPP_BASE_URL）</i>\n"
 
-        await message.answer(text, reply_markup=self.get_main_menu_for_lang(texts))
+        try:
+            # Пытаемся создать меню с нативной кнопкой
+            keyboard = await self.get_main_menu_for_user(user_id, texts)
+            await message.answer(text, reply_markup=keyboard)
+        except Exception as e:
+            logger.error(f"Failed to create native menu for user {user_id}, using fallback: {e}")
+            
+            # Fallback: обычное меню без нативной кнопки
+            fallback_keyboard = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text=getattr(texts, 'master_menu_open_panel', '🚀 Старт / Панель'),
+                            callback_data="open_panel",
+                        ),
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            text=getattr(texts, 'master_menu_help', '📚 Помощь'),
+                            callback_data="help",
+                        ),
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            text=getattr(texts, 'menu_language', '🌐 Язык'),
+                            callback_data="change_language",
+                        ),
+                    ],
+                ]
+            )
+            
+            # Добавляем сообщение об ошибке
+            error_text = ""
+            if texts.lang_code == "ru":
+                error_text = "\n\n<i>⚠️ Не удалось создать нативную кнопку для мини-приложения</i>"
+            elif texts.lang_code == "en":
+                error_text = "\n\n<i>⚠️ Failed to create native button for mini app</i>"
+            elif texts.lang_code == "es":
+                error_text = "\n\n<i>⚠️ No se pudo crear el botón nativo para la mini aplicación</i>"
+            elif texts.lang_code == "hi":
+                error_text = "\n\n<i>⚠️ मिनी ऐप के लिए नेटिव बटन बनाने में विफल</i>"
+            elif texts.lang_code == "zh":
+                error_text = "\n\n<i>⚠️ 无法为迷你应用程序创建原生按钮</i>"
+                
+            await message.answer(text + error_text, reply_markup=fallback_keyboard)
 
     async def handle_language_choice(self, callback: CallbackQuery):
+        """
+        Обработчик выбора языка из меню.
+        callback.data формат: "lang:ru", "lang:en", и т.д.
+        
+        🔥 Синхронизация языка:
+        1. user_states.language (источник истины)
+        2. instance_meta.language (для всех инстансов пользователя)
+        """
         user_id = callback.from_user.id
-        data = callback.data  # "lang_ru", "lang_en", ...
-        _, lang_code = data.split("_", 1)
-
-        # Если язык неизвестен — просто игнорируем
-        if lang_code not in LANGS:
-            base_texts = LANGS.get(self.default_lang)
-            await callback.answer(base_texts.language_unknown_error, show_alert=True)
+        data = callback.data
+        
+        # 🔥 Защита от некорректного формата callback.data
+        if ":" not in data:
+            logger.warning(
+                "handle_language_choice: invalid callback data format, expected 'lang:code', got: %r user_id=%s",
+                data,
+                user_id
+            )
+            basetexts = LANGS.get(self.default_lang)
+            await callback.answer(basetexts.language_unknown_error, show_alert=True)
             return
-
-        # Сохраняем язык
-        await self.db.set_user_language(user_id, lang_code)
-
-        texts = LANGS[lang_code]
-
-        # Сообщаем об успешной смене и показываем главное меню
-        await callback.message.edit_text(
-            texts.language_updated_message,
-            reply_markup=self.get_main_menu_for_lang(texts),
-        )
+        
+        # Безопасный split с проверкой
+        parts = data.split(":", 1)
+        if len(parts) != 2:
+            logger.warning(
+                "handle_language_choice: split failed, parts=%s data=%r user_id=%s",
+                parts,
+                data,
+                user_id
+            )
+            basetexts = LANGS.get(self.default_lang)
+            await callback.answer(basetexts.language_unknown_error, show_alert=True)
+            return
+        
+        _, langcode = parts
+        
+        if langcode not in LANGS:
+            logger.warning(
+                "handle_language_choice: unsupported language code: %s user_id=%s",
+                langcode,
+                user_id
+            )
+            basetexts = LANGS.get(self.default_lang)
+            await callback.answer(basetexts.language_unknown_error, show_alert=True)
+            return
+        
+        # 🔥 1. Обновляем user_states.language (источник истины для user-level)
+        try:
+            await self.db.set_user_language(user_id, langcode)
+            logger.info(
+                "handle_language_choice: saved language to user_states: user_id=%s lang=%s",
+                user_id,
+                langcode
+            )
+        except Exception as e:
+            logger.exception(
+                "handle_language_choice: failed to save language to user_states: user_id=%s lang=%s error=%s",
+                user_id,
+                langcode,
+                e
+            )
+        
+        texts = LANGS[langcode]
+        
+        # 🔥 2. Обновляем instance_meta.language для всех инстансов пользователя
+        try:
+            instances = await self.db.get_user_instances(user_id)
+            if instances:
+                for instance in instances:
+                    try:
+                        await self.db.update_instance_meta_language(instance.instance_id, langcode)
+                        logger.info(
+                            "handle_language_choice: synced language to instance_meta: instance_id=%s lang=%s",
+                            instance.instance_id,
+                            langcode
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "handle_language_choice: failed to sync language to instance_meta: instance_id=%s error=%s",
+                            instance.instance_id,
+                            e
+                        )
+        except Exception as e:
+            logger.exception(
+                "handle_language_choice: failed to get user instances for language sync: user_id=%s error=%s",
+                user_id,
+                e
+            )
+        
+        # Меню после смены языка
+        keyboard = self.get_main_menu_for_lang(texts)
+        
+        try:
+            await callback.message.edit_text(
+                texts.language_updated_message,
+                reply_markup=keyboard,
+            )
+        except Exception as e:
+            logger.error(
+                "handle_language_choice: failed to edit message: user_id=%s error=%s",
+                user_id,
+                e
+            )
+        
         await callback.answer()
+
 
     async def cmd_add_bot_entry(self, message: Message):
         """
@@ -1849,27 +2191,26 @@ class MasterBot:
         await message.answer(text, reply_markup=keyboard)
 
     def get_main_menu_for_lang(self, texts) -> InlineKeyboardMarkup:
+        """
+        Резервное меню, используемое только если не удалось создать нативное меню.
+        """
         return InlineKeyboardMarkup(
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text=texts.master_menu_add_bot,
-                        callback_data="add_bot",
-                    ),
-                    InlineKeyboardButton(
-                        text=texts.master_menu_list_bots,
-                        callback_data="list_bots",
+                        text=getattr(texts, 'master_menu_open_panel', '🚀 Старт / Панель'),
+                        callback_data="open_panel",
                     ),
                 ],
                 [
                     InlineKeyboardButton(
-                        text=texts.master_menu_help,
+                        text=getattr(texts, 'master_menu_help', '📚 Помощь'),
                         callback_data="help",
                     ),
                 ],
                 [
                     InlineKeyboardButton(
-                        text=texts.menu_language,
+                        text=getattr(texts, 'menu_language', '🌐 Язык'),
                         callback_data="change_language",
                     ),
                 ],

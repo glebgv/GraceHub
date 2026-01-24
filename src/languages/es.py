@@ -181,7 +181,6 @@ TEXTS_ES = Texts(
     master_add_bot_warning="❗️ Asegúrate de que el token sea correcto y no se utilice en otro lugar.",
     master_menu_add_bot="➕ Añadir bot",
     master_menu_list_bots="📋 Lista de bots",
-    master_menu_help="❓ Ayuda",
     master_start_hint="Usa /start para ver los comandos disponibles",
     master_help_text=(
         "GraceHub Platform te permite añadir tu propio bot con el que "
@@ -305,5 +304,8 @@ TEXTS_ES = Texts(
     first_message_forwarded="✅ Mensaje enviado al soporte. ¡Te responderemos pronto!",
     session_flood_message="⏳ Tus mensajes han sido entregados. ¡Esperando respuesta del operador!",
     default_greeting= "👋 ¡Hola! Soy tu asistente personal. ¿En qué puedo ayudarte?",
-
+    master_menu_open_panel = "🚀 Iniciar / Panel",
+    master_menu_open_panel_disabled = "🚀 Iniciar (no configurado)",
+    master_menu_help = "📚 Ayuda",
+    lang_code="es",
 )

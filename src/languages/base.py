@@ -239,3 +239,8 @@ class Texts:
     first_message_forwarded: str
     session_flood_message: str
     default_greeting: str
+    master_menu_open_panel: str
+    master_menu_open_panel_disabled: str
+    master_menu_help: str
+    menu_language: str
+    lang_code: str

@@ -2889,10 +2889,23 @@ def create_miniapp_app(
         return SingleTenantConfig(enabled=bool(payload.enabled), allowed_user_ids=allowed)
 
     @app.post("/api/auth/telegram", response_model=AuthResponse,
-    responses={**COMMON_AUTH_RESPONSES, **COMMON_BAD_REQUEST_RESPONSES, 422:
-    {"description": "Validation Error"}})
-
+        responses={**COMMON_AUTH_RESPONSES, **COMMON_BAD_REQUEST_RESPONSES, 422:
+        {"description": "Validation Error"}})
     async def auth_telegram(req: TelegramAuthRequest, request: Request):
+        """
+        Авторизация через Telegram initData.
+        
+        Синхронизация языка:
+        1. Приоритет: user_states.language (источник истины для user-level языка)
+        2. Fallback: Telegram language_code из initData
+        3. Сохранение:
+        - user_states.language (через set_user_language)
+        - users.language (через upsert_user)
+        - instance_meta.language (через update_instance_meta_language для всех инстансов пользователя)
+        
+        Таким образом, выбор языка в боте/mini-app всегда синхронизируется
+        и виден во всех компонентах системы.
+        """
         init_header = request.headers.get("X-Telegram-Init-Data")
         logger.info(
             "auth_telegram: initData_len=%s start_param=%s has_header=%s header_len=%s",
@@ -2920,6 +2933,42 @@ def create_miniapp_app(
             user_data.get("first_name"),
             user_data.get("last_name"),
         )
+
+        # ------------------------------------------------------------------
+        # 🔥 СИНХРОНИЗАЦИЯ ЯЗЫКА: user_states.language как источник истины
+        # ------------------------------------------------------------------
+        telegram_lang = user_data.get("language_code")
+        user_lang_from_states = None
+        
+        try:
+            if master_bot and hasattr(master_bot, 'db'):
+                user_lang_from_states = await master_bot.db.get_user_language(user_id)
+                logger.info(
+                    "auth_telegram: language sync - user_id=%s, telegram_lang=%s, user_states_lang=%s",
+                    user_id,
+                    telegram_lang,
+                    user_lang_from_states,
+                )
+            else:
+                logger.warning("auth_telegram: master_bot or db not available for user_id=%s", user_id)
+        except Exception as e:
+            logger.exception("auth_telegram: failed to get language from user_states for user_id=%s: %s", user_id, e)
+        
+        # Приоритет: 1) язык из user_states (источник истины), 2) язык из Telegram
+        final_language = user_lang_from_states or telegram_lang
+        
+        # 🔥 Всегда синхронизируем финальный язык в user_states.language
+        if final_language:
+            try:
+                if master_bot and hasattr(master_bot, 'db'):
+                    await master_bot.db.set_user_language(user_id, final_language)
+                    logger.info(
+                        "auth_telegram: saved/updated language in user_states: user_id=%s lang=%s",
+                        user_id,
+                        final_language
+                    )
+            except Exception as e:
+                logger.warning("auth_telegram: failed to save language to user_states: %s", e)
 
         # ------------------------------------------------------------------
         # Глобальные роли (platform-level): superadmin только из ENV
@@ -2975,15 +3024,37 @@ def create_miniapp_app(
                     detail="панель доступна только разрешённым пользователям",
                 )
 
+        # 🔥 Сохраняем пользователя с синхронизированным языком
         await miniapp_db.upsert_user(
             user_id=user_id,
             username=user_data.get("username"),
             first_name=user_data.get("first_name"),
             last_name=user_data.get("last_name"),
-            language=user_data.get("language_code"),
+            language=final_language,  # 🔥 Используем синхронизированный язык
         )
 
+        # Получаем инстансы пользователя
         instances = await master_bot.db.get_user_instances_with_meta(user_id)
+
+        # 🔥 Синхронизируем язык во все instance_meta.language для пользователя
+        if final_language and instances:
+            for inst in instances:
+                instance_id = inst.get("instance_id")
+                if not instance_id:
+                    continue
+                try:
+                    await master_bot.db.update_instance_meta_language(instance_id, final_language)
+                    logger.info(
+                        "auth_telegram: synced language to instance_meta: instance_id=%s lang=%s",
+                        instance_id,
+                        final_language
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "auth_telegram: failed to sync language to instance_meta: instance_id=%s error=%s",
+                        instance_id,
+                        e
+                    )
 
         default_instance_id: str | None = None
         if req.start_param and req.start_param.startswith("inst_"):
@@ -2999,11 +3070,12 @@ def create_miniapp_app(
         token = session_manager.create_session(user_id, user_data.get("username"))
 
         logger.info(
-            "auth_telegram: user_id=%s roles=%s instances=%s default_instance_id=%s",
+            "auth_telegram: user_id=%s roles=%s instances=%s default_instance_id=%s final_language=%s",
             user_id,
             roles,
             [i["instance_id"] for i in instances],
             default_instance_id,
+            final_language,
         )
 
         user_response = UserResponse(
@@ -3011,7 +3083,7 @@ def create_miniapp_app(
             username=user_data.get("username"),
             first_name=user_data.get("first_name"),
             last_name=user_data.get("last_name"),
-            language=user_data.get("language_code"),
+            language=final_language,  # 🔥 Возвращаем синхронизированный язык
             roles=roles,
             instances=[
                 {
@@ -3025,11 +3097,12 @@ def create_miniapp_app(
         )
 
         logger.info(
-            "auth_telegram RESPONSE user_id=%s roles=%s user.instances=%s default_instance_id=%s",
+            "auth_telegram RESPONSE user_id=%s roles=%s user.instances=%s default_instance_id=%s user.language=%s",
             user_id,
             roles,
             [i["instance_id"] for i in user_response.instances],
             default_instance_id,
+            user_response.language,
         )
 
         return AuthResponse(
@@ -3037,6 +3110,7 @@ def create_miniapp_app(
             user=user_response,
             default_instance_id=default_instance_id,
         )
+
 
     @app.get(
         "/api/superadmin/metrics",
@@ -3535,7 +3609,11 @@ def create_miniapp_app(
 
 
     @app.get("/api/user/subscription", response_model=UserSubscriptionResponse,
-    responses={**COMMON_AUTH_RESPONSES, 500: {"description": "Internal Server Error"}})
+    responses={
+        **COMMON_AUTH_RESPONSES, 
+        404: {"description": "Subscription not found"},
+        500: {"description": "Internal Server Error"}
+    })
 
     async def get_user_subscription_endpoint(
         current_user: Dict[str, Any] = Depends(get_current_user),
@@ -3725,6 +3803,17 @@ def create_miniapp_app(
         except Exception:
             logger.exception("get_me: failed to evaluate superadmins from miniapp_public")
 
+        # 🔥 Читаем язык пользователя из user_states
+        user_lang = None
+        try:
+            if master_bot and hasattr(master_bot, 'db'):
+                user_lang = await master_bot.db.get_user_language(user_id)
+                logger.info("get_me: user_id=%s, language from user_states=%s", user_id, user_lang)
+            else:
+                logger.warning("get_me: master_bot or db not available for user_id=%s", user_id)
+        except Exception as e:
+            logger.exception("get_me: failed to get user language for user_id=%s: %s", user_id, e)
+
         instances = await master_bot.db.get_user_instances_with_meta(user_id)
 
         return UserResponse(
@@ -3732,7 +3821,7 @@ def create_miniapp_app(
             username=current_user.get("username"),
             first_name=None,
             last_name=None,
-            language=None,
+            language=user_lang,  # 🔥 Теперь возвращаем реальный язык
             roles=roles,
             instances=[
                 {
@@ -4065,21 +4154,25 @@ def create_miniapp_app(
         current_user: Dict[str, Any] = Depends(get_current_user),
     ):
         await require_instance_access(instance_id, current_user, required_role="owner")
-
-        logger.info(
-            "update_instance_settings payload: %s",
-            settings.dict(),
-        )
-
-        logger.info(
-            "update_instance_settings: instance_id=%s auto_close_hours=%s openchat_enabled=%s privacy_mode_enabled=%s language=%s",
-            instance_id,
-            settings.autoclose_hours,
-            settings.openchat_enabled,
-            settings.privacy_mode_enabled,
-            settings.language,
-        )
-
+        
+        logger.info("update_instance_settings: payload=%s", settings.dict())
+        
+        # Если меняется язык инстанса — синхронизируем в user_states.language
+        if settings.language:
+            user_id = current_user["user_id"]
+            try:
+                await master_bot.db.set_user_language(user_id, settings.language)
+                logger.info(
+                    "update_instance_settings: synced language to user_states: user_id=%s lang=%s",
+                    user_id,
+                    settings.language
+                )
+            except Exception as e:
+                logger.warning(
+                    "update_instance_settings: failed to sync language to user_states: %s",
+                    e
+                )
+        
         await miniapp_db.update_instance_settings(instance_id, settings)
         return await miniapp_db.get_instance_settings(instance_id)
 
@@ -4168,7 +4261,14 @@ def create_miniapp_app(
         )
         return {"status": "ok"}
 
-    @app.get("/api/instances/{instance_id}/operators")
+    @app.get(
+        "/api/instances/{instance_id}/operators",
+        responses={
+            **COMMON_AUTH_RESPONSES,
+            422: {"description": "Validation Error"},
+        },
+    )
+
     async def get_operators(
         instance_id: InstanceId,
         current_user: Dict[str, Any] = Depends(get_current_user),
