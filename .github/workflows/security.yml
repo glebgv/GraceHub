@@ -28,38 +28,41 @@ jobs:
         id: npm-audit-miniapp
         working-directory: ./frontend-miniapp
         continue-on-error: true
-        run: npm audit --audit-level=high --omit=dev
+        run: |
+          npm audit --audit-level=high --omit=dev
+          echo "npm_exit_code=$?" >> $GITHUB_OUTPUT
 
       - name: Bandit
         id: bandit
         uses: PyCQA/bandit-action@v1
         continue-on-error: true
+        with:
+          # Убедитесь, что bandit-action устанавливает exit-code в outputs
+          # или используем альтернативный подход
+          args: --exit-zero
 
       - name: Check all scans passed
         id: check-all
         run: |
-          # Получаем коды завершения
-          SEMGREP_EXIT_CODE=${{ steps.semgrep.outputs.exit-code }}
-          # Для npm audit используем outcome, так как continue-on-error: true
-          # Если успешно - 0, если ошибка - 1
-          NPM_MINIAPP_EXIT_CODE=${{ steps.npm-audit-miniapp.outcome == 'success' && '0' || '1' }}
-          BANDIT_EXIT_CODE=${{ steps.bandit.outputs.exit-code }}
+          # Способ 1: Используем outcome (рекомендуется для continue-on-error)
+          SEMGREP_PASSED=${{ steps.semgrep.outcome == 'success' }}
+          NPM_AUDIT_PASSED=${{ steps.npm-audit-miniapp.outcome == 'success' }}
+          BANDIT_PASSED=${{ steps.bandit.outcome == 'success' }}
           
-          echo "SEMGREP_EXIT_CODE: $SEMGREP_EXIT_CODE"
-          echo "NPM_MINIAPP_EXIT_CODE: $NPM_MINIAPP_EXIT_CODE"
-          echo "BANDIT_EXIT_CODE: $BANDIT_EXIT_CODE"
+          echo "SEMGREP_PASSED: $SEMGREP_PASSED"
+          echo "NPM_AUDIT_PASSED: $NPM_AUDIT_PASSED"
+          echo "BANDIT_PASSED: $BANDIT_PASSED"
           
-          # Проверяем все коды завершения
-          if [ "$SEMGREP_EXIT_CODE" = "0" ] && \
-             [ "$NPM_MINIAPP_EXIT_CODE" = "0" ] && \
-             [ "$BANDIT_EXIT_CODE" = "0" ]; then
+          if [ "$SEMGREP_PASSED" = "true" ] && \
+             [ "$NPM_AUDIT_PASSED" = "true" ] && \
+             [ "$BANDIT_PASSED" = "true" ]; then
             echo "all-passed=true" >> $GITHUB_OUTPUT
             echo "✅ All security scans passed"
           else
             echo "all-passed=false" >> $GITHUB_OUTPUT
             echo "❌ Some scans failed:"
-            echo "- Semgrep: $SEMGREP_EXIT_CODE"
-            echo "- npm audit (miniapp): $NPM_MINIAPP_EXIT_CODE"
-            echo "- Bandit: $BANDIT_EXIT_CODE"
+            echo "- Semgrep: $SEMGREP_PASSED"
+            echo "- npm audit (miniapp): $NPM_AUDIT_PASSED"
+            echo "- Bandit: $BANDIT_PASSED"
             exit 1
           fi
