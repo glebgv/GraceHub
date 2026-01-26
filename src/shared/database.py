@@ -2139,47 +2139,55 @@ class MasterDatabase:
                 LEFT JOIN saas_plans sp ON sp.plan_id = us.plan_id
             """
 
-            where_clause = ""
+            # Создаем параметризованные запросы
             params: List[Any] = []
             count_params: List[Any] = []
-
-            # Поиск по user_id (поскольку имён нет — ищем только по ID)
+            
+            # Базовое условие WHERE (всегда 1=1 для упрощения добавления условий)
+            where_conditions = ["1=1"]
+            
+            # Поиск по user_id
             if search:
                 try:
                     search_id = int(search.strip())
-                    where_clause = " WHERE owners.user_id = $1 "
-                    params = [search_id, limit, offset]
-                    count_params = [search_id]
+                    where_conditions.append("owners.user_id = $1")
+                    params.append(search_id)
+                    count_params.append(search_id)
                 except ValueError:
-                    # Если не число — возвращаем пустой результат (поиск по имени невозможен)
                     return [], 0
-            else:
-                params = [limit, offset]
-
-            group_order_limit = """
+            
+            # Собираем WHERE-часть
+            where_clause = " WHERE " + " AND ".join(where_conditions)
+            
+            # Основной запрос
+            query = f"""
+                {base_select}
+                {where_clause}
                 GROUP BY owners.user_id, sp.code, sp.name, us.period_end
                 ORDER BY instances_count DESC, owners.user_id
-                LIMIT $1 OFFSET $2
+                LIMIT ${len(params) + 1} OFFSET ${len(params) + 2}
             """
+            
+            # Добавляем параметры limit и offset
+            params.extend([limit, offset])
+            
+            rows = await conn.fetch(query, *params)
 
-            # Конкатенация в отдельное выражение (безопасно: литералы + параметризация через asyncpg)
-            _sql_concat = base_select + where_clause + group_order_limit  # nosec B608
-            rows = await conn.fetch(_sql_concat, *params)
-
-            # Count query - аналогично
-            _count_concat = (
-                "SELECT COUNT(*) AS total "
-                "FROM (SELECT DISTINCT owner_user_id FROM bot_instances) AS owners"
-                + where_clause
-            )  # nosec B608
-            total_row = await conn.fetchrow(_count_concat, *count_params)
+            # Count query
+            count_query = f"""
+                SELECT COUNT(DISTINCT owner_user_id) AS total 
+                FROM bot_instances
+                {where_clause}
+            """
+            
+            total_row = await conn.fetchrow(count_query, *count_params)
             total = int(total_row["total"]) if total_row else 0
 
             clients = []
             for row in rows:
                 clients.append({
                     "user_id": row["user_id"],
-                    "full_name": f"User {row['user_id']}",  # Имени нет — показываем ID
+                    "full_name": f"User {row['user_id']}",
                     "username": None,
                     "first_name": None,
                     "last_name": None,
@@ -2191,7 +2199,6 @@ class MasterDatabase:
                 })
 
             return clients, total
-
 
     async def apply_invoice_to_billing(self, invoice_id: int) -> None:
         """
