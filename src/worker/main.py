@@ -1325,28 +1325,26 @@ class GraceHubWorker:
         counter = 3
 
         if assigned_username is not None:
-            set_parts.append(f"assigned_username = ${counter}")
+            set_parts.append("assigned_username = $" + str(counter))
             params.append(assigned_username)
             counter += 1
         if assigned_user_id is not None:
-            set_parts.append(f"assigned_user_id = ${counter}")
+            set_parts.append("assigned_user_id = $" + str(counter))
             params.append(assigned_user_id)
             counter += 1
         if status == "closed":
-            set_parts.append(f"closed_at = ${counter}")
+            set_parts.append("closed_at = $" + str(counter))
             params.append(now)
             counter += 1
 
         params.append(self.instance_id)
         params.append(ticket_id)
 
-        # Строим SET clause через join, затем используем конкатенацию вместо f-string
+        # Полностью без f-strings - только конкатенация строк
         set_clause = ", ".join(set_parts)
-        sql = (
-            "UPDATE tickets SET "
-            + set_clause
-            + f" WHERE instance_id = ${counter} AND id = ${counter + 1}"
-        )
+        where_clause = " WHERE instance_id = $" + str(counter) + " AND id = $" + str(counter + 1)
+        sql = "UPDATE tickets SET " + set_clause + where_clause
+        
         await self.db.execute(sql, tuple(params))
 
         ticket = await self.fetch_ticket(ticket_id)
@@ -1372,6 +1370,7 @@ class GraceHubWorker:
                         ticket_id,
                         e,
                     )
+
 
     async def handle_rating_callback(self, cb: CallbackQuery) -> None:
         data = cb.data or ""

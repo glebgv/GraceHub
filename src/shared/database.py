@@ -2163,14 +2163,14 @@ class MasterDatabase:
                 LIMIT $1 OFFSET $2
             """
 
-            # Основной запрос - используем конкатенацию вместо f-string
+            # Основной запрос - только конкатенация, никаких f-strings
             sql = base_select + where_clause + group_order_limit
             rows = await conn.fetch(sql, *params)
 
-            # Подсчёт total - используем конкатенацию вместо f-string
+            # Подсчёт total - только конкатенация, никаких f-strings
             count_sql = (
                 "SELECT COUNT(*) AS total "
-                "FROM (SELECT DISTINCT owner_user_id FROM bot_instances) AS owners "
+                "FROM (SELECT DISTINCT owner_user_id FROM bot_instances) AS owners"
                 + where_clause
             )
             total_row = await conn.fetchrow(count_sql, *count_params)
@@ -2192,6 +2192,7 @@ class MasterDatabase:
                 })
 
             return clients, total
+
 
 
     async def apply_invoice_to_billing(self, invoice_id: int) -> None:
