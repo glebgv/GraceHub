@@ -2172,7 +2172,7 @@ class MasterDatabase:
                 "SELECT COUNT(*) AS total "
                 "FROM (SELECT DISTINCT owner_user_id FROM bot_instances) AS owners"
                 + where_clause
-            )
+            )    # nosec B608
             total_row = await conn.fetchrow(count_sql, *count_params)
             total = int(total_row["total"]) if total_row else 0
 
