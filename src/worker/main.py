@@ -1340,11 +1340,13 @@ class GraceHubWorker:
         params.append(self.instance_id)
         params.append(ticket_id)
 
-        sql = f"""
-            UPDATE tickets
-            SET {", ".join(set_parts)}
-            WHERE instance_id = ${counter} AND id = ${counter + 1}
-        """
+        # Строим SET clause через join, затем используем конкатенацию вместо f-string
+        set_clause = ", ".join(set_parts)
+        sql = (
+            "UPDATE tickets SET "
+            + set_clause
+            + f" WHERE instance_id = ${counter} AND id = ${counter + 1}"
+        )
         await self.db.execute(sql, tuple(params))
 
         ticket = await self.fetch_ticket(ticket_id)
