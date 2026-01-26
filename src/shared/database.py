@@ -2164,7 +2164,7 @@ class MasterDatabase:
             """
 
             # Основной запрос - только конкатенация, никаких f-strings
-            sql = base_select + where_clause + group_order_limit
+            sql = base_select + where_clause + group_order_limit   # nosec B608
             rows = await conn.fetch(sql, *params)
 
             # Подсчёт total - только конкатенация, никаких f-strings

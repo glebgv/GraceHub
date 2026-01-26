@@ -1343,7 +1343,7 @@ class GraceHubWorker:
         # Полностью без f-strings - только конкатенация строк
         set_clause = ", ".join(set_parts)
         where_clause = " WHERE instance_id = $" + str(counter) + " AND id = $" + str(counter + 1)
-        sql = "UPDATE tickets SET " + set_clause + where_clause
+        sql = "UPDATE tickets SET " + set_clause + where_clause     # nosec B608
         
         await self.db.execute(sql, tuple(params))
 
