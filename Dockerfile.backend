@@ -49,11 +49,15 @@ WORKDIR /app/src
 COPY requirements.txt ../
 RUN pip install --no-cache-dir -r ../requirements.txt
 COPY src/ ./
+
 ENV PYTHONPATH=/app/src
 ENV APP_BASE_DIR=/app
 ENV PYTHONUNBUFFERED=1
+
 EXPOSE 9443
-CMD ["bash", "-c", "python -u -m master_bot.main"]
+
+# CMD с ожиданием PostgreSQL и логированием через tee
+CMD ["bash", "-c", "mkdir -p /app/logs && echo '⏳ master-bot: Waiting 30s for PostgreSQL...' && sleep 30 && echo '✅ PostgreSQL ready! Starting MasterBot' && python -u -m master_bot.main 2>&1 | tee /app/logs/masterbot.log"]
 
 FROM mirror.gcr.io/library/python:3.12-slim AS user-worker
 RUN apt-get update && apt-get install -y libpq-dev gcc g++ curl && rm -rf /var/lib/apt/lists/*
@@ -66,4 +70,3 @@ ENV APP_BASE_DIR=/app
 ENV PYTHONUNBUFFERED=1
 # 🔥 ФИКС: bash -c + PYTHONUNBUFFERED
 CMD ["bash", "-c", "python -u -m worker.main"]
-

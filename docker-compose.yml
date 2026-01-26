@@ -63,14 +63,7 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    entrypoint: ["/bin/sh", "-c"]
-    command: >
-      "
-      echo '⏳ master-bot: Waiting 30s for PostgreSQL...';
-      sleep 30;
-      echo '✅ PostgreSQL ready! Starting MasterBot';
-      exec python -m master_bot.main
-      "
+    # Удален entrypoint и command - используем CMD из Dockerfile
     restart: unless-stopped
 
   # Главный Mini App Frontend (существующий на порту 5173)

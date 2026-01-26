@@ -407,7 +407,7 @@ class MasterBot:
     # ====================== УПРАВЛЕНИЕ ВОРКЕРАМИ ======================
 
 
-    async def spawn_worker(self, instance_id: str, db: MasterDatabase):  # 🔥 Только db!
+    async def spawn_worker(self, instance_id: str, db: MasterDatabase):  #  Только db!
         """Спавним worker через DockerWorkerManager (БЕЗ token!)"""
         try:
             await self.worker_manager.spawn_worker(instance_id, db)
@@ -661,12 +661,12 @@ class MasterBot:
         if existing:
             raise ValueError("Этот бот уже добавлен в систему")
 
-        # 🔥 3.5) Проверка демо-подписки юзера (НЕ сбрасывается при пересоздании)
+        #  3.5) Проверка демо-подписки юзера (НЕ сбрасывается при пересоздании)
         sub = await self.db.get_user_subscription(owner_user_id)
         if sub is None or sub.get('days_left', 0) <= 0:
             raise ValueError(f"Демо-период истёк для owner_user_id {owner_user_id}")
 
-        # 🔥 4) Создание инстанса (ensure_default_subscription вызовется внутри create_bot_instance)
+        #  4) Создание инстанса (ensure_default_subscription вызовется внутри create_bot_instance)
         instance = await self.create_bot_instance(
             user_id=owner_user_id,
             token=token,
@@ -674,15 +674,15 @@ class MasterBot:
             bot_name=me.first_name,
         )
 
-        # 🔥 5) Setup webhook ПЕРЕД Docker spawn!
+        #  5) Setup webhook ПЕРЕД Docker spawn!
         await self.setup_worker_webhook(instance.instance_id, token)
         logger.info(f"✅ Miniapp: Webhook setup for {instance.instance_id}")
 
-        # 🔥 6) Спавним Docker worker
+        #  6) Спавним Docker worker
         await self.spawn_worker(instance.instance_id, self.db)
         logger.info(f"✅ Miniapp: Docker worker spawned for {instance.instance_id}")
 
-        # 🔥 7) Update status
+        #  7) Update status
         await self.db.update_instance_status(instance.instance_id, InstanceStatus.RUNNING)
 
         return instance
@@ -743,27 +743,11 @@ class MasterBot:
         self.dp.message(Command("start"))(self.cmd_start)
         self.dp.callback_query(F.data == "offer_accept")(self.handle_offer_accept)
         self.dp.callback_query(F.data == "offer_decline")(self.handle_offer_decline)
-
-        # УБРАТЬ эти команды - они не нужны в меню Master Bot
-        # self.dp.message(Command("add_bot"))(self.cmd_add_bot_entry)
-        # self.dp.message(Command("list_bots"))(self.cmd_list_bots_entry)
-        # self.dp.message(Command("remove_bot"))(self.cmd_remove_bot)
         
         self.dp.callback_query(F.data.startswith("lang_"))(self.handle_language_choice)
 
-        # УБРАТЬ связанные колбэки для меню добавления/удаления ботов
-        # self.dp.callback_query(F.data.startswith("instance_"))(self.handle_instance_entry)
-        # self.dp.callback_query(F.data.startswith("remove_"))(self.handle_remove_instance)
-        # self.dp.callback_query(F.data.startswith("toggle_"))(self.handle_toggle_instance)
-        # self.dp.callback_query(F.data.startswith("remove_confirm_"))(self.handle_remove_confirm)
-        # self.dp.callback_query(F.data.startswith("remove_yes_"))(self.handle_remove_instance)
-        # self.dp.callback_query(F.data.startswith("remove_no_"))(self.handle_remove_cancel)
-
         # Общий handler для меню callbacks
         self.dp.callback_query()(self.handle_menu_callback)
-
-        # УБРАТЬ text handler для токенов ботов
-        # self.dp.message(F.text)(self.handle_text)
 
         # === Stars / оплата тарифов ===
         self.dp.message(F.successful_payment)(self.handle_successful_payment)
@@ -1254,7 +1238,7 @@ class MasterBot:
     async def handle_language_choice(self, callback: CallbackQuery):
         """
         Обработчик выбора языка из меню.
-        callback.data формат: "lang:ru", "lang:en", и т.д.
+        callback.data формат: "lang_ru", "lang_en", и т.д.
         
         🔥 Синхронизация языка:
         1. user_states.language (источник истины)
@@ -1263,10 +1247,10 @@ class MasterBot:
         user_id = callback.from_user.id
         data = callback.data
         
-        # 🔥 Защита от некорректного формата callback.data
-        if ":" not in data:
+        # 🔥 Исправлено: callback.data имеет формат "lang_ru", "lang_en", а не "lang:ru"
+        if not data.startswith("lang_"):
             logger.warning(
-                "handle_language_choice: invalid callback data format, expected 'lang:code', got: %r user_id=%s",
+                "handle_language_choice: invalid callback data format, expected 'lang_xx', got: %r user_id=%s",
                 data,
                 user_id
             )
@@ -1274,20 +1258,8 @@ class MasterBot:
             await callback.answer(basetexts.language_unknown_error, show_alert=True)
             return
         
-        # Безопасный split с проверкой
-        parts = data.split(":", 1)
-        if len(parts) != 2:
-            logger.warning(
-                "handle_language_choice: split failed, parts=%s data=%r user_id=%s",
-                parts,
-                data,
-                user_id
-            )
-            basetexts = LANGS.get(self.default_lang)
-            await callback.answer(basetexts.language_unknown_error, show_alert=True)
-            return
-        
-        _, langcode = parts
+        # 🔥 Исправлено: получаем код языка из строки "lang_ru"
+        langcode = data.replace("lang_", "")
         
         if langcode not in LANGS:
             logger.warning(
@@ -1342,10 +1314,10 @@ class MasterBot:
                 e
             )
         
-        # Меню после смены языка
-        keyboard = self.get_main_menu_for_lang(texts)
-        
         try:
+            # 🔥 ИСПРАВЛЕНО: Используем get_main_menu_for_user вместо get_main_menu_for_lang
+            keyboard = await self.get_main_menu_for_user(user_id, texts)
+            
             await callback.message.edit_text(
                 texts.language_updated_message,
                 reply_markup=keyboard,
@@ -1356,9 +1328,20 @@ class MasterBot:
                 user_id,
                 e
             )
+            # Fallback на старый метод если что-то пошло не так
+            try:
+                keyboard = self.get_main_menu_for_lang(texts)
+                await callback.message.edit_text(
+                    texts.language_updated_message,
+                    reply_markup=keyboard,
+                )
+            except Exception as e2:
+                logger.error(
+                    "handle_language_choice: fallback also failed: %s",
+                    e2
+                )
         
         await callback.answer()
-
 
     async def cmd_add_bot_entry(self, message: Message):
         """
@@ -1903,7 +1886,7 @@ class MasterBot:
                 )
                 return
 
-            # 🔥 1. Create bot instance + store token
+            #  1. Create bot instance + store token
             instance = await self.create_bot_instance(
                 user_id=user_id,
                 token=token,
@@ -1912,25 +1895,25 @@ class MasterBot:
             )
             logger.info(f"✅ Created instance '{instance.instance_id}' in DB")
 
-            # 🔥 ЖДЁМ сохранения в БД (race condition fix!)
+            #  ЖДЁМ сохранения в БД (race condition fix!)
             logger.info(f"⏳ Waiting 3s for DB replication...")
             await asyncio.sleep(3)
 
-            # 🔥 2. Verify instance exists
+            #  2. Verify instance exists
             verify_instance = await self.db.get_instance(instance.instance_id)
             if not verify_instance:
                 logger.error(f"❌ Instance '{instance.instance_id}' not found after sleep!")
                 raise RuntimeError(f"DB replication failed for {instance.instance_id}")
 
-            # 🔥 3. Setup webhook
+            #  3. Setup webhook
             await self.setup_worker_webhook(instance.instance_id, token)
             logger.info(f"✅ Webhook setup completed for {instance.instance_id}")
 
-            # 🔥 4. Спавним Docker worker
+            #  4. Спавним Docker worker
             await self.spawn_worker(instance.instance_id, self.db)
             logger.info(f"✅ Docker worker spawned for {instance.instance_id}")
 
-            # 🔥 5. Update status
+            #  5. Update status
             await self.db.update_instance_status(instance.instance_id, InstanceStatus.RUNNING)
 
             await self.db.clear_user_state(user_id)
@@ -2246,7 +2229,7 @@ class MasterBot:
         runner = web.AppRunner(app)
         await runner.setup()
 
-        site = web.TCPSite(runner, "127.0.0.1", self.webhook_port)
+        site = web.TCPSite(runner, "0.0.0.0", self.webhook_port)
         await site.start()
 
         logger.info(f"Webhook server started on port {self.webhook_port}")
@@ -2478,7 +2461,7 @@ class MasterBot:
     # ====================== ЗАПУСК МАСТЕРА ======================
 
     async def run(self) -> None:
-        """🔥 Главный цикл Master Bot с автозапуском всех workers!"""
+        """ Главный цикл Master Bot с автозапуском всех workers!"""
         logger.info("Starting GraceHub Platform Master Bot...")
 
         # --- Startup DB check (fail fast) ---
@@ -2494,7 +2477,7 @@ class MasterBot:
             raise SystemExit(2)
         # --- end Startup DB check ---
 
-        # 🔥 АВТОЗАПУСК ВСЕХ инстансов из БД при старте!
+        #  АВТОЗАПУСК ВСЕХ инстансов из БД при старте!
         await self.load_existing_instances()
         logger.info("🚀 All existing workers restored from database!")
 
@@ -2531,7 +2514,7 @@ class MasterBot:
         logger.info("🎉 GraceHub Master Bot FULLY STARTED!")
         logger.info("📊 Active instances: %d", len(self.instances))
         
-        # 🔥 Бесконечный цикл
+        #  Бесконечный цикл
         while True:
             await asyncio.sleep(1)
 
@@ -2552,7 +2535,7 @@ class MasterBot:
                 # 2) Настраиваем вебхук (чтобы Telegram знал, куда слать апдейты)
                 await self.setup_worker_webhook(instance.instance_id, token)
                 
-                # 🔥 3) ЗАПУСКАЕМ КОНТЕЙНЕР вместо создания объекта GraceHubWorker
+                #  3) ЗАПУСКАЕМ КОНТЕЙНЕР вместо создания объекта GraceHubWorker
                 # Этот метод использует ваш worker_manager.py и Docker API
                 await self.spawn_worker(instance.instance_id, self.db)
                 
