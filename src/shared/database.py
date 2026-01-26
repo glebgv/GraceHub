@@ -2162,17 +2162,17 @@ class MasterDatabase:
                 LIMIT $1 OFFSET $2
             """
 
-            # WHERE clause contains only safe literals, all values passed via params
-            sql = base_select + where_clause + group_order_limit
-            rows = await conn.fetch(sql, *params)  # nosec B608
+            # Конкатенация в отдельное выражение (безопасно: литералы + параметризация через asyncpg)
+            _sql_concat = base_select + where_clause + group_order_limit  # nosec B608
+            rows = await conn.fetch(_sql_concat, *params)
 
-            # WHERE clause is safe literal, values in count_params
-            count_sql = (
+            # Count query - аналогично
+            _count_concat = (
                 "SELECT COUNT(*) AS total "
                 "FROM (SELECT DISTINCT owner_user_id FROM bot_instances) AS owners"
                 + where_clause
-            )
-            total_row = await conn.fetchrow(count_sql, *count_params)  # nosec B608
+            )  # nosec B608
+            total_row = await conn.fetchrow(_count_concat, *count_params)
             total = int(total_row["total"]) if total_row else 0
 
             clients = []
@@ -2191,6 +2191,7 @@ class MasterDatabase:
                 })
 
             return clients, total
+
 
     async def apply_invoice_to_billing(self, invoice_id: int) -> None:
         """
