@@ -1,0 +1,47 @@
+# Общий build-stage для Vite (зависимости и build)
+FROM node:22-alpine AS build
+WORKDIR /app
+
+ARG BUILD_PROD=false
+
+# Зависимости
+COPY frontend-helpdesk/package*.json ./
+RUN npm config set fetch-retry-maxtimeout 120000 && \
+    npm config set fetch-retry-mintimeout 10000 && \
+    npm config set fetch-retries 5
+RUN npm install --prefer-offline --no-audit
+
+# Копировать код
+COPY frontend-helpdesk/ ./
+
+# Vite ENV
+ARG VITE_API_BASE_URL=/api
+ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
+
+# Ограничить память Node.js
+ENV NODE_OPTIONS="--max-old-space-size=512"
+
+# Собрать статику только для prod
+RUN if [ "$BUILD_PROD" = "true" ]; then npm run build; fi
+
+# Dev-stage: только Vite dev server
+FROM node:22-alpine AS dev
+WORKDIR /app
+
+# Копировать зависимости и код из build
+COPY --from=build /app /app
+
+EXPOSE 3001
+
+# Запуск Vite dev server
+CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", "3001"]
+
+# Prod-stage: статика для NGINX
+FROM nginx:alpine AS prod
+# Копировать статику из build
+COPY --from=build /app/dist /usr/share/nginx/html/helpdesk
+
+EXPOSE 80
+
+CMD ["nginx", "-g", "daemon off;"]
+

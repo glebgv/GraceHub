@@ -1,3 +1,5 @@
+# creator GraceHub Tg: @Gribson_Micro
+
 import asyncio
 import json
 import logging
@@ -21,6 +23,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     Message,
     Update,
+    WebAppInfo,
 )
 from aiohttp import web
 from dotenv import load_dotenv
@@ -31,6 +34,7 @@ from shared.database import MasterDatabase
 from shared.models import BotInstance, InstanceStatus
 from shared.security import SecurityManager
 from shared.webhook_manager import WebhookManager
+from shared.worker_manager import worker_manager
 from worker.main import GraceHubWorker
 
 # Абсолютный путь к src
@@ -90,6 +94,7 @@ class MasterBot:
 
         self.webhook_manager = WebhookManager(webhook_domain, use_https=True)
         self.security = SecurityManager()
+        self.worker_manager = worker_manager
 
         self.instances: Dict[str, BotInstance] = {}
         self.worker_procs: Dict[str, subprocess.Popen] = {}
@@ -212,37 +217,68 @@ class MasterBot:
                     f"Failed to clear webhook fields in DB for instance {instance.instance_id}: {e}"
                 )
 
+    async def get_miniapp_url_for_user(self, user_id: int) -> str:
+        """
+        Возвращает URL мини-приложения для пользователя.
+        Теперь возвращает простую ссылку без параметров.
+        """
+        base_url = os.getenv("MINIAPP_BASE_URL", "").rstrip("/")
+        if not base_url:
+            logger.warning("MINIAPP_BASE_URL is not set; mini app link will be empty")
+            return ""
+        
+        # Возвращаем просто базовый URL без параметров
+        return base_url
+
+
     # ====================== БИЛЛИНГ: CRON-ЗАДАЧИ ======================
 
     async def _billing_notify_expiring(self) -> None:
-        rows = await self.db.get_instances_expiring_in_7_days_for_notify()
+        rows = await self.db.get_user_subscriptions_expiring_in_5_days_for_notify()
         if not rows:
             return
 
-        logger.info("BillingCron: %d instances expiring in 7 days (fresh)", len(rows))
+        logger.info("BillingCron: %d user subscriptions expiring in <=5 days (fresh)", len(rows))
+
+        notified_users = set()  # Чтобы избежать дубликатов уведомлений в одном запуске
+
+        single_tenant = await self.get_single_tenant_config()  # Получаем конфиг (как в вашем коде)
 
         for r in rows:
-            owner_id = r["owner_user_id"]
-            admin_chat = r["admin_private_chat_id"]
-            bot_username = r["bot_username"]
-            days_left = r["days_left"]
+            user_id = r["user_id"]
+            if user_id in notified_users:
+                continue  # Пропускаем, если уже уведомили
 
-            if not owner_id and not admin_chat:
+            owner_id = r.get("owner_user_id")  # Может быть None, если нет инстансов
+            days_left = r["days_left"]
+            bot_usernames = r.get("bot_usernames") or []  # Список или пусто
+            admin_private_chat_ids = set(r.get("admin_private_chat_ids") or [])  # Уникальные чаты
+
+            if not owner_id and not admin_private_chat_ids:
+                logger.warning(f"BillingCron: No targets for user_id={user_id} (no owner/admin chats)")
                 continue
 
+            # Собираем targets: owner + уникальные admin chats
             targets = set()
             if owner_id:
                 targets.add(owner_id)
-            if admin_chat:
-                targets.add(admin_chat)
+            targets.update(admin_private_chat_ids)
+
+            # Если single_tenant enabled, уведомляем всех allowed (с dedup)
+            if single_tenant["enabled"]:
+                targets.update(single_tenant["allowed_user_ids"])
+
+            # Подготавливаем строку для ботов
+            bot_usernames_str = ', '.join([f'@{username}' for username in bot_usernames]) if bot_usernames else 'ваши боты (или аккаунт)'
 
             sent_ok = False
             for chat_id in targets:
                 try:
                     texts = await self.t(chat_id)
 
+                    # Адаптированный текст: используем bot_usernames_str вместо bot_username
                     text = texts.billing_expiring_title + texts.billing_expiring_body.format(
-                        bot_username=bot_username,
+                        bot_username=bot_usernames_str,  # Здесь меняем на строку с ботами
                         days_left=days_left,
                     )
 
@@ -254,18 +290,21 @@ class MasterBot:
                     sent_ok = True
                 except Exception as e:
                     logger.exception(
-                        "BillingCron: failed to send expiring notification to %s: %s",
+                        "BillingCron: failed to send expiring notification to %s (user_id=%s): %s",
                         chat_id,
+                        user_id,
                         e,
                     )
 
             if sent_ok:
                 try:
-                    await self.db.mark_expiring_notified_today(r["instance_id"])
+                    await self.db.mark_user_expired_noticed_today(user_id)
+                    notified_users.add(user_id)  # Отмечаем как уведомлённого
+                    logger.info(f"BillingCron: Notified user_id={user_id} (bots: {len(bot_usernames)})")
                 except Exception as e:
                     logger.exception(
-                        "BillingCron: failed to mark expiring notified for %s: %s",
-                        r["instance_id"],
+                        "BillingCron: failed to mark expiring notified for user_id %s: %s",
+                        user_id,
                         e,
                     )
 
@@ -367,70 +406,31 @@ class MasterBot:
 
     # ====================== УПРАВЛЕНИЕ ВОРКЕРАМИ ======================
 
-    def is_worker_process_alive(self, instance_id: str) -> bool:
-        proc = self.worker_procs.get(instance_id)
-        if not proc:
-            return False
-        return proc.poll() is None
 
-    def spawn_worker(self, instance_id: str, token: str) -> None:
-        """
-        Запускает отдельный процесс воркера для указанного инстанса.
-        Воркеры работают через polling (src/worker/main.py).
-        """
-        # Если процесс уже жив — не дублируем
-        proc = self.worker_procs.get(instance_id)
-        if proc is not None and proc.poll() is None:
-            return
+    async def spawn_worker(self, instance_id: str, db: MasterDatabase):  # 🔥 Только db!
+        """Спавним worker через DockerWorkerManager (БЕЗ token!)"""
+        try:
+            await self.worker_manager.spawn_worker(instance_id, db)
+            logger.info(f"✅ Worker spawned for instance {instance_id} (Docker)")
+            await self.db.update_instance_status(instance_id, InstanceStatus.RUNNING)
+        except Exception as e:
+            logger.error(f"❌ Failed to spawn worker for {instance_id}: {e}")
+            await self.db.update_instance_status(instance_id, InstanceStatus.ERROR)
+            raise
 
-        env = os.environ.copy()
-        env["WORKER_INSTANCE_ID"] = instance_id
-        env["WORKER_TOKEN"] = token
+    async def stop_worker(self, instance_id: str):
+        """Останавливаем Docker worker"""
+        try:
+            await self.worker_manager.stop_worker(instance_id)
+            logger.info(f"✅ Docker worker stopped for {instance_id}")
+        except Exception as e:
+            logger.warning(f"Docker stop failed {instance_id}: {e}")
+        
+        # Очищаем память
+        self.workers.pop(instance_id, None)
+        self.worker_procs.pop(instance_id, None)
 
-        worker_path = Path(__file__).resolve().parent.parent / "worker" / "main.py"
 
-        proc = subprocess.Popen(
-            [sys.executable, str(worker_path)],
-            env=env,
-            stdout=None,  # или subprocess.PIPE, но тогда надо читать
-            stderr=None,
-        )
-        self.worker_procs[instance_id] = proc
-        logger.info(f"Spawned worker process for instance {instance_id} (pid={proc.pid})")
-
-    async def stop_worker(self, instance_id: str) -> None:
-        """
-        Останавливает worker для инстанса: отменяет tasks, удаляет из памяти и снимает webhook.
-        """
-        # Cancel the worker's background tasks (e.g., auto_close_tickets_loop)
-        task = self.worker_tasks.pop(instance_id, None)
-        if task:
-            task.cancel()
-            try:
-                await task  # Wait for cancellation to complete gracefully
-            except asyncio.CancelledError:
-                pass  # Expected
-            logger.info(f"Cancelled task for worker {instance_id}")
-
-        # Remove the worker object from memory
-        worker = self.workers.pop(instance_id, None)
-        if worker:
-            # Optional: Close any worker-specific resources, e.g., bot session if needed
-            await worker.bot.session.close()
-            logger.info(f"Removed worker object for {instance_id}")
-
-        # Remove webhook if set
-        instance = self.instances.get(instance_id)
-        if instance and instance.webhook_url:
-            token = await self.db.get_decrypted_token(instance_id)
-            if token:
-                if await self.remove_worker_webhook(instance_id, token):
-                    logger.info(f"Removed webhook for {instance_id}")
-                else:
-                    logger.warning(f"Failed to remove webhook for {instance_id}")
-
-        # Update status in DB if necessary (e.g., to STOPPED)
-        await self.db.update_instance_status(instance_id, InstanceStatus.STOPPED)
 
     # ====================== МИНИ-APПА: УТИЛИТЫ ======================
 
@@ -634,7 +634,7 @@ class MasterBot:
         """
         Упрощённый вариант process_bot_token для mini app:
         - без Message/ответов в Telegram,
-        - та же логика проверки/создания инстанса и запуска воркера.
+        - создаёт инстанс + webhook + Docker worker с race condition fix.
         Возвращает BotInstance.
         """
 
@@ -645,7 +645,7 @@ class MasterBot:
             if current >= limit:
                 raise ValueError(f"Достигнут лимит подключаемых ботов: {current}/{limit}")
 
-        # 1) Проверка формата токена (как в process_bot_token)
+        # 1) Проверка формата токена
         if not self.validate_token_format(token):
             raise ValueError("Неверный формат токена")
 
@@ -661,7 +661,12 @@ class MasterBot:
         if existing:
             raise ValueError("Этот бот уже добавлен в систему")
 
-        # 4) Создание инстанса + запуск воркера (ровно как в create_bot_instance)
+        # 🔥 3.5) Проверка демо-подписки юзера (НЕ сбрасывается при пересоздании)
+        sub = await self.db.get_user_subscription(owner_user_id)
+        if sub is None or sub.get('days_left', 0) <= 0:
+            raise ValueError(f"Демо-период истёк для owner_user_id {owner_user_id}")
+
+        # 🔥 4) Создание инстанса (ensure_default_subscription вызовется внутри create_bot_instance)
         instance = await self.create_bot_instance(
             user_id=owner_user_id,
             token=token,
@@ -669,7 +674,19 @@ class MasterBot:
             bot_name=me.first_name,
         )
 
+        # 🔥 5) Setup webhook ПЕРЕД Docker spawn!
+        await self.setup_worker_webhook(instance.instance_id, token)
+        logger.info(f"✅ Miniapp: Webhook setup for {instance.instance_id}")
+
+        # 🔥 6) Спавним Docker worker
+        await self.spawn_worker(instance.instance_id, self.db)
+        logger.info(f"✅ Miniapp: Docker worker spawned for {instance.instance_id}")
+
+        # 🔥 7) Update status
+        await self.db.update_instance_status(instance.instance_id, InstanceStatus.RUNNING)
+
         return instance
+
 
     async def _send_personal_miniapp_link(
         self,
@@ -720,61 +737,134 @@ class MasterBot:
 
     # ====================== НАСТРОЙКА ХЭНДЛЕРОВ МАСТЕРА ======================
 
+    # В методе setup_handlers закомментируйте или удалите ненужные команды:
     def setup_handlers(self):
         """Setup command and callback handlers"""
         self.dp.message(Command("start"))(self.cmd_start)
         self.dp.callback_query(F.data == "offer_accept")(self.handle_offer_accept)
         self.dp.callback_query(F.data == "offer_decline")(self.handle_offer_decline)
 
-        self.dp.message(Command("add_bot"))(self.cmd_add_bot_entry)
-        self.dp.message(Command("list_bots"))(self.cmd_list_bots_entry)
-        self.dp.message(Command("remove_bot"))(self.cmd_remove_bot)
+        # УБРАТЬ эти команды - они не нужны в меню Master Bot
+        # self.dp.message(Command("add_bot"))(self.cmd_add_bot_entry)
+        # self.dp.message(Command("list_bots"))(self.cmd_list_bots_entry)
+        # self.dp.message(Command("remove_bot"))(self.cmd_remove_bot)
+        
         self.dp.callback_query(F.data.startswith("lang_"))(self.handle_language_choice)
 
-        # Входной хендлер для instance_<id>
-        self.dp.callback_query(F.data.startswith("instance_"))(self.handle_instance_entry)
-        self.dp.callback_query(F.data.startswith("remove_"))(self.handle_remove_instance)
-        self.dp.callback_query(F.data.startswith("toggle_"))(self.handle_toggle_instance)
-        self.dp.callback_query(F.data.startswith("remove_confirm_"))(self.handle_remove_confirm)
-        self.dp.callback_query(F.data.startswith("remove_yes_"))(self.handle_remove_instance)
-        self.dp.callback_query(F.data.startswith("remove_no_"))(self.handle_remove_cancel)
+        # УБРАТЬ связанные колбэки для меню добавления/удаления ботов
+        # self.dp.callback_query(F.data.startswith("instance_"))(self.handle_instance_entry)
+        # self.dp.callback_query(F.data.startswith("remove_"))(self.handle_remove_instance)
+        # self.dp.callback_query(F.data.startswith("toggle_"))(self.handle_toggle_instance)
+        # self.dp.callback_query(F.data.startswith("remove_confirm_"))(self.handle_remove_confirm)
+        # self.dp.callback_query(F.data.startswith("remove_yes_"))(self.handle_remove_instance)
+        # self.dp.callback_query(F.data.startswith("remove_no_"))(self.handle_remove_cancel)
 
         # Общий handler для меню callbacks
         self.dp.callback_query()(self.handle_menu_callback)
 
-        # Text handler for adding bot tokens
-        self.dp.message(F.text)(self.handle_text)
+        # УБРАТЬ text handler для токенов ботов
+        # self.dp.message(F.text)(self.handle_text)
 
         # === Stars / оплата тарифов ===
         self.dp.message(F.successful_payment)(self.handle_successful_payment)
 
     # ====================== МЕНЮ МАСТЕРА ======================
 
+
+    async def get_master_bot_username(self) -> str:
+        """Получаем username мастер-бота"""
+        me = await self.bot.get_me()
+        return me.username
+
     async def handle_menu_callback(self, callback: CallbackQuery):
-        """Handle menu callbacks like add_bot, list_bots etc."""
+        """Handle menu callbacks like help, change_language, open_panel etc."""
         data = callback.data
         user_id = callback.from_user.id
+        
         if not await self._is_master_allowed_user(user_id):
             await callback.answer("Доступ только владельцу", show_alert=True)
             return
 
         texts = await self.t(user_id)
 
-        if data == "add_bot":
-            await self.cmd_add_bot(callback.message, user_id=user_id)
-
-        elif data == "list_bots":
-            await self.cmd_list_bots(callback.message, user_id=user_id)
-
+        if data == "open_panel":
+            base_url = os.getenv("MINIAPP_BASE_URL", "").rstrip("/")
+            
+            if not base_url:
+                await callback.answer(
+                    "Мини-приложение не настроено (MINIAPP_BASE_URL отсутствует)",
+                    show_alert=True
+                )
+                return
+            
+            try:
+                # Добавляем / для Telegram WebApp
+                if not base_url.endswith("/"):
+                    tma_url = base_url + "/"
+                else:
+                    tma_url = base_url
+                
+                logger.info(f"Opening Mini App with URL: {tma_url}")
+                
+                keyboard = InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [
+                            InlineKeyboardButton(
+                                text="📱 Открыть панель управления" if texts.lang_code == "ru" 
+                                else "📱 Open Control Panel",
+                                web_app=WebAppInfo(url=tma_url),
+                            )
+                        ],
+                        [
+                            InlineKeyboardButton(
+                                text="← Назад" if texts.lang_code == "ru" 
+                                else "← Back",
+                                callback_data="main_menu",
+                            )
+                        ]
+                    ]
+                )
+                
+                message_text = (
+                    "Нажмите кнопку ниже, чтобы открыть панель управления в Telegram:" 
+                    if texts.lang_code == "ru"
+                    else "Click the button below to open the control panel in Telegram:"
+                )
+                
+                await callback.message.edit_text(message_text, reply_markup=keyboard)
+                
+            except Exception as e:
+                logger.error(f"Error creating Mini App link: {e}", exc_info=True)
+                # Альтернатива: простая ссылка
+                try:
+                    await callback.message.edit_text(
+                        f"Откройте мини-приложение по ссылке: {base_url}",
+                        reply_markup=InlineKeyboardMarkup(
+                            inline_keyboard=[
+                                [
+                                    InlineKeyboardButton(
+                                        text="← Назад",
+                                        callback_data="main_menu",
+                                    )
+                                ]
+                            ]
+                        )
+                    )
+                except:
+                    pass
+            
+            await callback.answer()
+            return
+            
         elif data == "help":
             await callback.message.answer(
                 texts.master_help_text,
                 reply_markup=self.get_main_menu_for_lang(texts),
             )
-
+            
         elif data == "change_language":
             base_texts = LANGS.get(self.default_lang)
-
+            
             keyboard = InlineKeyboardMarkup(
                 inline_keyboard=[
                     [
@@ -800,18 +890,43 @@ class MasterBot:
                     ],
                 ]
             )
-
+            
             await callback.message.edit_text(
                 base_texts.language_menu_title,
                 reply_markup=keyboard,
             )
             await callback.answer()
             return
+            
+        elif data == "offer_accept":
+            # Обработка принятия оферты
+            st = await self.db.get_offer_settings()
+            url = str(st.get("url") or "").strip()
+            
+            # source: "bot" чтобы отличать от miniapp ("miniapp" например)
+            await self.db.upsert_user_offer(user_id, url, True, source="bot")
 
-        elif data == "main_menu":
-            # передаём user_id явно, чтобы cmd_start не опирался на message.from_user.id
+            await callback.answer("Принято.")
+            # возвращаем в старт/меню
             await self.cmd_start(callback.message, user_id=user_id)
+            return
+            
+        elif data == "offer_decline":
+            # Обработка отказа от оферты
+            user_id = callback.from_user.id
+            st = await self.db.get_offer_settings()
+            url = str(st.get("url") or "").strip()
 
+            await self.db.upsert_user_offer(user_id, url, False, source="bot")
+
+            await callback.answer("Отменено.", show_alert=True)
+            await callback.message.answer("Без принятия оферты использование сервиса невозможно.")
+            return
+            
+        elif data == "main_menu":
+            # возвращаемся в главное меню
+            await self.cmd_start(callback.message, user_id=user_id)
+            
         else:
             await callback.answer(texts.master_unknown_command)
 
@@ -855,8 +970,76 @@ class MasterBot:
 
         return False
 
+    async def get_main_menu_for_user(self, user_id: int, texts) -> InlineKeyboardMarkup:
+        """
+        Генерирует меню с динамической кнопкой для мини-приложения.
+        """
+        base_url = os.getenv("MINIAPP_BASE_URL", "").rstrip("/")
+        has_miniapp_url = bool(base_url)
+        
+        keyboard_rows = []
+        
+        if has_miniapp_url:
+            try:
+                open_panel_text = getattr(texts, 'master_menu_open_panel', '🚀 Старт / Панель')
+                
+                # Telegram требует URL с / в конце для WebAppInfo
+                if not base_url.endswith("/"):
+                    tma_url = base_url + "/"
+                else:
+                    tma_url = base_url
+                
+                logger.info(f"Creating WebAppInfo with URL: {tma_url}")
+                
+                keyboard_rows.append([
+                    InlineKeyboardButton(
+                        text=open_panel_text,
+                        web_app=WebAppInfo(url=tma_url),  # URL должен быть с / в конце
+                    )
+                ])
+                
+            except Exception as e:
+                logger.error(f"Error creating Telegram Mini App link: {e}", exc_info=True)
+                # Fallback: кнопка-колбэк вместо web_app
+                open_panel_text = getattr(texts, 'master_menu_open_panel_disabled', '🚀 Старт (не настроен)')
+                keyboard_rows.append([
+                    InlineKeyboardButton(
+                        text=open_panel_text,
+                        callback_data="open_panel",
+                    )
+                ])
+        else:
+            open_panel_text = getattr(texts, 'master_menu_open_panel_disabled', '🚀 Старт (не настроен)')
+            keyboard_rows.append([
+                InlineKeyboardButton(
+                    text=open_panel_text,
+                    callback_data="open_panel",
+                )
+            ])
+        
+        # Кнопка "Помощь"
+        help_text = getattr(texts, 'master_menu_help', 'Помощь')
+        keyboard_rows.append([
+            InlineKeyboardButton(
+                text=help_text,
+                callback_data="help",
+            ),
+        ])
+        
+        # Кнопка "Язык"
+        language_text = getattr(texts, 'menu_language', '🌐 Язык')
+        keyboard_rows.append([
+            InlineKeyboardButton(
+                text=language_text,
+                callback_data="change_language",
+            ),
+        ])
+        
+        return InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
+
+
     async def cmd_start(self, message: Message, user_id: int | None = None):
-        """Handle /start command"""
+        """Handle /start command - только для уведомлений и настроек"""
         if user_id is None:
             user_id = message.from_user.id
 
@@ -978,43 +1161,204 @@ class MasterBot:
                         )
         # ----------------------------------------------------------
 
+        # Проверяем наличие MINIAPP_BASE_URL
+        base_url = os.getenv("MINIAPP_BASE_URL", "").rstrip("/")
+        has_miniapp_url = bool(base_url)
+        
         text = f"{texts.master_title}\n\n"
 
         if plan_line:
             text += f"{plan_line}\n\n"
 
+        # Обновленное описание
         text += (
-            f"<b>{texts.admin_panel_choose_section}</b>\n"
-            f"{texts.master_start_howto_title}\n"
-            f"• {texts.master_start_cmd_add_bot}\n"
-            f"• {texts.master_start_cmd_list_bots}\n"
-            f"• {texts.master_start_cmd_remove_bot}\n"
+            f"<b>Это сервисный бот GraceHub</b>\n\n"
+            f"Основные функции:\n"
+            f"• Получение уведомлений о статусе ваших ботов\n"
+            f"• Уведомления об истечении подписок\n"
+            f"• Управление настройками языка\n"
+            f"• Быстрый доступ к панели управления\n"
+            f"• Справка по системе\n\n"
         )
+        
+        if has_miniapp_url:
+            # Получаем правильный текст в зависимости от языка
+            if texts.lang_code == "ru":
+                text += f"<i>Нажмите кнопку 'Старт', чтобы открыть панель управления в Telegram Mini App</i>\n"
+            elif texts.lang_code == "en":
+                text += f"<i>Click the 'Start' button to open the control panel in Telegram Mini App</i>\n"
+            elif texts.lang_code == "es":
+                text += f"<i>Haz clic en el botón 'Iniciar' para abrir el panel de control en Telegram Mini App</i>\n"
+            elif texts.lang_code == "hi":
+                text += f"<i>टेलीग्राम मिनी ऐप में कंट्रोल पैनल खोलने के लिए 'प्रारंभ' बटन पर क्लिक करें</i>\n"
+            elif texts.lang_code == "zh":
+                text += f"<i>点击'启动'按钮在Telegram Mini App中打开控制面板</i>\n"
+        else:
+            if texts.lang_code == "ru":
+                text += f"<i>Мини-приложение не настроено (MINIAPP_BASE_URL отсутствует)</i>\n"
+            elif texts.lang_code == "en":
+                text += f"<i>Mini app is not configured (MINIAPP_BASE_URL is missing)</i>\n"
+            elif texts.lang_code == "es":
+                text += f"<i>La mini aplicación no está configurada (falta MINIAPP_BASE_URL)</i>\n"
+            elif texts.lang_code == "hi":
+                text += f"<i>मिनी ऐप कॉन्फ़िगर नहीं है (MINIAPP_BASE_URL गायब है)</i>\n"
+            elif texts.lang_code == "zh":
+                text += f"<i>迷你应用程序未配置（缺少MINIAPP_BASE_URL）</i>\n"
 
-        await message.answer(text, reply_markup=self.get_main_menu_for_lang(texts))
+        try:
+            # Пытаемся создать меню с нативной кнопкой
+            keyboard = await self.get_main_menu_for_user(user_id, texts)
+            await message.answer(text, reply_markup=keyboard)
+        except Exception as e:
+            logger.error(f"Failed to create native menu for user {user_id}, using fallback: {e}")
+            
+            # Fallback: обычное меню без нативной кнопки
+            fallback_keyboard = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text=getattr(texts, 'master_menu_open_panel', '🚀 Старт / Панель'),
+                            callback_data="open_panel",
+                        ),
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            text=getattr(texts, 'master_menu_help', '📚 Помощь'),
+                            callback_data="help",
+                        ),
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            text=getattr(texts, 'menu_language', '🌐 Язык'),
+                            callback_data="change_language",
+                        ),
+                    ],
+                ]
+            )
+            
+            # Добавляем сообщение об ошибке
+            error_text = ""
+            if texts.lang_code == "ru":
+                error_text = "\n\n<i>⚠️ Не удалось создать нативную кнопку для мини-приложения</i>"
+            elif texts.lang_code == "en":
+                error_text = "\n\n<i>⚠️ Failed to create native button for mini app</i>"
+            elif texts.lang_code == "es":
+                error_text = "\n\n<i>⚠️ No se pudo crear el botón nativo para la mini aplicación</i>"
+            elif texts.lang_code == "hi":
+                error_text = "\n\n<i>⚠️ मिनी ऐप के लिए नेटिव बटन बनाने में विफल</i>"
+            elif texts.lang_code == "zh":
+                error_text = "\n\n<i>⚠️ 无法为迷你应用程序创建原生按钮</i>"
+                
+            await message.answer(text + error_text, reply_markup=fallback_keyboard)
 
     async def handle_language_choice(self, callback: CallbackQuery):
+        """
+        Обработчик выбора языка из меню.
+        callback.data формат: "lang:ru", "lang:en", и т.д.
+        
+        🔥 Синхронизация языка:
+        1. user_states.language (источник истины)
+        2. instance_meta.language (для всех инстансов пользователя)
+        """
         user_id = callback.from_user.id
-        data = callback.data  # "lang_ru", "lang_en", ...
-        _, lang_code = data.split("_", 1)
-
-        # Если язык неизвестен — просто игнорируем
-        if lang_code not in LANGS:
-            base_texts = LANGS.get(self.default_lang)
-            await callback.answer(base_texts.language_unknown_error, show_alert=True)
+        data = callback.data
+        
+        # 🔥 Защита от некорректного формата callback.data
+        if ":" not in data:
+            logger.warning(
+                "handle_language_choice: invalid callback data format, expected 'lang:code', got: %r user_id=%s",
+                data,
+                user_id
+            )
+            basetexts = LANGS.get(self.default_lang)
+            await callback.answer(basetexts.language_unknown_error, show_alert=True)
             return
-
-        # Сохраняем язык
-        await self.db.set_user_language(user_id, lang_code)
-
-        texts = LANGS[lang_code]
-
-        # Сообщаем об успешной смене и показываем главное меню
-        await callback.message.edit_text(
-            texts.language_updated_message,
-            reply_markup=self.get_main_menu_for_lang(texts),
-        )
+        
+        # Безопасный split с проверкой
+        parts = data.split(":", 1)
+        if len(parts) != 2:
+            logger.warning(
+                "handle_language_choice: split failed, parts=%s data=%r user_id=%s",
+                parts,
+                data,
+                user_id
+            )
+            basetexts = LANGS.get(self.default_lang)
+            await callback.answer(basetexts.language_unknown_error, show_alert=True)
+            return
+        
+        _, langcode = parts
+        
+        if langcode not in LANGS:
+            logger.warning(
+                "handle_language_choice: unsupported language code: %s user_id=%s",
+                langcode,
+                user_id
+            )
+            basetexts = LANGS.get(self.default_lang)
+            await callback.answer(basetexts.language_unknown_error, show_alert=True)
+            return
+        
+        # 🔥 1. Обновляем user_states.language (источник истины для user-level)
+        try:
+            await self.db.set_user_language(user_id, langcode)
+            logger.info(
+                "handle_language_choice: saved language to user_states: user_id=%s lang=%s",
+                user_id,
+                langcode
+            )
+        except Exception as e:
+            logger.exception(
+                "handle_language_choice: failed to save language to user_states: user_id=%s lang=%s error=%s",
+                user_id,
+                langcode,
+                e
+            )
+        
+        texts = LANGS[langcode]
+        
+        # 🔥 2. Обновляем instance_meta.language для всех инстансов пользователя
+        try:
+            instances = await self.db.get_user_instances(user_id)
+            if instances:
+                for instance in instances:
+                    try:
+                        await self.db.update_instance_meta_language(instance.instance_id, langcode)
+                        logger.info(
+                            "handle_language_choice: synced language to instance_meta: instance_id=%s lang=%s",
+                            instance.instance_id,
+                            langcode
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "handle_language_choice: failed to sync language to instance_meta: instance_id=%s error=%s",
+                            instance.instance_id,
+                            e
+                        )
+        except Exception as e:
+            logger.exception(
+                "handle_language_choice: failed to get user instances for language sync: user_id=%s error=%s",
+                user_id,
+                e
+            )
+        
+        # Меню после смены языка
+        keyboard = self.get_main_menu_for_lang(texts)
+        
+        try:
+            await callback.message.edit_text(
+                texts.language_updated_message,
+                reply_markup=keyboard,
+            )
+        except Exception as e:
+            logger.error(
+                "handle_language_choice: failed to edit message: user_id=%s error=%s",
+                user_id,
+                e
+            )
+        
         await callback.answer()
+
 
     async def cmd_add_bot_entry(self, message: Message):
         """
@@ -1066,6 +1410,22 @@ class MasterBot:
         if not await self._is_master_allowed_user(user_id):
             await message.answer("Access denied in single-tenant mode.")
             return
+
+        # Проверка подписки перед началом процесса добавления
+        subscription = await self.db.get_user_subscription(user_id)
+        now = datetime.now(timezone.utc)
+        
+        if not subscription:
+            # Если нет подписки, создаём демо автоматически
+            await self.db.ensure_default_subscription(user_id)
+            subscription = await self.db.get_user_subscription(user_id)  # Перезагружаем
+
+        if subscription['period_end'] < now and subscription.get('plan_code') == 'demo':
+            texts = await self.t(user_id)
+            error_text = texts.demo_expired_message  # Шаблон: "Ваш демо-период истёк. Продлите подписку для создания новых ботов."
+            await message.answer(error_text)
+            logger.warning(f"Denied instance creation start for user {user_id}: demo expired")
+            return  # Блокируем начало процесса
 
         chat_id = message.chat.id
         logger.info(
@@ -1196,7 +1556,7 @@ class MasterBot:
                 except Exception as e:
                     logger.warning(f"Failed to remove webhook for {instance_id}: {e}")
 
-            self.stop_worker(instance_id)
+            await self.stop_worker(instance_id)
             await self.db.update_instance_status(instance_id, InstanceStatus.PAUSED)
             instance.status = InstanceStatus.PAUSED
 
@@ -1210,7 +1570,7 @@ class MasterBot:
                 except Exception as e:
                     logger.warning(f"Failed to remove webhook for {instance_id} on resume: {e}")
                 try:
-                    self.spawn_worker(instance_id, token)
+                    await self.spawn_worker(instance_id, self.db)
                 except Exception as e:
                     logger.error(f"Failed to spawn worker for {instance_id} on resume: {e}")
                     await callback.answer("❌ Ошибка при запуске бота", show_alert=True)
@@ -1368,7 +1728,7 @@ class MasterBot:
             except Exception as e:
                 logger.warning(f"Failed to remove webhook for {instance_id}: {e}")
 
-        self.stop_worker(instance_id)
+        await self.stop_worker(instance_id)
 
         await self.db.update_instance_status(instance_id, InstanceStatus.PAUSED)
         instance.status = InstanceStatus.PAUSED
@@ -1395,7 +1755,7 @@ class MasterBot:
                 logger.warning(f"Failed to remove webhook for {instance_id} on resume: {e}")
 
             try:
-                self.spawn_worker(instance_id, token)
+                await self.spawn_worker(instance_id, self.db)
             except Exception as e:
                 logger.error(f"Failed to spawn worker for {instance_id} on resume: {e}")
                 await callback.answer("❌ Ошибка при запуске бота")
@@ -1428,12 +1788,13 @@ class MasterBot:
             except Exception as e:
                 logger.warning(f"Failed to remove webhook for {instance_id} on delete: {e}")
 
-        # Останавливаем polling-воркер
-        self.stop_worker(instance_id)
+        await self.stop_worker(instance_id)
 
         # Удаление инстанса
         await self.db.delete_instance(instance_id)
         self.instances.pop(instance_id, None)
+        await self.db.decrement_user_instances_created(owner_user_id)
+
 
         # Всплывающее уведомление
         await callback.answer("✅ " + texts.master_instance_deleted_short)
@@ -1505,7 +1866,7 @@ class MasterBot:
             )
 
     async def process_bot_token(self, message: Message, token: str):
-        """Process provided bot token"""
+        """Process provided bot token — создаёт Docker worker + webhook"""
         user_id = message.from_user.id
         texts = await self.t(user_id)
 
@@ -1523,12 +1884,9 @@ class MasterBot:
             # Check if bot already exists
             existing = await self.db.get_instance_by_token_hash(self.security.hash_token(token))
             if existing:
-                # 1-е сообщение — ошибка
                 await message.answer(texts.master_token_already_exists)
-                # чистим состояние
                 await self.db.clear_user_state(user_id)
-
-                # 2-е сообщение — сразу главное меню на текущем языке
+                
                 start_text = (
                     f"{texts.master_title}\n\n"
                     f"{texts.admin_panel_title}\n\n"
@@ -1545,25 +1903,35 @@ class MasterBot:
                 )
                 return
 
-            # Create bot instance
+            # 🔥 1. Create bot instance + store token
             instance = await self.create_bot_instance(
                 user_id=user_id,
                 token=token,
                 bot_username=me.username,
                 bot_name=me.first_name,
             )
+            logger.info(f"✅ Created instance '{instance.instance_id}' in DB")
 
-            # === ДОБАВЛЕНИЕ: Создаём in-memory worker сразу, как в restore ===
-            worker = GraceHubWorker(instance.instance_id, token, self.db)
-            self.workers[instance.instance_id] = worker
-            logger.info(f"Created in-memory worker for new instance {instance.instance_id}")
+            # 🔥 ЖДЁМ сохранения в БД (race condition fix!)
+            logger.info(f"⏳ Waiting 3s for DB replication...")
+            await asyncio.sleep(3)
 
+            # 🔥 2. Verify instance exists
+            verify_instance = await self.db.get_instance(instance.instance_id)
+            if not verify_instance:
+                logger.error(f"❌ Instance '{instance.instance_id}' not found after sleep!")
+                raise RuntimeError(f"DB replication failed for {instance.instance_id}")
+
+            # 🔥 3. Setup webhook
             await self.setup_worker_webhook(instance.instance_id, token)
-            logger.info(f"Webhook setup completed for new instance {instance.instance_id}")
+            logger.info(f"✅ Webhook setup completed for {instance.instance_id}")
 
-            await worker.bot.get_me()  # Health check
-            logger.info(f"Bot.get_me() successful for new instance {instance.instance_id}")
-            # === КОНЕЦ ДОБАВЛЕНИЯ ===
+            # 🔥 4. Спавним Docker worker
+            await self.spawn_worker(instance.instance_id, self.db)
+            logger.info(f"✅ Docker worker spawned for {instance.instance_id}")
+
+            # 🔥 5. Update status
+            await self.db.update_instance_status(instance.instance_id, InstanceStatus.RUNNING)
 
             await self.db.clear_user_state(user_id)
 
@@ -1597,9 +1965,10 @@ class MasterBot:
             await message.answer(text_resp, reply_markup=keyboard)
 
         except Exception as e:
-            logger.error(f"Error processing token: {e}")
+            logger.error(f"Error processing token: {e}", exc_info=True)
             await message.answer(texts.master_token_generic_error.format(error=str(e)))
             await self.db.clear_user_state(user_id)
+
 
     async def check_worker_token_health(
         self, instance_id: str, auto_remove_webhook: bool = False
@@ -1693,12 +2062,13 @@ class MasterBot:
             webhook_secret=webhook_secret,
             status=InstanceStatus.STARTING,
             created_at=datetime.now(timezone.utc),
-            owner_user_id=user_id,  # фиксируем владельца-интегратора
+            owner_user_id=user_id,  
             admin_private_chat_id=None,
         )
 
         # Save to database
         await self.db.create_instance(instance)
+        await self.db.increment_user_instances_created(user_id)
 
         # Store encrypted token separately
         await self.db.store_encrypted_token(instance_id, token)
@@ -1708,7 +2078,7 @@ class MasterBot:
 
         # Сразу запускаем отдельный воркер-процесс (polling)
         try:
-            self.spawn_worker(instance_id, token)
+            await self.spawn_worker(instance_id, self.db)
             instance.status = InstanceStatus.RUNNING
             await self.db.update_instance_status(instance_id, InstanceStatus.RUNNING)
         except Exception as e:
@@ -1821,27 +2191,26 @@ class MasterBot:
         await message.answer(text, reply_markup=keyboard)
 
     def get_main_menu_for_lang(self, texts) -> InlineKeyboardMarkup:
+        """
+        Резервное меню, используемое только если не удалось создать нативное меню.
+        """
         return InlineKeyboardMarkup(
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text=texts.master_menu_add_bot,
-                        callback_data="add_bot",
-                    ),
-                    InlineKeyboardButton(
-                        text=texts.master_menu_list_bots,
-                        callback_data="list_bots",
+                        text=getattr(texts, 'master_menu_open_panel', '🚀 Старт / Панель'),
+                        callback_data="open_panel",
                     ),
                 ],
                 [
                     InlineKeyboardButton(
-                        text=texts.master_menu_help,
+                        text=getattr(texts, 'master_menu_help', '📚 Помощь'),
                         callback_data="help",
                     ),
                 ],
                 [
                     InlineKeyboardButton(
-                        text=texts.menu_language,
+                        text=getattr(texts, 'menu_language', '🌐 Язык'),
                         callback_data="change_language",
                     ),
                 ],
@@ -1877,7 +2246,7 @@ class MasterBot:
         runner = web.AppRunner(app)
         await runner.setup()
 
-        site = web.TCPSite(runner, "0.0.0.0", self.webhook_port)
+        site = web.TCPSite(runner, "127.0.0.1", self.webhook_port)
         await site.start()
 
         logger.info(f"Webhook server started on port {self.webhook_port}")
@@ -2078,9 +2447,10 @@ class MasterBot:
 
                         try:
                             # Пересоздаем worker
-                            worker = GraceHubWorker(instance_id, token, self.db)
+                            worker = GraceHubWorker(instance_id=instance_id, db=self.db, token=token)
+                            await worker.initialize()
                             self.workers[instance_id] = worker
-                            logger.info(f"Successfully created GraceHubWorker for {instance_id}")
+                            logger.info(f"✅ Restored GraceHubWorker for {instance_id}")
 
                             # Setup webhook (idempotent)
                             await self.setup_worker_webhook(instance_id, token)
@@ -2108,11 +2478,13 @@ class MasterBot:
     # ====================== ЗАПУСК МАСТЕРА ======================
 
     async def run(self) -> None:
+        """🔥 Главный цикл Master Bot с автозапуском всех workers!"""
         logger.info("Starting GraceHub Platform Master Bot...")
 
         # --- Startup DB check (fail fast) ---
         try:
             await self.db.init()
+            logger.info("✅ MasterDatabase инициализирована")
         except Exception as e:
             reason = self._format_db_startup_error(e)
             logger.critical(
@@ -2122,7 +2494,9 @@ class MasterBot:
             raise SystemExit(2)
         # --- end Startup DB check ---
 
+        # 🔥 АВТОЗАПУСК ВСЕХ инстансов из БД при старте!
         await self.load_existing_instances()
+        logger.info("🚀 All existing workers restored from database!")
 
         # Монитор воркеров
         logger.info("Worker monitor interval = %s", settings.WORKER_MONITOR_INTERVAL)
@@ -2137,40 +2511,56 @@ class MasterBot:
         # Глобальный loop для автозакрытия тикетов
         asyncio.create_task(self.auto_close_tickets_loop())
 
+        # Webhook сервер (БЕЗ API!)
         await self.start_webhook_server()
 
+        # Master bot webhook
         master_webhook_url = f"https://{self.webhook_domain}/master_webhook"
         await self.bot.set_webhook(
             url=master_webhook_url,
             allowed_updates=[
                 "message",
-                "callback_query",
+                "callback_query", 
                 "pre_checkout_query",
                 "successful_payment",
             ],
             drop_pending_updates=True,
         )
-        logger.info(f"Master bot webhook set to {master_webhook_url}")
+        logger.info(f"✅ Master bot webhook set to {master_webhook_url}")
 
+        logger.info("🎉 GraceHub Master Bot FULLY STARTED!")
+        logger.info("📊 Active instances: %d", len(self.instances))
+        
+        # 🔥 Бесконечный цикл
         while True:
             await asyncio.sleep(1)
+
+
 
     async def load_existing_instances(self):
         instances = await self.db.get_all_active_instances()
         for instance in instances:
             token = await self.db.get_decrypted_token(instance.instance_id)
             if not token:
+                logger.warning(f"⚠️ No token for {instance.instance_id} - skipping")
                 continue
 
-            # 1) Сначала кладем instance в память (чтобы setup_worker_webhook видел webhook_secret)
+            # 1) Кладем данные инстанса в кеш мастера
             self.instances[instance.instance_id] = instance
 
-            # 2) Создаем worker в памяти
-            worker = GraceHubWorker(instance.instance_id, token, self.db)
-            self.workers[instance.instance_id] = worker
-            await self.setup_worker_webhook(instance.instance_id, token)
+            try:
+                # 2) Настраиваем вебхук (чтобы Telegram знал, куда слать апдейты)
+                await self.setup_worker_webhook(instance.instance_id, token)
+                
+                # 🔥 3) ЗАПУСКАЕМ КОНТЕЙНЕР вместо создания объекта GraceHubWorker
+                # Этот метод использует ваш worker_manager.py и Docker API
+                await self.spawn_worker(instance.instance_id, self.db)
+                
+                logger.info(f"✅ Docker container started & webhook set for {instance.instance_id}")
 
-            logger.info(f"Loaded instance {instance.instance_id} with webhook")
+            except Exception as e:
+                logger.error(f"❌ Failed to restore instance {instance.instance_id}: {e}", exc_info=True)
+                await self.db.update_instance_status(instance.instance_id, InstanceStatus.ERROR)
 
     async def setup_worker_webhook(
         self,

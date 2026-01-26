@@ -1,0 +1,71 @@
+name: Backend CI
+
+on:
+  push:
+    branches: [main, dev]
+    paths:
+      - "src/worker/**"
+      - "src/master_bot/**"
+      - "src/shared/**"
+      - "tests/**"
+      - "requirements.txt"
+      - ".github/workflows/backend-ci.yml"
+  pull_request:
+    branches: [main, dev]
+    paths:
+      - "src/worker/**"
+      - "src/master_bot/**"
+      - "src/shared/**"
+      - "tests/**"
+      - "requirements.txt"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+        component:
+          - name: worker
+            test_path: tests/worker
+            env:
+              WORKER_INSTANCE_ID: "test-instance"
+              WORKER_TOKEN: "123456789:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+          
+          - name: master-bot
+            test_path: tests/master_bot
+            env:
+              MASTER_BOT_TOKEN: "123456789:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+              WEBHOOK_DOMAIN: "example.test"
+              WEBHOOK_PORT: "8443"
+          
+          - name: backend-api
+            test_path: tests/backend_api
+            env:
+              MASTER_BOT_TOKEN: "123456789:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+              WEBHOOK_DOMAIN: "example.test"
+    
+    name: Test ${{ matrix.component.name }} (Python ${{ matrix.python-version }})
+    
+    env:
+      DATABASE_URL: sqlite+aiosqlite:///./test.db
+      LOG_LEVEL: "INFO"
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio httpx
+      
+      - name: Run ${{ matrix.component.name }} tests
+        env: ${{ matrix.component.env }}
+        run: pytest ${{ matrix.component.test_path }} -q
+

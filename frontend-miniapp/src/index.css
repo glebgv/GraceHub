@@ -1,0 +1,210 @@
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.animate-pulse {
+  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+.skeleton {
+  background-color: #e5e7eb;
+  border-radius: 4px;
+}
+
+.skeleton.h-3 { height: 0.75rem; }
+.skeleton.h-4 { height: 1rem; }
+.skeleton.h-5 { height: 1.25rem; }
+.skeleton.h-6 { height: 1.5rem; }
+.skeleton.h-8 { height: 2rem; }
+.skeleton.h-10 { height: 2.5rem; }
+
+.skeleton.w-12 { width: 3rem; }
+.skeleton.w-16 { width: 4rem; }
+.skeleton.w-20 { width: 5rem; }
+.skeleton.w-24 { width: 6rem; }
+.skeleton.w-32 { width: 8rem; }
+.skeleton.w-40 { width: 10rem; }
+.skeleton.w-48 { width: 12rem; }
+.skeleton.w-full { width: 100%; }
+
+.skeleton.rounded { border-radius: 4px; }
+.skeleton.rounded-full { border-radius: 9999px; }
+
+.mb-2 { margin-bottom: 0.5rem; }
+.mb-4 { margin-bottom: 1rem; }
+.space-y-2 > * + * { margin-top: 0.5rem; }
+.space-y-4 > * + * { margin-top: 1rem; }
+
+/* Убедитесь, что скелетоны всегда видны */
+.skeleton {
+  display: block !important;
+  background-color: #e5e7eb;
+  border-radius: 4px;
+  min-height: 1rem; /* Минимальная высота */
+}
+
+/* Для flex-контейнеров */
+.stat-block .skeleton {
+  flex-shrink: 0;
+}
+
+
+
+:root {
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  line-height: 1.4;
+  font-weight: 400;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+
+  /* Цвета Telegram Mini App (при наличии) */
+  color: var(--tg-theme-text-color, #111827);
+  background-color: var(--tg-theme-bg-color, #f3f4f6);
+}
+
+/* Сброс коробочной модели */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+/* Базовые размеры документа */
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+/* Фон и базовый цвет текста */
+body {
+  min-width: 320px;
+  min-height: 100vh;
+  background-color: var(--tg-theme-bg-color, #f3f4f6);
+  color: var(--tg-theme-text-color, #111827);
+}
+
+/* Ссылки */
+a {
+  font-weight: 500;
+  color: var(--tg-theme-link-color, #3b82f6);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+/* Заголовки по умолчанию */
+h1 {
+  font-size: 1.6rem;
+  line-height: 1.2;
+  margin: 0;
+}
+
+/* Базовый стиль для button — но без жёсткого центрирования всего body */
+button {
+  border-radius: 999px;
+  border: none;
+  padding: 0.6em 1.2em;
+  font-size: 0.95rem;
+  font-weight: 500;
+  font-family: inherit;
+  background-color: var(--tg-theme-button-color, #3b82f6);
+  color: var(--tg-theme-button-text-color, #ffffff);
+  cursor: pointer;
+  transition:
+    background-color 0.15s ease,
+    transform 0.08s ease,
+    box-shadow 0.12s ease;
+}
+
+button:hover {
+  background-color: rgba(59, 130, 246, 0.92);
+  transform: translateY(-1px);
+  box-shadow: 0 3px 6px rgba(37, 99, 235, 0.45);
+}
+
+button:active {
+  transform: translateY(0);
+  box-shadow: 0 1px 3px rgba(37, 99, 235, 0.35);
+}
+
+button:focus,
+button:focus-visible {
+  outline: 2px solid rgba(59, 130, 246, 0.65);
+  outline-offset: 2px;
+}
+
+/* Светлая тема по системным настройкам как мягкий оверрайд, не ломающий Telegram */
+@media (prefers-color-scheme: light) {
+  :root {
+    background-color: var(--tg-theme-bg-color, #ffffff);
+    color: var(--tg-theme-text-color, #111827);
+  }
+
+  a:hover {
+    color: var(--tg-theme-link-color, #2563eb);
+  }
+}
+
+
+/* Screen reader only */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
+
+
+/* Vaul Drawer styles */
+.drawer-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  z-index: 9998;
+}
+
+.drawer-content {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  max-height: 96vh;
+  border-radius: 16px 16px 0 0;
+  background: var(--tg-theme-bg-color);
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.drawer-handle {
+  width: 32px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--tg-theme-hint-color);
+  margin: 12px auto 8px;
+  flex-shrink: 0;
+}
+
+.drawer-content .card-body {
+  overflow-y: auto;
+  max-height: calc(96vh - 80px);
+  -webkit-overflow-scrolling: touch;
+}
+

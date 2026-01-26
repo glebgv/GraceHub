@@ -56,7 +56,7 @@ TEXTS_ZH = Texts(
         "打开聊天设置 → '话题' / '论坛模式'，启用它然后重复 /bind。"
     ),
     openchat_bound_ok=(
-        "✅ OpenChat 已成功绑定到此聊天：\n"
+        "✅ GraceHub 已成功绑定到此聊天：\n"
         "<b>{chat_title}</b>\n\n"
         "新用户请求将作为票据创建在此聊天中。"
     ),
@@ -171,7 +171,6 @@ TEXTS_ZH = Texts(
     master_add_bot_warning="❗️ 请确保令牌正确且未在其他地方使用。",
     master_menu_add_bot="➕ 添加机器人",
     master_menu_list_bots="📋 机器人列表",
-    master_menu_help="❓ 帮助",
     master_start_hint="使用 /start 查看可用命令",
     master_help_text=(
         "GraceHub 平台允许你添加自己的机器人，通过它来管理客服并回复用户。\n\n"
@@ -287,4 +286,9 @@ TEXTS_ZH = Texts(
     ticket_no_assignees="没有可分配的客服",
     first_message_forwarded="✅ 消息已转发至客服，很快回复！",
     session_flood_message="⏳ 您的消息已送达，请等待客服回复！",
+    default_greeting= "👋 您好！我是您的专属助手，请问需要我帮您做什么？",
+    master_menu_open_panel = "🚀 启动 / 面板",
+    master_menu_open_panel_disabled = "🚀 启动 (未配置)",
+    master_menu_help = "📚 帮助",
+    lang_code="zh",
 )

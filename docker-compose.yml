@@ -1,0 +1,142 @@
+services:
+  db:
+    image: mirror.gcr.io/library/postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  queue-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+      target: queue-worker
+    env_file: .env
+    environment:
+      - ENCRYPTION_KEY=DK2GpT43STFu463KTh4aUNLud5HPZ38YEBpD-ndhm3E=
+    volumes:
+      - app_logs:/app/logs
+      - gracehub_data:/app/data:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+      target: api
+    env_file: .env
+    environment:
+      - ENCRYPTION_KEY=DK2GpT43STFu463KTh4aUNLud5HPZ38YEBpD-ndhm3E=
+    volumes:
+      - app_logs:/app/logs
+      - gracehub_data:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  master-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+      target: master-bot
+    env_file: .env
+    environment:
+      - ENCRYPTION_KEY=DK2GpT43STFu463KTh4aUNLud5HPZ38YEBpD-ndhm3E=
+    volumes:
+      - app_logs:/app/logs
+      - gracehub_data:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      db:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command: >
+      "
+      echo '⏳ master-bot: Waiting 30s for PostgreSQL...';
+      sleep 30;
+      echo '✅ PostgreSQL ready! Starting MasterBot';
+      exec python -m master_bot.main
+      "
+    restart: unless-stopped
+
+  # Главный Mini App Frontend (существующий на порту 5173)
+  frontend-nginx:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend-nginx
+      target: ${ENV_MODE:-dev}
+      args:
+        - VITE_API_BASE_URL=${MINIAPP_BASE_URL}
+        - BUILD_PROD=${BUILD_PROD:-false}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - letsencrypt_data:/etc/letsencrypt:ro
+      - certbot_www:/var/www/certbot
+    environment:
+      - VITE_API_BASE_URL=${MINIAPP_BASE_URL}
+      - WEBHOOK_DOMAIN=${WEBHOOK_DOMAIN}
+    depends_on:
+      - api
+      - master-bot
+      - db
+    restart: unless-stopped
+
+  certbot:
+    image: certbot/certbot:latest
+    volumes:
+      - letsencrypt_data:/etc/letsencrypt
+      - certbot_www:/var/www/certbot
+    entrypoint: "/bin/sh -c"
+    command: >
+      "trap exit TERM;
+      while :; do
+        certbot renew --webroot -w /var/www/certbot --quiet --post-hook 'docker kill -s HUP frontend-nginx';
+        sleep 12h & wait $${!};
+      done;"
+    depends_on:
+      - frontend-nginx
+    restart: unless-stopped
+
+  user-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+      target: user-worker
+    profiles: ["template"]
+    env_file: .env
+    environment:
+      - ENCRYPTION_KEY=DK2GpT43STFu463KTh4aUNLud5HPZ38YEBpD-ndhm3E=
+      - WORKER_INSTANCE_ID=${WORKER_INSTANCE_ID:-unknown}
+      - 'DATABASE_URL=postgresql://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}'
+    hostname: gracehub-worker-${WORKER_INSTANCE_ID:-unknown}
+    container_name: gracehub-worker-${WORKER_INSTANCE_ID:-unknown}
+    volumes:
+      - gracehub_data:/app/data:ro
+      - app_logs:/app/logs
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  app_logs:
+  gracehub_data:
+  letsencrypt_data:
+  certbot_www:

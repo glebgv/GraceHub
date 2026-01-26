@@ -1,3 +1,5 @@
+# creator GraceHub Tg: @Gribson_Micro
+
 import asyncio
 import logging
 import os
@@ -37,27 +39,102 @@ if str(SRC_DIR) not in sys.path:
 logger = logging.getLogger("worker")
 
 
-def setup_logging() -> None:
-    """
-    Логируем в отдельный файл на инстанс, либо в общий logs/worker.log.
-    """
-    instance_id = getattr(settings, "WORKER_INSTANCE_ID", None) or os.getenv(
-        "WORKER_INSTANCE_ID", "unknown"
-    )
-    default_path = Path("logs") / f"worker_{instance_id}.log"
-
-    log_file_str = getattr(settings, "LOG_FILE", None)
+def setup_logging():
+    """🔥 НОВЫЙ setup_logging - НЕ использует ENV токены!"""
+    # 🔥 Парсим instance_id ИЗ HOSTNAME (даже при импорте)
+    import os
+    hostname = os.uname().nodename
+    import re
+    match = re.match(r"gracehub-worker-([a-zA-Z0-9_-]+)", hostname)
+    instance_id = match.group(1) if match else 'unknown'
+    
+    default_path = Path('logs') / f"worker-{instance_id}.log"
+    log_file_str = getattr(settings, 'LOGFILE', None)
     log_path = Path(log_file_str) if log_file_str else default_path
+    
     log_path.parent.mkdir(parents=True, exist_ok=True)
-
+    
     logging.basicConfig(
-        level=getattr(logging, getattr(settings, "LOG_LEVEL", "INFO").upper(), logging.INFO),
-        format="%(asctime)s [pid=%(process)d] - %(name)s - %(levelname)s - %(message)s",
+        level=getattr(logging, getattr(settings, 'LOGLEVEL', 'INFO').upper(), logging.INFO),
+        format='%(asctime)s pid=%(process)d - %(name)s - %(levelname)s - %(message)s',
         handlers=[
-            logging.FileHandler(log_path, encoding="utf-8"),
+            logging.FileHandler(log_path, encoding='utf-8'),
             logging.StreamHandler(),
         ],
     )
+
+
+async def run_worker():
+    """🔥 Главная функция воркера БЕЗ retry - ПРЯМОЙ старт!"""
+    import os, sys, re, asyncio, socket
+    
+    print(f"🔥 DEBUG: WORKER START - hostname={socket.gethostname()}")
+    
+    logger.info("🔥 WORKER START - DIRECT mode (no retry loop)")
+    
+    # 1. Парсинг instance_id
+    instance_id = os.getenv("WORKER_INSTANCE_ID")
+    if not instance_id:
+        hostname = socket.gethostname()
+        logger.info(f"🔍 Parsing hostname: {hostname}")
+        match = re.match(r"gracehub-worker-([a-zA-Z0-9_-]+)", hostname)
+        if match:
+            instance_id = match.group(1)
+            logger.info(f"✅ Parsed instance_id: '{instance_id}'")
+        else:
+            logger.error(f"❌ Cannot parse instance_id from '{hostname}'!")
+            sys.exit(1)
+    
+    logger.info(f"🎯 TARGET instance_id: '{instance_id}'")
+    logger.info(f"🔍 Environment check: WORKER_INSTANCE_ID={os.getenv('WORKER_INSTANCE_ID')}, DATABASE_URL={'SET' if os.getenv('DATABASE_URL') else 'NOT SET'}")
+
+    # 2. Database URL
+    database_url = os.getenv("DATABASE_URL")
+    if not database_url:
+        logger.error("❌ DATABASE_URL env var required!")
+        sys.exit(1)
+    
+    logger.info(f"✅ Using DATABASE_URL={database_url[:50]}...")
+    
+    # 🔥 3. MasterDatabase - ОДНА попытка! (НЕ retry!)
+    try:
+        from shared.database import MasterDatabase
+        db = MasterDatabase(database_url)
+        await db.init()
+        logger.info("✅ Database + Cipher ready")
+    except Exception as e:
+        logger.error(f"❌ Database init FAILED: {e}")
+        sys.exit(1)
+    
+    # 🔥 4. GraceHubWorker - ПРЯМОЙ вызов!
+    logger.info("🔄 Creating GraceHubWorker...")
+    worker = GraceHubWorker(db=db, instance_id=instance_id)
+    
+    logger.info("🔄 Starting worker.initialize()...")
+    await worker.initialize()
+    
+    logger.info(f"✅ Worker '{instance_id}' FULLY ready!")
+    logger.info(f"✅ Bot ready: @{worker.bot_username}")
+    
+    # 🆕 6. Запускаем обработчик команд от API в фоне
+    try:
+        logger.info(f"🔄 [Instance {instance_id}] Starting bot commands processor...")
+        asyncio.create_task(worker.process_bot_commands_loop())
+        logger.info(f"✅ [Instance {instance_id}] Bot commands processor started")
+    except Exception as e:
+        logger.error(f"❌ [Instance {instance_id}] Failed to start commands processor: {e}", exc_info=True)
+        # Продолжаем работу без обработчика команд
+    
+    # 7. Webhook server + infinite loop
+    logger.info("🚀 Starting webhook server...")
+    logger.info("⏳ Waiting for updates...")
+    
+    # Запуск webhook сервера (если есть)
+    if hasattr(worker, 'start_webhook_server'):
+        asyncio.create_task(worker.start_webhook_server())
+    
+    # Infinite loop
+    await asyncio.Event().wait()
 
 
 class AdminStates(StatesGroup):
@@ -142,40 +219,74 @@ class GraceHubWorker:
             return text
         return text[: limit - 1] + "…"
 
-    def __init__(self, instance_id: str, token: str, db: MasterDatabase):
+    def __init__(self, instance_id: str, db: MasterDatabase, token: str = None):
         self.instance_id = instance_id
-        self.token = token
-        self.bot = Bot(
-            token=self.token,
-            default=DefaultBotProperties(parse_mode=ParseMode.HTML),
-        )
-        self.dp = Dispatcher()
         self.db: MasterDatabase = db
-        self.ratelimiter = BotRateLimiter(self.token)
+        
+        # 🔥 token загружается АСИНХРОННО в initialize()!
+        self.token = token  # Может быть None
+        self.bot = None
+        self.bot_username = None
+        self.ratelimiter = None  
+        
+        self.dp = Dispatcher()
         self.shutdown_event = asyncio.Event()
         self.lang_code = "ru"
         self.texts = LANGS[self.lang_code]
 
-        # --- глобальные дефолты из БД (SuperAdmin -> miniapp_public.instanceDefaults) ---
+        # --- глобальные дефолты ---
         self._platform_defaults = PlatformInstanceDefaultsCache(self.db, ttl_seconds=15)
 
-        # локальные значения, которые обновляются из БД (через _refresh_limits_from_db)
         self.antiflood_limit_per_min: int = 0
         self.max_file_mb: int = 10
         self.max_file_bytes: int = self.max_file_mb * 1024 * 1024
 
-        # Храним скользящее окно значений в минуту. Для антифлуда
         self.user_msg_timestamps: dict[int, deque[datetime]] = {}
         self.user_session_messages: Dict[int, int] = {}
+        self.ticket_keyboard_anchor: Dict[int, Dict[str, Any]] = {}
 
-        self.register_handlers()
 
     async def initialize(self) -> None:
         """
-        Асинхронная инициализация worker'а: вызов init_database и другие async-операции.
+        🔥 Полная асинхронная инициализация с GRACEFUL FALLBACK
         """
-        await self.init_database()  # Ваш существующий метод
-        logger.info(f"Worker initialized for instance {self.instance_id}")
+        logger.info(f"🔄 Initializing worker for instance {self.instance_id}")
+        
+        # 🔥 1. Проверяем инстанс (с fallback!)
+        instance = await self.db.get_instance(self.instance_id)
+        if not instance:
+            logger.warning(f"⚠️ Instance '{self.instance_id}' NOT FOUND in DB - MINIMAL MODE")
+            # 🔥 Создаём fake instance для минимальной работы
+            instance = type('FakeInstance', (), {
+                'bot_username': 'unknown-bot',
+                'instance_id': self.instance_id
+            })()
+        
+        # 🔥 2. Загружаем токен (может не быть)
+        self.token = await self.db.get_decrypted_token(self.instance_id)
+        if not self.token:
+            logger.error(f"❌ FATAL: No token for {self.instance_id} - cannot initialize bot!")
+            return  # Graceful fallback
+        
+        logger.info(f"✅ Token loaded for @{instance.bot_username}")
+        
+        # 🔥 3. Создаём Bot и ratelimiter
+        self.bot = Bot(
+            token=self.token,
+            default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+        )
+        self.ratelimiter = BotRateLimiter(self.token)
+        self.bot_username = instance.bot_username
+        
+        # 🔥 4. Регистрируем handlers
+        self.register_handlers()
+        
+        # 🔥 5. Существующий код
+        await self.init_database()
+        await self.load_language()
+        
+        logger.info(f"✅ Worker FULLY initialized: @{self.bot_username}")
+
 
     async def _is_attachment_too_big(self, message: Message) -> bool:
         await (
@@ -353,27 +464,207 @@ class GraceHubWorker:
         return InlineKeyboardMarkup(inline_keyboard=buttons)
 
     async def init_database(self) -> None:
-        # master_db уже инициализирован и передан в конструктор
-        # здесь только дефолты настроек для конкретного инстанса
-        if await self.get_setting("admin_user_id") is None:
-            await self.set_setting("admin_user_id", "0")
+        """Инициализация дефолтных настроек только для СУЩЕСТВУЮЩИХ инстансов"""
+        
+        logger.info(f"🔍 Checking instance '{self.instance_id}'...")
+        
+        # 🔥 ПРАВИЛЬНЫЙ PostgreSQL asyncpg синтаксис!
+        try:
+            instance_exists = await self.db.fetchone(
+                "SELECT 1 FROM bot_instances WHERE instance_id = $1 LIMIT 1",  
+                (self.instance_id,)
+            )
+        except Exception as e:
+            logger.error(f"❌ DB check failed: {e}")
+            instance_exists = None
+        
+        if not instance_exists:
+            logger.warning(f"⚠️  Instance '{self.instance_id}' NOT FOUND - skipping settings")
+            await self.load_language()
+            logger.info("✅ Worker ready (minimal mode)")
+            return
+        
+        logger.info(f"✅ Instance '{self.instance_id}' OK - init settings...")
+        
+        # Безопасная инициализация настроек
+        try:
+            settings_defaults = {
+                "admin_user_id": "0",
+                "privacy_mode_enabled": "False",
+                "lang_code": "ru",
+                "rating_enabled": "True"
+            }
+            
+            for key, default_value in settings_defaults.items():
+                current = await self.get_setting(key)
+                if current is None:
+                    await self.set_setting(key, default_value)
+                    logger.info(f"Set default {key}={default_value}")
+            
+            await self.load_language()
+            logger.info(f"✅ Worker DB FULLY initialized: {self.instance_id}")
+            
+        except Exception as e:
+            logger.error(f"❌ Settings init failed: {e}")
+            logger.info("Worker continues in minimal mode")
+        
+        logger.info(f"✅ Worker READY: {self.instance_id}")
 
-        if await self.get_setting("privacy_mode_enabled") is None:
-            await self.set_setting("privacy_mode_enabled", "False")
+        
+    async def process_bot_commands_loop(self):
+        """
+        Фоновая задача: проверяет очередь команд от API и выполняет их.
+        """
+        logger.info(f"🔄 [Instance {self.instance_id}] Bot commands processor started")
+        
+        while True:
+            try:
+                # ИСПРАВЛЕНО: параметр в кортеже
+                commands = await self.db.fetchall(
+                    """
+                    SELECT id, command, payload
+                    FROM bot_commands
+                    WHERE instance_id = $1 AND status = 'pending'
+                    ORDER BY created_at ASC
+                    LIMIT 10
+                    """,
+                    (self.instance_id,)  # ← КОРТЕЖ!
+                )
+                
+                for cmd in commands:
+                    cmd_id = cmd['id']
+                    command = cmd['command']
+                    payload = json.loads(cmd['payload']) if cmd['payload'] else {}
+                    
+                    try:
+                        await self.execute_bot_command(command, payload)
+                        
+                        # ИСПРАВЛЕНО: параметр в кортеже
+                        await self.db.execute(
+                            """
+                            UPDATE bot_commands
+                            SET status = 'completed', completed_at = NOW()
+                            WHERE id = $1
+                            """,
+                            (cmd_id,)  # ← КОРТЕЖ!
+                        )
+                        
+                        logger.info(f"✅ [Instance {self.instance_id}] Command '{command}' executed (id={cmd_id})")
+                        
+                    except Exception as e:
+                        logger.error(f"❌ [Instance {self.instance_id}] Command '{command}' failed (id={cmd_id}): {e}")
+                        
+                        # ИСПРАВЛЕНО: оба параметра в кортеже
+                        await self.db.execute(
+                            """
+                            UPDATE bot_commands
+                            SET status = 'failed', error = $1
+                            WHERE id = $2
+                            """,
+                            (str(e)[:500], cmd_id)  # ← КОРТЕЖ!
+                        )
+                
+                await asyncio.sleep(2)
+                
+            except Exception as e:
+                logger.error(f"❌ [Instance {self.instance_id}] Command loop error: {e}")
+                await asyncio.sleep(5)
 
-        # язык по умолчанию
-        if await self.get_setting("lang_code") is None:
-            await self.set_setting("lang_code", "ru")
 
-        # запрос оценки при закрытии тикета по умолчанию включен
-        if await self.get_setting("rating_enabled") is None:
-            await self.set_setting("rating_enabled", "True")
+    
+    async def execute_bot_command(self, command: str, payload: dict):
+        """Выполняет команду от API"""
+        
+        if command == 'create_operator_topic':
+            await self.handle_create_operator_topic(payload)
+        
+        elif command == 'close_ticket':
+            ticket_id = payload.get('ticket_id')
+            if ticket_id:
+                await self.close_ticket(ticket_id)
+        
+        else:
+            logger.warning(f"⚠️ [Instance {self.instance_id}] Unknown command: {command}")
+    
+    async def handle_create_operator_topic(self, payload: dict):
+        """
+        Создает топик в личном чате оператора с историей тикета.
+        """
+        ticket_id = payload.get('ticket_id')
+        operator_id = payload.get('operator_id')
+        username = payload.get('username', 'User')
+        user_id = payload.get('user_id')
+        history = payload.get('history', [])
+        
+        if not ticket_id or not operator_id:
+            logger.error(f"❌ Invalid payload for create_operator_topic: {payload}")
+            return
+        
+        logger.info(f"🎫 [Instance {self.instance_id}] Creating topic for ticket #{ticket_id}, operator {operator_id}")
+        
+        try:
+            topic_name = f"#{ticket_id}: @{username}" if username != 'User' else f"#{ticket_id}: User {user_id}"
+            
+            ft = await self.bot.create_forum_topic(
+                chat_id=operator_id,
+                name=topic_name[:128]
+            )
+            
+            thread_id = ft.message_thread_id
+            
+            # ✅ ИСПРАВЛЕНО: snake_case (проверьте вашу схему таблицы tickets!)
+            await self.db.execute("""
+                UPDATE tickets
+                SET thread_id = $1, updated_at = NOW()
+                WHERE id = $2 AND instance_id = $3
+            """, thread_id, ticket_id, self.instance_id)
+            
+            # Отправка истории...
+            if history:
+                history_text = self._format_history_messages(history, limit=10)
+                
+                await self.bot.send_message(
+                    chat_id=operator_id,
+                    message_thread_id=thread_id,
+                    text=f"📋 **История обращения #{ticket_id}**\n\n{history_text}\n\n"
+                        f"✍️ _Напишите ваш ответ в этот топик_",
+                    parse_mode="Markdown"
+                )
+            else:
+                await self.bot.send_message(
+                    chat_id=operator_id,
+                    message_thread_id=thread_id,
+                    text=f"✅ Тикет #{ticket_id} взят в работу\n\n"
+                        f"✍️ _Напишите ваш ответ здесь_"
+                )
+            
+            logger.info(f"✅ [Instance {self.instance_id}] Topic {thread_id} created for ticket #{ticket_id}")
+            
+        except Exception as e:
+            logger.error(f"❌ [Instance {self.instance_id}] Failed to create topic for ticket #{ticket_id}: {e}")
+            raise
 
-        # подгружаем выбранный язык в self.texts
-        await self.load_language()
-
-        # blacklist теперь в общей worker-схеме, отдельного CREATE не нужно
-        logger.info(f"Worker DB initialized in Postgres for instance {self.instance_id}")
+    
+    def _format_history_messages(self, messages: list, limit: int = 10) -> str:
+        """Форматирует последние N сообщений для отображения"""
+        recent = messages[-limit:] if len(messages) > limit else messages
+        
+        lines = []
+        if len(messages) > limit:
+            lines.append(f"_...показаны последние {limit} из {len(messages)} сообщений_\n")
+        
+        for msg in recent:
+            direction_emoji = "👤" if msg.get('direction') == 'usertoopenchat' else "👨‍💼"
+            direction_text = "Клиент" if msg.get('direction') == 'usertoopenchat' else "Оператор"
+            content = msg.get('content', '_медиа_')
+            
+            # Обрезаем длинные сообщения
+            if len(content) > 200:
+                content = content[:200] + "..."
+            
+            lines.append(f"{direction_emoji} {direction_text}:\n{content}\n")
+        
+        return "\n".join(lines)
 
     def get_rating_keyboard(self, ticket_id: int) -> InlineKeyboardMarkup:
         """
@@ -983,7 +1274,7 @@ class GraceHubWorker:
         """
         Обновляет название форумной темы по данным тикета.
         """
-        thread_id = ticket.get("thread_id")  # было "threadid"
+        thread_id = ticket.get("thread_id") 
         chat_id = ticket.get("chat_id")
         if not thread_id or not chat_id:
             return
@@ -1034,26 +1325,26 @@ class GraceHubWorker:
         counter = 3
 
         if assigned_username is not None:
-            set_parts.append(f"assigned_username = ${counter}")
+            set_parts.append("assigned_username = $" + str(counter))
             params.append(assigned_username)
             counter += 1
         if assigned_user_id is not None:
-            set_parts.append(f"assigned_user_id = ${counter}")
+            set_parts.append("assigned_user_id = $" + str(counter))
             params.append(assigned_user_id)
             counter += 1
         if status == "closed":
-            set_parts.append(f"closed_at = ${counter}")
+            set_parts.append("closed_at = $" + str(counter))
             params.append(now)
             counter += 1
 
         params.append(self.instance_id)
         params.append(ticket_id)
 
-        sql = f"""
-            UPDATE tickets
-            SET {", ".join(set_parts)}
-            WHERE instance_id = ${counter} AND id = ${counter + 1}
-        """
+        # Полностью без f-strings - только конкатенация строк
+        set_clause = ", ".join(set_parts)
+        where_clause = " WHERE instance_id = $" + str(counter) + " AND id = $" + str(counter + 1)
+        sql = "UPDATE tickets SET " + set_clause + where_clause     # nosec B608
+        
         await self.db.execute(sql, tuple(params))
 
         ticket = await self.fetch_ticket(ticket_id)
@@ -1079,6 +1370,7 @@ class GraceHubWorker:
                         ticket_id,
                         e,
                     )
+
 
     async def handle_rating_callback(self, cb: CallbackQuery) -> None:
         data = cb.data or ""
@@ -1991,6 +2283,7 @@ class GraceHubWorker:
             chat_id=message.chat.id,
             text=self.texts.openchat_bound_ok.format(chat_title=chat.title),
         )
+
 
     # ====================== CALLBACKS (ТИКЕТЫ) ======================
 
@@ -3400,6 +3693,12 @@ class GraceHubWorker:
         Доп. метод, если вдруг захочется кормить воркер апдейтами вручную.
         """
         logger.info(f"Worker {self.instance_id} received update id={update.update_id}")
+        
+        # 🔥 КРИТИЧЕСКАЯ ПРОВЕРКА: бот НЕ ГОТОВ!
+        if self.bot is None:
+            logger.error(f"❌ Bot not ready for instance {self.instance_id}, skipping update {update.update_id}. Token: {bool(self.token)}")
+            return
+            
         if update.message:
             logger.info(
                 f"Message from user {update.message.from_user.id} ({update.message.from_user.username or 'no username'}): {update.message.text or '[non-text message]'}"
@@ -3421,3 +3720,16 @@ class GraceHubWorker:
                 f"Error feeding update {update.update_id} to dispatcher for instance {self.instance_id}: {e}",
                 exc_info=True,
             )
+
+
+if __name__ == "__main__":
+    import asyncio
+    try:
+        print("🔥 DEBUG: Starting asyncio.run(run_worker())")  # 🔥 DEBUG!
+        asyncio.run(run_worker())
+    except KeyboardInterrupt:
+        logger.info("Worker stopped")
+    except Exception as e:
+        logger.error(f"FATAL: {e}", exc_info=True)
+        import sys
+        sys.exit(1)

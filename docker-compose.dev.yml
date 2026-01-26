@@ -1,0 +1,12 @@
+services:
+  frontend-nginx:
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+  
+  # 🆕 Hot reload для helpdesk в dev режиме
+  frontend-helpdesk:
+    volumes:
+      - ./frontend-helpdesk/src:/app/src
+      - ./frontend-helpdesk/public:/app/public
+

@@ -62,7 +62,7 @@ TEXTS_ES = Texts(
         "Abre los ajustes del chat → 'Temas' / 'Modo foro', actívalo y repite /bind."
     ),
     openchat_bound_ok=(
-        "✅ OpenChat se ha vinculado correctamente a este chat:\n"
+        "✅ GraceHub se ha vinculado correctamente a este chat:\n"
         "<b>{chat_title}</b>\n\n"
         "Las nuevas solicitudes de usuarios se crearán como tickets en este chat."
     ),
@@ -181,7 +181,6 @@ TEXTS_ES = Texts(
     master_add_bot_warning="❗️ Asegúrate de que el token sea correcto y no se utilice en otro lugar.",
     master_menu_add_bot="➕ Añadir bot",
     master_menu_list_bots="📋 Lista de bots",
-    master_menu_help="❓ Ayuda",
     master_start_hint="Usa /start para ver los comandos disponibles",
     master_help_text=(
         "GraceHub Platform te permite añadir tu propio bot con el que "
@@ -304,4 +303,9 @@ TEXTS_ES = Texts(
     ticket_no_assignees="No hay operadores disponibles para asignar",
     first_message_forwarded="✅ Mensaje enviado al soporte. ¡Te responderemos pronto!",
     session_flood_message="⏳ Tus mensajes han sido entregados. ¡Esperando respuesta del operador!",
+    default_greeting= "👋 ¡Hola! Soy tu asistente personal. ¿En qué puedo ayudarte?",
+    master_menu_open_panel = "🚀 Iniciar / Panel",
+    master_menu_open_panel_disabled = "🚀 Iniciar (no configurado)",
+    master_menu_help = "📚 Ayuda",
+    lang_code="es",
 )

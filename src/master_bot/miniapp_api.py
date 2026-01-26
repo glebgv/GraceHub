@@ -1,4 +1,6 @@
 # src/master_bot/miniapp_api.py
+# creator GraceHub Tg: @Gribson_Micro
+
 """
 Mini App API для управления инстансами ботов.
 Интегрируется с master‑ботом и SQLite базой.
@@ -29,6 +31,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, StrictBool, StrictInt, StrictStr, ValidationError
 
 from shared import settings
+from shared.models import InstanceStatus
 from worker.main import GraceHubWorker
 
 from .main import MasterBot
@@ -120,6 +123,7 @@ class InstanceStats(BaseModel):
 
 
 class AutoReplyConfig(BaseModel):
+    enabled: bool = False
     greeting: Optional[str] = None
     default_answer: Optional[str] = None
 
@@ -211,6 +215,7 @@ TELEGRAM_BOT_TOKEN_RE = r"^[0-9]{8,10}:[A-Za-z0-9_-]{35}$"
 
 class CreateInstanceRequest(BaseModel):
     token: str = Field(min_length=1, pattern=TELEGRAM_BOT_TOKEN_RE)
+    language: Optional[str] = Field(None, pattern="^(ru|en|es|hi|zh)$") 
 
 
 class CreateInstanceResponse(BaseModel):
@@ -356,6 +361,13 @@ class YooKassaWebhook(BaseModel):
     object: Object
 
 
+class PlatformMetrics(BaseModel):
+    total_clients: int  # Всего уникальных владельцев инстансов
+    active_bots: int    # Активных инстансов (status = 'running')
+    monthly_tickets: int  # Тикетов за последние 30 дней по всем инстансам
+    paid_subscriptions: int  # Активных инстансов на платных планах (не demo, service_paused = FALSE)
+
+
 INSTANCE_ID_RE = r"^[A-Za-z0-9_-]{1,128}$"
 
 InstanceId = Annotated[
@@ -368,6 +380,16 @@ InstanceId = Annotated[
         description="GraceHub instance id",
     ),
 ]
+
+class UserSubscriptionResponse(BaseModel):
+    plan_code: str
+    plan_name: str
+    period_start: str
+    period_end: str
+    days_left: int
+    instances_limit: int
+    instances_created: int
+    unlimited: bool = False
 
 # ========================================================================
 # Telegram Validation
@@ -643,12 +665,16 @@ class MiniAppDB:
             raise HTTPException(status_code=404, detail="Instance not found")
 
         privacy_mode_enabled = await self.get_privacy_mode(instance_id)
+        
+        autoreply_enabled_str = await self.get_worker_setting(instance_id, 'auto_reply_enabled')
+        autoreply_enabled = (autoreply_enabled_str == 'True') if autoreply_enabled_str else False
 
         return InstanceSettings(
             openchat_enabled=data["openchat_enabled"],
             general_panel_chat_id=data["general_panel_chat_id"],
             autoclose_hours=data["auto_close_hours"],
             auto_reply=AutoReplyConfig(
+                enabled=autoreply_enabled,
                 greeting=data["greeting"],
                 default_answer=data["default_answer"],
             ),
@@ -934,8 +960,8 @@ class MiniAppDB:
 
         where_sql = " WHERE " + " AND ".join(where_clauses) if where_clauses else ""
 
-        # total
-        count_sql = f"SELECT COUNT(*) AS cnt FROM tickets{where_sql}"
+        # # Безопасно: where_sql содержит только плейсхолдеры, данные передаются через params
+        count_sql = f"SELECT COUNT(*) AS cnt FROM tickets{where_sql}"   # nosec B608
         row = await self.db.fetchone(count_sql, tuple(params))
         total = int(row["cnt"]) if row else 0
         if total == 0:
@@ -956,7 +982,7 @@ class MiniAppDB:
             {where_sql}
             ORDER BY created_at DESC
             LIMIT ${len(params) + 1} OFFSET ${len(params) + 2}
-            """
+            """  # nosec B608
         rows = await self.db.fetchall(list_sql, tuple(params + [limit, offset]))
 
         status_norm_map = {
@@ -1078,6 +1104,9 @@ class MiniAppDB:
     async def update_instance_settings(
         self, instance_id: str, payload: UpdateInstanceSettings
     ) -> None:
+        """
+        Обновляет настройки инстанса в instance_meta и синхронизирует с worker_settings.
+        """
         existing = await self.db.fetchone(
             "SELECT * FROM instance_meta WHERE instance_id = $1",
             (instance_id,),
@@ -1096,12 +1125,12 @@ class MiniAppDB:
             "language": payload.language if payload.language is not None else None,
         }
 
-        # синхронизация greeting с worker_settings.greeting_text
+        # Синхронизация greeting с worker_settings.greeting_text
         if payload.auto_reply and payload.auto_reply.greeting is not None:
             greeting_text = payload.auto_reply.greeting or ""
             await self.set_worker_setting(instance_id, "greeting_text", greeting_text)
 
-        # синхронизация автоответа с worker_settings.autoreply_*
+        # Синхронизация автоответа с worker_settings.autoreply_*
         if payload.auto_reply:
             enabled = getattr(payload.auto_reply, "enabled", None)
             if enabled is not None:
@@ -1119,7 +1148,7 @@ class MiniAppDB:
                     auto_text,
                 )
 
-        # синхронизация Privacy Mode
+        # Синхронизация Privacy Mode
         if payload.privacy_mode_enabled is not None:
             await self.set_worker_setting(
                 instance_id,
@@ -1127,6 +1156,7 @@ class MiniAppDB:
                 "True" if payload.privacy_mode_enabled else "False",
             )
 
+        # INSERT если записи нет
         if not existing:
             await self.db.execute(
                 """
@@ -1149,31 +1179,51 @@ class MiniAppDB:
                     fields["auto_reply_greeting"],  # $3 (auto_reply_greeting)
                     fields["auto_reply_default_answer"],  # $4 (auto_reply_default_answer)
                     fields["branding_bot_name"],  # $5 (branding_bot_name)
-                    fields["openchat_enabled"],  # $6 (openchat_enabled)
+                    fields["openchat_enabled"] if fields["openchat_enabled"] is not None else False,  # $6
                     fields["language"],  # $7 (language)
                     datetime.now(timezone.utc),  # $8 (updated_at)
                 ),
             )
 
+        # UPDATE если запись существует
         else:
+            # Whitelist допустимых колонок для защиты от SQL injection
+            # при возможных будущих рефакторингах
+            ALLOWED_COLUMNS = {
+                "auto_close_hours",
+                "auto_reply_greeting",
+                "auto_reply_default_answer",
+                "branding_bot_name",
+                "openchat_enabled",
+                "language",
+            }
+
             set_parts = []
             params: List[Any] = []
 
             for col, value in fields.items():
                 if value is not None:
-                    set_parts.append(f"{col} = ${len(params) + 1}")
+                    # Валидация имени колонки через whitelist
+                    if col not in ALLOWED_COLUMNS:
+                        raise ValueError(f"Attempted to update invalid column: {col}")
+                    
+                    # Безопасно: col проверен через whitelist, value параметризован
+                    set_parts.append(f"{col} = ${len(params) + 1}")  # nosec B608
                     params.append(value)
 
+            # Всегда обновляем updated_at
             set_parts.append(f"updated_at = ${len(params) + 1}")
             params.append(datetime.now(timezone.utc))
-            params.append(instance_id)
+            params.append(instance_id)  # Для WHERE clause
 
             if set_parts:
+                # Безопасно: все имена колонок валидированы через ALLOWED_COLUMNS whitelist,
+                # значения передаются как параметры через params tuple
                 sql = f"""
                 UPDATE instance_meta
                 SET {", ".join(set_parts)}
                 WHERE instance_id = ${len(params)}
-                """
+                """  # nosec B608
                 await self.db.execute(sql, tuple(params))
 
 
@@ -1224,6 +1274,15 @@ async def get_current_user(
 
     except ValueError as e:
         raise HTTPException(status_code=401, detail=str(e))
+
+async def require_superadmin(current_user: Dict[str, Any] = Depends(get_current_user)):
+    user_id = current_user["user_id"]
+    superadmins = await master_bot.db.get_superadmins()
+    if user_id not in superadmins:
+        raise HTTPException(status_code=403, detail="Доступ только супер-администраторам")
+    return current_user
+
+
 
 
 async def get_single_tenant_config(db) -> SingleTenantConfig:
@@ -2540,6 +2599,86 @@ def create_miniapp_app(
             period_applied=bool(invoice.get("period_applied", False)),
         )
 
+    @app.get(
+        "/api/platform/metrics",
+        response_model=PlatformMetrics,
+        responses={
+            **COMMON_AUTH_RESPONSES,
+            500: {"description": "Internal Server Error"},
+        },
+    )
+    async def get_platform_metrics(
+        current_user: Dict[str, Any] = Depends(require_superadmin),
+    ):
+        """
+        Метрики для дашборда супер-админа.
+        Подсчитывает данные из master_db и агрегирует тикеты из master_db (PostgreSQL).
+        """
+        if master_bot is None or master_bot.db is None:
+            raise HTTPException(status_code=500, detail="MasterBot не инициализирован")
+
+        # 1. Всего клиентов: уникальные user_id из bot_instances
+        total_clients = await master_bot.db.count_unique_users()  # Метод должен быть в database.py
+
+        # 2. Активных ботов: COUNT WHERE status = 'running'
+        active_bots_sql = "SELECT COUNT(*) FROM bot_instances WHERE status = 'running'"
+        active_bots_row = await master_bot.db.fetchone(active_bots_sql)
+        active_bots = active_bots_row[0] if active_bots_row else 0
+
+        # 3. Платные подписки: инстансы на non-demo планах, не paused
+        # Сначала найди demo plan_id
+        demo_plan_row = await master_bot.db.fetchone("SELECT plan_id FROM saas_plans WHERE code = 'demo'")
+        demo_plan_id = demo_plan_row["plan_id"] if demo_plan_row else 1  # Скорректируйте ID, если нужно
+
+        paid_subs_sql = """
+            SELECT COUNT(*) 
+            FROM instance_billing ib
+            JOIN bot_instances bi ON bi.instance_id = ib.instance_id
+            WHERE ib.plan_id != $1 AND ib.service_paused = FALSE AND bi.status = 'running'
+        """
+        paid_subs_row = await master_bot.db.fetchone(paid_subs_sql, (demo_plan_id,))
+        paid_subscriptions = paid_subs_row[0] if paid_subs_row else 0
+
+        # 4. Тикетов за месяц: агрегация из master_db (PostgreSQL), без SQLite
+        thirty_days_ago = datetime.now(timezone.utc) - timedelta(days=30)
+        thirty_days_ago_str = thirty_days_ago.isoformat()  # Или используйте параметр datetime напрямую
+
+        monthly_tickets_sql = """
+            SELECT COUNT(*) FROM tickets 
+            WHERE created_at > $1  -- Предполагаем поле created_at в tickets
+        """
+        monthly_tickets_row = await master_bot.db.fetchone(monthly_tickets_sql, (thirty_days_ago,))
+        monthly_tickets = monthly_tickets_row[0] if monthly_tickets_row else 0
+
+        return PlatformMetrics(
+            total_clients=total_clients,
+            active_bots=active_bots,
+            monthly_tickets=monthly_tickets,
+            paid_subscriptions=paid_subscriptions,
+        )
+
+
+    @app.get(
+        "/api/superadmin/clients",
+        response_model=dict,
+        responses={**COMMON_AUTH_RESPONSES, 403: {"description": "Only superadmin"}},
+    )
+    async def get_superadmin_clients(
+        offset: int = Query(0, ge=0),
+        limit: int = Query(50, ge=1, le=100),
+        search: Optional[str] = Query(None),
+        current_user: Dict[str, Any] = Depends(get_current_user),
+    ):
+        if "superadmin" not in current_user.get("roles", []):
+            raise HTTPException(status_code=403, detail="Доступ запрещён")
+
+        clients, total = await master_bot.db.get_superadmin_clients(
+            offset=offset, limit=limit, search=search
+        )
+        return {"clients": clients, "total": total}
+
+
+
     @app.get("/api/offer/settings", response_model=OfferSettingsOut)
     async def get_offer_settings():
         s = await master_db.get_offer_settings()
@@ -2562,7 +2701,8 @@ def create_miniapp_app(
             acceptedAt=acceptedat.isoformat() if acceptedat else None,
         )
 
-    @app.post("/api/offer/decision")
+    @app.post("/api/offer/decision", responses={**COMMON_AUTH_RESPONSES,
+    **COMMON_BAD_REQUEST_RESPONSES, 422: {"description": "Validation Error"}})
     async def post_offer_decision(
         payload: OfferDecisionIn,
         current_user: Dict[str, Any] = Depends(get_current_user),
@@ -2773,14 +2913,24 @@ def create_miniapp_app(
         # 7) возвращаем нормализованный конфиг
         return SingleTenantConfig(enabled=bool(payload.enabled), allowed_user_ids=allowed)
 
-    @app.post(
-        "/api/auth/telegram",
-        response_model=AuthResponse,
-        responses={
-            **COMMON_AUTH_RESPONSES,
-        },
-    )
+    @app.post("/api/auth/telegram", response_model=AuthResponse,
+        responses={**COMMON_AUTH_RESPONSES, **COMMON_BAD_REQUEST_RESPONSES, 422:
+        {"description": "Validation Error"}})
     async def auth_telegram(req: TelegramAuthRequest, request: Request):
+        """
+        Авторизация через Telegram initData.
+        
+        Синхронизация языка:
+        1. Приоритет: user_states.language (источник истины для user-level языка)
+        2. Fallback: Telegram language_code из initData
+        3. Сохранение:
+        - user_states.language (через set_user_language)
+        - users.language (через upsert_user)
+        - instance_meta.language (через update_instance_meta_language для всех инстансов пользователя)
+        
+        Таким образом, выбор языка в боте/mini-app всегда синхронизируется
+        и виден во всех компонентах системы.
+        """
         init_header = request.headers.get("X-Telegram-Init-Data")
         logger.info(
             "auth_telegram: initData_len=%s start_param=%s has_header=%s header_len=%s",
@@ -2808,6 +2958,42 @@ def create_miniapp_app(
             user_data.get("first_name"),
             user_data.get("last_name"),
         )
+
+        # ------------------------------------------------------------------
+        # 🔥 СИНХРОНИЗАЦИЯ ЯЗЫКА: user_states.language как источник истины
+        # ------------------------------------------------------------------
+        telegram_lang = user_data.get("language_code")
+        user_lang_from_states = None
+        
+        try:
+            if master_bot and hasattr(master_bot, 'db'):
+                user_lang_from_states = await master_bot.db.get_user_language(user_id)
+                logger.info(
+                    "auth_telegram: language sync - user_id=%s, telegram_lang=%s, user_states_lang=%s",
+                    user_id,
+                    telegram_lang,
+                    user_lang_from_states,
+                )
+            else:
+                logger.warning("auth_telegram: master_bot or db not available for user_id=%s", user_id)
+        except Exception as e:
+            logger.exception("auth_telegram: failed to get language from user_states for user_id=%s: %s", user_id, e)
+        
+        # Приоритет: 1) язык из user_states (источник истины), 2) язык из Telegram
+        final_language = user_lang_from_states or telegram_lang
+        
+        # 🔥 Всегда синхронизируем финальный язык в user_states.language
+        if final_language:
+            try:
+                if master_bot and hasattr(master_bot, 'db'):
+                    await master_bot.db.set_user_language(user_id, final_language)
+                    logger.info(
+                        "auth_telegram: saved/updated language in user_states: user_id=%s lang=%s",
+                        user_id,
+                        final_language
+                    )
+            except Exception as e:
+                logger.warning("auth_telegram: failed to save language to user_states: %s", e)
 
         # ------------------------------------------------------------------
         # Глобальные роли (platform-level): superadmin только из ENV
@@ -2863,15 +3049,37 @@ def create_miniapp_app(
                     detail="панель доступна только разрешённым пользователям",
                 )
 
+        # 🔥 Сохраняем пользователя с синхронизированным языком
         await miniapp_db.upsert_user(
             user_id=user_id,
             username=user_data.get("username"),
             first_name=user_data.get("first_name"),
             last_name=user_data.get("last_name"),
-            language=user_data.get("language_code"),
+            language=final_language,  # 🔥 Используем синхронизированный язык
         )
 
+        # Получаем инстансы пользователя
         instances = await master_bot.db.get_user_instances_with_meta(user_id)
+
+        # 🔥 Синхронизируем язык во все instance_meta.language для пользователя
+        if final_language and instances:
+            for inst in instances:
+                instance_id = inst.get("instance_id")
+                if not instance_id:
+                    continue
+                try:
+                    await master_bot.db.update_instance_meta_language(instance_id, final_language)
+                    logger.info(
+                        "auth_telegram: synced language to instance_meta: instance_id=%s lang=%s",
+                        instance_id,
+                        final_language
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "auth_telegram: failed to sync language to instance_meta: instance_id=%s error=%s",
+                        instance_id,
+                        e
+                    )
 
         default_instance_id: str | None = None
         if req.start_param and req.start_param.startswith("inst_"):
@@ -2887,11 +3095,12 @@ def create_miniapp_app(
         token = session_manager.create_session(user_id, user_data.get("username"))
 
         logger.info(
-            "auth_telegram: user_id=%s roles=%s instances=%s default_instance_id=%s",
+            "auth_telegram: user_id=%s roles=%s instances=%s default_instance_id=%s final_language=%s",
             user_id,
             roles,
             [i["instance_id"] for i in instances],
             default_instance_id,
+            final_language,
         )
 
         user_response = UserResponse(
@@ -2899,7 +3108,7 @@ def create_miniapp_app(
             username=user_data.get("username"),
             first_name=user_data.get("first_name"),
             last_name=user_data.get("last_name"),
-            language=user_data.get("language_code"),
+            language=final_language,  # 🔥 Возвращаем синхронизированный язык
             roles=roles,
             instances=[
                 {
@@ -2913,11 +3122,12 @@ def create_miniapp_app(
         )
 
         logger.info(
-            "auth_telegram RESPONSE user_id=%s roles=%s user.instances=%s default_instance_id=%s",
+            "auth_telegram RESPONSE user_id=%s roles=%s user.instances=%s default_instance_id=%s user.language=%s",
             user_id,
             roles,
             [i["instance_id"] for i in user_response.instances],
             default_instance_id,
+            user_response.language,
         )
 
         return AuthResponse(
@@ -2925,6 +3135,18 @@ def create_miniapp_app(
             user=user_response,
             default_instance_id=default_instance_id,
         )
+
+
+    @app.get(
+        "/api/superadmin/metrics",
+        response_model=Dict[str, Any],
+        responses={**COMMON_AUTH_RESPONSES},
+    )
+    async def get_superadmin_metrics(
+        current_user: Dict[str, Any] = Depends(require_superadmin),
+    ):
+        metrics = await miniapp_db.db.get_superadmin_metrics()
+        return metrics
 
     @app.post(
         "/api/billing/ton/cancel",
@@ -3410,6 +3632,137 @@ def create_miniapp_app(
             unlimited=False,
         )
 
+
+    @app.get("/api/user/subscription", response_model=UserSubscriptionResponse,
+        responses={
+            **COMMON_AUTH_RESPONSES, 
+            404: {"description": "Subscription not found"},
+            500: {"description": "Internal Server Error"}
+        })
+    async def get_user_subscription_endpoint(
+        current_user: Dict[str, Any] = Depends(get_current_user),
+    ):
+        """
+        Получение информации о подписке пользователя.
+        Если подписка не найдена, создается дефолтная подписка.
+        """
+        try:
+            # 1. Получаем ID пользователя
+            user_id = current_user["user_id"]
+            logger.info(f"[Subscription] Начало обработки запроса для user_id={user_id}")
+            logger.debug(f"[Subscription] Текущий пользователь: {current_user.get('username', 'unknown')}")
+            
+            # 2. Пытаемся получить существующую подписку
+            logger.info(f"[Subscription] Поиск существующей подписки...")
+            sub = await miniapp_db.db.get_user_subscription(user_id)
+            
+            if sub:
+                logger.info(f"[Subscription] Найдена существующая подписка: plan={sub.get('plan_code')}, "
+                        f"status={sub.get('status', 'unknown')}")
+                logger.debug(f"[Subscription] Данные подписки: {sub}")
+            else:
+                logger.warning(f"[Subscription] Подписка не найдена для user_id={user_id}")
+                
+                # 3. Создаем дефолтную подписку
+                logger.info(f"[Subscription] Создание дефолтной подписки...")
+                try:
+                    await miniapp_db.db.ensure_default_subscription(user_id)
+                    logger.info(f"[Subscription] Дефолтная подписка создана успешно")
+                except Exception as create_error:
+                    logger.error(f"[Subscription] Ошибка при создании дефолтной подписки: {create_error}", 
+                            exc_info=True)
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Failed to create default subscription: {str(create_error)}"
+                    )
+                
+                # 4. Пытаемся получить созданную подписку
+                logger.info(f"[Subscription] Получение созданной подписки...")
+                sub = await miniapp_db.db.get_user_subscription(user_id)
+                
+                if not sub:
+                    logger.error(f"[Subscription] Критическая ошибка: подписка не создана после ensure_default_subscription")
+                    logger.error(f"[Subscription] user_id={user_id}, проверьте логи базы данных")
+                    raise HTTPException(
+                        status_code=500,
+                        detail="Subscription creation failed - no subscription found after creation attempt"
+                    )
+            
+            # 5. Проверяем обязательные поля подписки
+            logger.info(f"[Subscription] Проверка структуры данных подписки...")
+            required_fields = ['plan_code', 'plan_name', 'period_start', 'period_end', 'days_left', 
+                            'instances_limit', 'instances_created']
+            missing_fields = [field for field in required_fields if field not in sub]
+            
+            if missing_fields:
+                logger.error(f"[Subscription] Отсутствуют обязательные поля: {missing_fields}")
+                logger.error(f"[Subscription] Полученные данные: {sub}")
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Subscription data is incomplete. Missing fields: {missing_fields}"
+                )
+            
+            # 6. Преобразуем даты в строки (с проверкой)
+            try:
+                period_start_str = sub["period_start"].isoformat() if isinstance(sub["period_start"], datetime) else sub["period_start"]
+                period_end_str = sub["period_end"].isoformat() if isinstance(sub["period_end"], datetime) else sub["period_end"]
+                
+                logger.debug(f"[Subscription] Дата начала: {period_start_str}")
+                logger.debug(f"[Subscription] Дата окончания: {period_end_str}")
+            except (AttributeError, ValueError) as date_error:
+                logger.error(f"[Subscription] Ошибка форматирования дат: {date_error}")
+                logger.error(f"[Subscription] period_start type: {type(sub['period_start'])}, value: {sub['period_start']}")
+                logger.error(f"[Subscription] period_end type: {type(sub['period_end'])}, value: {sub['period_end']}")
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Invalid date format in subscription data: {str(date_error)}"
+                )
+            
+            # 7. Формируем ответ
+            response_data = {
+                "plan_code": sub["plan_code"],
+                "plan_name": sub["plan_name"],
+                "period_start": period_start_str,
+                "period_end": period_end_str,
+                "days_left": sub["days_left"],
+                "instances_limit": sub["instances_limit"],
+                "instances_created": sub["instances_created"],
+                "unlimited": sub.get("unlimited", False),
+            }
+            
+            logger.info(f"[Subscription] Успешный ответ для user_id={user_id}: "
+                    f"plan={response_data['plan_code']}, days_left={response_data['days_left']}")
+            logger.debug(f"[Subscription] Полный ответ: {response_data}")
+            
+            return UserSubscriptionResponse(**response_data)
+            
+        except HTTPException as http_exc:
+            # Пробрасываем HTTP исключения как есть
+            logger.warning(f"[Subscription] HTTPException: {http_exc.status_code} - {http_exc.detail}")
+            raise http_exc
+            
+        except KeyError as key_err:
+            logger.error(f"[Subscription] Отсутствует ключ в данных: {key_err}")
+            logger.error(f"[Subscription] current_user keys: {list(current_user.keys()) if current_user else 'None'}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Internal data structure error: missing key {str(key_err)}"
+            )
+            
+        except Exception as e:
+            logger.error(f"[Subscription] Неожиданная ошибка: {e}", exc_info=True)
+            logger.error(f"[Subscription] Тип ошибки: {type(e).__name__}")
+            logger.error(f"[Subscription] Traceback:", exc_info=True)
+            
+            # Для отладки - возвращаем больше информации в режиме разработки
+            import os
+            if os.getenv("ENVIRONMENT") == "development":
+                detail = f"Internal Server Error: {type(e).__name__}: {str(e)}"
+            else:
+                detail = "Internal Server Error"
+                
+            raise HTTPException(status_code=500, detail=detail)
+
     @app.get(
         "/api/billing/ton/status",
         response_model=TonInvoiceStatusResponse,
@@ -3457,7 +3810,10 @@ def create_miniapp_app(
             period_applied=False,
         )
 
-    @app.post("/api/resolve_instance", response_model=ResolveInstanceResponse)
+    @app.post("/api/resolve_instance", response_model=ResolveInstanceResponse,
+    responses={**COMMON_AUTH_RESPONSES, **COMMON_BAD_REQUEST_RESPONSES, 422:
+    {"description": "Validation Error"}})
+
     async def resolve_instance(
         payload: ResolveInstanceRequest,
         current_user: Dict[str, Any] = Depends(get_current_user),
@@ -3572,6 +3928,17 @@ def create_miniapp_app(
         except Exception:
             logger.exception("get_me: failed to evaluate superadmins from miniapp_public")
 
+        # 🔥 Читаем язык пользователя из user_states
+        user_lang = None
+        try:
+            if master_bot and hasattr(master_bot, 'db'):
+                user_lang = await master_bot.db.get_user_language(user_id)
+                logger.info("get_me: user_id=%s, language from user_states=%s", user_id, user_lang)
+            else:
+                logger.warning("get_me: master_bot or db not available for user_id=%s", user_id)
+        except Exception as e:
+            logger.exception("get_me: failed to get user language for user_id=%s: %s", user_id, e)
+
         instances = await master_bot.db.get_user_instances_with_meta(user_id)
 
         return UserResponse(
@@ -3579,7 +3946,7 @@ def create_miniapp_app(
             username=current_user.get("username"),
             first_name=None,
             last_name=None,
-            language=None,
+            language=user_lang,  # 🔥 Теперь возвращаем реальный язык
             roles=roles,
             instances=[
                 {
@@ -3670,26 +4037,36 @@ def create_miniapp_app(
         req: CreateInstanceRequest,
         current_user: Dict[str, Any] = Depends(get_current_user),
     ):
-        """
-        Создать новый инстанс по токену бота через MasterBot:
-        - MasterBot проверяет токен, создаёт запись в БД, шифрует токен.
-        - Miniapp создаёт worker в памяти и настраивает webhook для инстанса.
-        - Auto-close тикетов теперь глобальный цикл в MasterBot, поэтому тут НЕ запускается.
-        """
         user_id = current_user["user_id"]
         token = req.token
+        language = req.language  # ✅ Получаем язык из запроса
 
         logger.info(
-            "create_instance (miniapp): user_id=%s token_preview=%s",
+            "create_instance (miniapp): user_id=%s token_preview=%s language=%s",
             user_id,
             token[:10],
+            language,
         )
 
         if master_bot is None:
             logger.error("create_instance: master_bot is not initialized")
             raise HTTPException(status_code=500, detail="MasterBot не инициализирован")
 
-        # 1) Создаём инстанс в БД через MasterBot (валидация токена + запись в БД)
+        # 👇 ДОБАВЛЕНО: Убедитесь что у юзера есть demo подписка ДО проверки в process_bot_token_from_miniapp
+        try:
+            sub = await master_bot.db.get_user_subscription(user_id)
+            if not sub:
+                logger.info("create_instance: creating default subscription for user_id=%s", user_id)
+                await master_bot.db.ensure_default_subscription(user_id)
+        except Exception as e:
+            logger.exception("create_instance: failed to ensure subscription for user_id=%s: %s", user_id, e)
+            raise HTTPException(
+                status_code=500,
+                detail="Ошибка при создании подписки пользователя",
+            )
+        # 👆 КОНЕЦ ДОБАВЛЕНИЯ
+
+        # 1) Создаём инстанс в БД через MasterBot
         try:
             instance = await master_bot.process_bot_token_from_miniapp(
                 token=token,
@@ -3707,12 +4084,30 @@ def create_miniapp_app(
         try:
             worker = GraceHubWorker(instance.instance_id, token, master_bot.db)
             master_bot.workers[instance.instance_id] = worker
-
-            # На всякий случай гарантируем, что instance доступен в master_bot.instances
             master_bot.instances[instance.instance_id] = instance
 
             if not await master_bot.setup_worker_webhook(instance.instance_id, token):
                 raise ValueError("Failed to setup webhook")
+
+            # ✅ Применяем язык, если он передан
+            if language:
+                try:
+                    await master_bot.db.update_instance_settings(
+                        instance.instance_id,
+                        {"language": language}
+                    )
+                    logger.info(
+                        "Applied language=%s to instance_id=%s",
+                        language,
+                        instance.instance_id
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Failed to apply language to instance %s: %s",
+                        instance.instance_id,
+                        e
+                    )
+                    # Не падаем, инстанс уже создан
 
         except Exception as e:
             logger.error(
@@ -3740,6 +4135,7 @@ def create_miniapp_app(
             botname=instance.bot_name,
             role="owner",
         )
+
 
     @app.get(
         "/api/instances/{instance_id}/stats",
@@ -3883,21 +4279,25 @@ def create_miniapp_app(
         current_user: Dict[str, Any] = Depends(get_current_user),
     ):
         await require_instance_access(instance_id, current_user, required_role="owner")
-
-        logger.info(
-            "update_instance_settings payload: %s",
-            settings.dict(),
-        )
-
-        logger.info(
-            "update_instance_settings: instance_id=%s auto_close_hours=%s openchat_enabled=%s privacy_mode_enabled=%s language=%s",
-            instance_id,
-            settings.autoclose_hours,
-            settings.openchat_enabled,
-            settings.privacy_mode_enabled,
-            settings.language,
-        )
-
+        
+        logger.info("update_instance_settings: payload=%s", settings.dict())
+        
+        # Если меняется язык инстанса — синхронизируем в user_states.language
+        if settings.language:
+            user_id = current_user["user_id"]
+            try:
+                await master_bot.db.set_user_language(user_id, settings.language)
+                logger.info(
+                    "update_instance_settings: synced language to user_states: user_id=%s lang=%s",
+                    user_id,
+                    settings.language
+                )
+            except Exception as e:
+                logger.warning(
+                    "update_instance_settings: failed to sync language to user_states: %s",
+                    e
+                )
+        
         await miniapp_db.update_instance_settings(instance_id, settings)
         return await miniapp_db.get_instance_settings(instance_id)
 
@@ -3988,20 +4388,31 @@ def create_miniapp_app(
 
     @app.get(
         "/api/instances/{instance_id}/operators",
-        response_model=List[InstanceMember],
         responses={
             **COMMON_AUTH_RESPONSES,
-            **COMMON_NOT_FOUND_RESPONSES,
+            422: {"description": "Validation Error"},
         },
     )
+
     async def get_operators(
         instance_id: InstanceId,
         current_user: Dict[str, Any] = Depends(get_current_user),
     ):
         await require_instance_access(instance_id, current_user)
-
+        
         members = await miniapp_db.get_instance_members(instance_id)
-        return [InstanceMember(**m) for m in members]
+        
+        # ✅ Фикс: datetime → str
+        return [
+            InstanceMember(
+                user_id=m["user_id"],
+                username=m.get("username"),
+                role=m["role"],
+                created_at=m["created_at"].isoformat() if m["created_at"] else "",
+            )
+            for m in members
+        ]
+
 
     @app.post(
         "/api/instances/{instance_id}/operators",

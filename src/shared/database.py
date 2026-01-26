@@ -1,12 +1,16 @@
+# creator GraceHub Tg: @Gribson_Micro
 # src/shared/database.py
+
 import json
 import logging
 import os
+import asyncio
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import asyncpg
+import base64
 from cachetools import TTLCache
 from cryptography.fernet import Fernet
 
@@ -73,27 +77,54 @@ class MasterDatabase:
 
     async def init(self) -> None:
         """
-        Полная инициализация: проверка DSN, создание пула соединений,
-        настройка шифрования и создание таблиц.
-        Вызывать один раз при старте мастера или воркера.
+        Полная инициализация с AUTOMATIC DB RETRY + graceful cipher fallback.
         """
         if not self.dsn.startswith("postgresql://"):
-            raise RuntimeError(
-                "SQLite больше не поддерживается для master DB. "
-                "Задай env DATABASE_URL=postgresql://..."
-            )
+            raise RuntimeError("SQLite не поддерживается")
 
-        self.pool = await asyncpg.create_pool(
-            self.dsn, min_size=5, max_size=20, timeout=30, max_inactive_connection_lifetime=300
-        )
+        # 🔥 DB RETRY LOOP - ждём БД до 30 сек!
+        max_retries = 15
+        self.pool = None
+        
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"🔗 DB connect attempt {attempt+1}/{max_retries}")
+                self.pool = await asyncpg.create_pool(
+                    self.dsn, min_size=5, max_size=20, timeout=30, max_inactive_connection_lifetime=300
+                )
+                
+                # 🔥 ТЕСТ подключения!
+                async with self.pool.acquire() as conn:
+                    await conn.fetchval("SELECT 1")
+                logger.info("✅ Database pool + connection OK")
+                break
+                
+            except Exception as e:
+                logger.warning(f"⏳ DB connect [{attempt+1}/{max_retries}] FAILED: {e}")
+                if self.pool:
+                    await self.pool.close()
+                    self.pool = None
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2)
+                else:
+                    raise RuntimeError(f"❌ DB timeout after {max_retries*2}s: {e}")
+        
+        # 🔥 CIPHER с graceful fallback
+        try:
+            key = self.get_or_create_encryption_key()
+            encoded_key = base64.urlsafe_b64encode(key)
+            self.cipher = Fernet(encoded_key)
+            logger.info("✅ Cipher initialized (base64-encoded)")
+        except Exception as e:
+            logger.error(f"❌ Cipher FAILED: {e}")
+            self.cipher = None  # 🔥 Graceful fallback!
+            logger.warning("⚠️ Running WITHOUT encryption")
 
-        key = self.get_or_create_encryption_key()
-        self.cipher = Fernet(key)
-
+        # 🔥 Tables + settings (теперь точно работает!)
         await self.create_tables()
         await self.ensure_default_platform_settings()
         await self.ensure_env_superadmin_in_db()
-        logger.info(f"Master database (Postgres) initialized: {self.dsn}")
+        logger.info(f"✅ MasterDatabase fully initialized: {self.dsn}")
 
     async def count_instances_for_user(self, userid: int) -> int:
         row = await self.fetchone(
@@ -117,6 +148,11 @@ class MasterDatabase:
         enabled = bool(offer.get("enabled", False))
         url = str(offer.get("url", "") or "").strip()
         return {"enabled": enabled, "url": url}
+
+    async def count_unique_users(self) -> int:
+        row = await self.fetchone("SELECT COUNT(DISTINCT user_id) AS cnt FROM bot_instances")
+        return int(row["cnt"]) if row else 0
+
 
     async def get_user_offer_status(self, user_id: int) -> Dict[str, Any]:
         row = await self.fetchone(
@@ -353,29 +389,30 @@ class MasterDatabase:
         """
         await self.execute(sql)
 
-    async def get_instances_expiring_in_7_days_for_notify(self) -> list[dict]:
+    async def get_user_subscriptions_expiring_in_5_days_for_notify(self) -> list[dict]:
         """
-        Инстансы, у которых осталось ровно 7 дней, service_paused = FALSE
-        и которым ещё не отправляли напоминание сегодня.
+        Юзеры с подпиской <=5 дней, без уведомления сегодня.
+        GROUP BY по user_id для избежания дубликатов, аггрегация bot_usernames и других полей.
         """
         sql = """
-        SELECT ib.instance_id,
-               ib.period_end,
-               ib.days_left,
-               ib.tickets_used,
-               ib.tickets_limit,
-               ib.last_expiring_notice_date,
-               bi.owner_user_id,
-               bi.admin_private_chat_id,
-               bi.bot_username
-        FROM instance_billing ib
-        JOIN bot_instances bi ON bi.instance_id = ib.instance_id
-        WHERE ib.service_paused = FALSE
-          AND ib.days_left = 7
-          AND (
-                ib.last_expiring_notice_date IS NULL
-                OR ib.last_expiring_notice_date < CURRENT_DATE
-          );
+        SELECT 
+            us.user_id,
+            us.period_end,
+            GREATEST(0, CAST(EXTRACT(EPOCH FROM (us.period_end - NOW()) / 86400) AS INTEGER)) AS days_left,
+            array_agg(COALESCE(bi.instance_id, NULL)) AS instance_ids,
+            array_agg(COALESCE(bi.bot_username, NULL)) AS bot_usernames,
+            array_agg(COALESCE(bi.admin_private_chat_id, NULL)) AS admin_private_chat_ids,
+            us.last_expiring_notice_date,
+            MAX(COALESCE(bi.owner_user_id, us.user_id)) AS owner_user_id  -- Fallback на us.user_id
+        FROM user_subscription us
+        LEFT JOIN bot_instances bi ON bi.owner_user_id = us.user_id
+        WHERE 
+            GREATEST(0, CAST(EXTRACT(EPOCH FROM (us.period_end - NOW()) / 86400) AS INTEGER)) <= 5
+            AND COALESCE(us.service_paused, FALSE) = FALSE  -- Защита от NULL
+            AND (us.last_expiring_notice_date IS NULL 
+                OR us.last_expiring_notice_date < CURRENT_DATE)
+        GROUP BY us.user_id, us.period_end, us.last_expiring_notice_date
+        ORDER BY days_left ASC, MIN(COALESCE(bi.created_at, us.created_at)) DESC NULLS LAST
         """
         rows = await self.fetchall(sql)
         return [dict(r) for r in rows]
@@ -433,6 +470,44 @@ class MasterDatabase:
             """
         )
         return [BotInstance(**row) for row in rows]
+
+
+    async def get_superadmin_metrics(self) -> Dict[str, Any]:
+        async with self.pool.acquire() as conn:
+            # Активные клиенты: уникальные owner_user_id из bot_instances (или user_id из user_subscription)
+            active_clients = await conn.fetchval(
+                "SELECT COUNT(DISTINCT owner_user_id) FROM bot_instances"
+            ) or 0
+            
+            # Активные боты: инстансы со status='running'
+            active_bots = await conn.fetchval(
+                "SELECT COUNT(*) FROM bot_instances WHERE status = 'running'"
+            ) or 0
+            
+            # Доход TON: сумма amount_ton для succeeded инвойсов (предполагая, что amount_minor_units в наноTON, делим на 1e9)
+            ton_income = await conn.fetchval(
+                """
+                SELECT COALESCE(SUM(amount_minor_units::numeric / 1000000000), 0)
+                FROM billing_invoices 
+                WHERE payment_method = 'ton' AND status = 'succeeded'
+                """
+            ) or 0.0
+            
+            # Доход Stars: сумма amount_stars для succeeded
+            stars_income = await conn.fetchval(
+                """
+                SELECT COALESCE(SUM(amount_stars), 0)
+                FROM billing_invoices 
+                WHERE payment_method = 'telegram_stars' AND status = 'succeeded'
+                """
+            ) or 0
+            
+        return {
+            "active_clients": active_clients,
+            "active_bots": active_bots,
+            "ton_income": float(ton_income),
+            "stars_income": int(stars_income)
+        }
 
     async def get_instance_settings(self, instance_id: str) -> Optional[Dict[str, Any]]:
         """
@@ -532,7 +607,7 @@ class MasterDatabase:
             UPDATE billing_invoices
             SET status = 'paid',
                 telegram_invoice_id = $1,
-                stars_amount = $2,
+                amount_stars = $2,
                 currency = $3,
                 paid_at = NOW(),
                 updated_at = NOW()
@@ -544,7 +619,7 @@ class MasterDatabase:
     async def find_billing_invoice_by_payload(self, payload: str) -> Optional[Dict[str, Any]]:
         row = await self.fetchone(
             """
-            SELECT invoice_id, instance_id, user_id, product_id, payload, invoice_link, stars_amount,
+            SELECT invoice_id, instance_id, user_id, product_id, payload, invoice_link, amount_stars,
                 amount_minor_units, currency, payment_method, provider_tx_hash, status,
                 created_at, updated_at, paid_at
             FROM billing_invoices
@@ -616,7 +691,7 @@ class MasterDatabase:
                 product_id,
                 payload,
                 invoice_link,
-                stars_amount,
+                amount_stars,
                 amount_minor_units,
                 currency,
                 payment_method,
@@ -1073,14 +1148,39 @@ class MasterDatabase:
 
                 # Индекс под "выбор следующей задачи" воркером (pending/retry + run_at)
                 await conn.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_tg_update_queue_pick "
-                    "ON tg_update_queue (status, run_at, id)"
+                    "CREATE INDEX IF NOT EXISTS idx_tg_update_queue_pending_active "
+                    "ON tg_update_queue (run_at, id) "
+                    "WHERE status IN ('pending', 'retry')"
                 )
 
                 # Индекс для диагностики/админки и выборок по инстансу
                 await conn.execute(
                     "CREATE INDEX IF NOT EXISTS idx_tg_update_queue_instance_status "
                     "ON tg_update_queue (instance_id, status, id)"
+                )
+
+                # Функция для уведомления о новых задачах
+                await conn.execute(
+                    """
+                    CREATE OR REPLACE FUNCTION notify_new_tg_update() 
+                    RETURNS TRIGGER AS $$
+                    BEGIN
+                        PERFORM pg_notify('tg_update_channel', NEW.instance_id);
+                        RETURN NEW;
+                    END;
+                    $$ LANGUAGE plpgsql;
+                    """
+                )
+
+                # Триггер на INSERT (новые задачи)
+                await conn.execute(
+                    """
+                    DROP TRIGGER IF EXISTS tg_update_insert_trigger ON tg_update_queue;
+                    CREATE TRIGGER tg_update_insert_trigger
+                    AFTER INSERT ON tg_update_queue
+                    FOR EACH ROW
+                    EXECUTE FUNCTION notify_new_tg_update();
+                    """
                 )
 
                 # blacklist
@@ -1416,6 +1516,27 @@ class MasterDatabase:
             )
             """
         )
+        # Таблица команд для worker от API
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS bot_commands (
+                id BIGSERIAL PRIMARY KEY,
+                instance_id TEXT NOT NULL REFERENCES bot_instances(instance_id) ON DELETE CASCADE,
+                command TEXT NOT NULL,
+                payload JSONB NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',  -- pending, completed, failed
+                error TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                completed_at TIMESTAMPTZ,
+                CONSTRAINT fk_bot_commands_instance 
+                    FOREIGN KEY (instance_id) REFERENCES bot_instances(instance_id) ON DELETE CASCADE
+            )
+        """)
+        
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_bot_commands_instance_status 
+            ON bot_commands(instance_id, status, created_at)
+        """)
+        
 
     async def _create_billing_tables(self, conn) -> None:
         """
@@ -1438,6 +1559,24 @@ class MasterDatabase:
             )
             """
         )
+
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_subscription (
+                user_id BIGINT PRIMARY KEY,
+                plan_id INTEGER NOT NULL REFERENCES saas_plans(plan_id) ON DELETE RESTRICT,
+                period_start TIMESTAMPTZ NOT NULL,
+                period_end TIMESTAMPTZ NOT NULL,
+                days_left INTEGER NOT NULL DEFAULT 0,
+                service_paused BOOLEAN NOT NULL DEFAULT FALSE,
+                instances_limit INTEGER NOT NULL DEFAULT 1,
+                instances_created INTEGER NOT NULL DEFAULT 0,
+                last_expiring_notice_date DATE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+        """)
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_user_subscription_period ON user_subscription(period_end);")
+
 
         # instance_billing: текущий тариф + статистика для инстанса
         await conn.execute(
@@ -1510,7 +1649,7 @@ class MasterDatabase:
                 telegram_invoice_id TEXT,
                 invoice_link        TEXT,
 
-                stars_amount        INTEGER NOT NULL,
+                amount_stars        INTEGER NOT NULL,
                 amount_minor_units  BIGINT,
 
                 currency            TEXT NOT NULL DEFAULT 'XTR',
@@ -1575,6 +1714,11 @@ class MasterDatabase:
             """
             CREATE INDEX IF NOT EXISTS idx_billing_invoices_provider_tx_hash
             ON billing_invoices(provider_tx_hash) WHERE provider_tx_hash IS NOT NULL;
+            """
+        )
+        await conn.execute(
+            """
+            CREATE INDEX ON billing_invoices (payment_method, status);
             """
         )
 
@@ -1662,48 +1806,86 @@ class MasterDatabase:
     async def create_instance(self, instance: BotInstance) -> None:
         """
         Создаёт инстанс и сразу вешает Demo-план на 7 дней (если ещё не создан billing).
+        Также устанавливает дефолтное приветствие в instance_meta.
+        Всё в одной транзакции!
         """
         assert self.pool is not None
         async with self.pool.acquire() as conn:
             async with conn.transaction():
+                logger.info(f"🔄 Создание инстанса {instance.instance_id} для owner_user_id {instance.owner_user_id}")
+
+                # 1. bot_instances
                 await conn.execute(
                     """
                     INSERT INTO bot_instances (
-                        instance_id,
-                        user_id,
-                        token_hash,
-                        bot_username,
-                        bot_name,
-                        webhook_url,
-                        webhook_path,
-                        webhook_secret,
-                        status,
-                        created_at,
-                        owner_user_id,
-                        admin_private_chat_id
+                        instance_id, user_id, token_hash, bot_username, bot_name,
+                        webhook_url, webhook_path, webhook_secret, status,
+                        created_at, owner_user_id, admin_private_chat_id
                     )
                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
                     """,
-                    *(
-                        instance.instance_id,
-                        instance.user_id,
-                        instance.token_hash,
-                        instance.bot_username,
-                        instance.bot_name,
-                        instance.webhook_url,
-                        instance.webhook_path,
-                        instance.webhook_secret,
-                        instance.status.value
-                        if hasattr(instance.status, "value")
-                        else str(instance.status),
-                        instance.created_at,
-                        instance.owner_user_id,
-                        instance.admin_private_chat_id,
-                    ),
+                    instance.instance_id, instance.user_id, instance.token_hash,
+                    instance.bot_username, instance.bot_name, instance.webhook_url,
+                    instance.webhook_path, instance.webhook_secret,
+                    instance.status.value if hasattr(instance.status, "value") else str(instance.status),
+                    instance.created_at, instance.owner_user_id, instance.admin_private_chat_id,
                 )
+                logger.info(f"✅ bot_instances: {instance.instance_id}")
 
-        # после создания инстанса — инициализируем Demo-биллинг
-        await self.ensure_default_billing(instance.instance_id)
+                # 2. user_subscription (НЕ сбрасывается при пересоздании инстанса)
+                if instance.owner_user_id:
+                    await self.ensure_default_subscription(conn, instance.owner_user_id)
+                    
+                    # ЧИТАЕМ ПРЯМО ИЗ ТРАНЗАКЦИИ (НЕ get_user_subscription)!
+                    sub_row = await conn.fetchrow("""
+                        SELECT 
+                            *,
+                            GREATEST(0, CAST(EXTRACT(EPOCH FROM (period_end - NOW()) / 86400) AS INTEGER)) AS daysleft
+                        FROM user_subscription 
+                        WHERE user_id = $1
+                    """, instance.owner_user_id)
+                    
+                    sub = dict(sub_row) if sub_row else None
+                    
+                    logger.info(f"📊 user_subscription: user_id={instance.owner_user_id}, daysleft={sub.get('daysleft') if sub else 'None'}")
+                    
+                    if not sub:
+                        raise RuntimeError(f"Не удалось создать user_subscription для owner_user_id {instance.owner_user_id}")
+                    if sub.get('daysleft', 0) <= 0:
+                        raise ValueError(f"Демо-период истёк для owner_user_id {instance.owner_user_id} (daysleft={sub.get('daysleft')})")
+
+                # 3. instance_billing (метрики только для этого инстанса)
+                await self.ensure_default_billing(conn, instance.instance_id)
+                
+                # Проверка instance_billing
+                billing_row = await conn.fetchrow("SELECT 1 FROM instance_billing WHERE instance_id = $1", instance.instance_id)
+                if not billing_row:
+                    raise RuntimeError(f"Не удалось создать instance_billing для {instance.instance_id}")
+                
+                logger.info(f"✅ instance_billing: {instance.instance_id}")
+
+                # 4. instance_meta с дефолтным приветствием
+                default_greeting = "👋 Здравствуйте! Я ваш персональный помощник. Чем могу помочь?"
+                await conn.execute(
+                    """
+                    INSERT INTO instance_meta (
+                        instance_id, 
+                        auto_reply_greeting, 
+                        auto_close_hours, 
+                        openchat_enabled, 
+                        created_at, 
+                        updated_at
+                    )
+                    VALUES ($1, $2, 12, FALSE, NOW(), NOW())
+                    ON CONFLICT (instance_id) DO NOTHING
+                    """,
+                    instance.instance_id,
+                    default_greeting,
+                )
+                logger.info(f"✅ instance_meta: {instance.instance_id} (default greeting set)")
+                
+                logger.info(f"🎉 Инстанс {instance.instance_id} полностью создан!")
+
 
     async def delete_instance(self, instance_id: str) -> None:
         async with self.pool.acquire() as conn:
@@ -1821,12 +2003,12 @@ class MasterDatabase:
         # Нормализация под метод
         if payment_method == "telegram_stars":
             currency = "XTR"
-            stars_amount_val = int(amount_stars)
+            amount_stars_val = int(amount_stars)
             amount_minor_val = None
 
         elif payment_method == "ton":
             currency = "TON"
-            stars_amount_val = 0  # stars_amount NOT NULL
+            amount_stars_val = 0  # amount_stars NOT NULL
             if amount_minor_units is None or int(amount_minor_units) <= 0:
                 raise ValueError("TON invoice requires amount_minor_units > 0 (nanoton)")
             amount_minor_val = int(amount_minor_units)
@@ -1838,7 +2020,7 @@ class MasterDatabase:
                 # чтобы не разъехались ожидания в остальном коде
                 raise ValueError(f"YooKassa invoice requires currency=RUB, got {currency}")
 
-            stars_amount_val = 0  # stars_amount NOT NULL
+            amount_stars_val = 0  # amount_stars NOT NULL
             if amount_minor_units is None or int(amount_minor_units) <= 0:
                 raise ValueError("YooKassa invoice requires amount_minor_units > 0 (kopeks)")
             amount_minor_val = int(amount_minor_units)
@@ -1850,7 +2032,7 @@ class MasterDatabase:
             if not currency:
                 raise ValueError("Stripe invoice requires currency (e.g. USD)")
 
-            stars_amount_val = 0  # stars_amount NOT NULL
+            amount_stars_val = 0  # amount_stars NOT NULL
             if amount_minor_units is None or int(amount_minor_units) <= 0:
                 raise ValueError("Stripe invoice requires amount_minor_units > 0 (cents)")
             amount_minor_val = int(amount_minor_units)
@@ -1869,7 +2051,7 @@ class MasterDatabase:
                 payload,
                 telegram_invoice_id,
                 invoice_link,
-                stars_amount,
+                amount_stars,
                 amount_minor_units,
                 currency,
                 payment_method,
@@ -1887,7 +2069,7 @@ class MasterDatabase:
                 payload,
                 None,
                 invoice_link,
-                stars_amount_val,
+                amount_stars_val,
                 amount_minor_val,
                 currency,
                 payment_method,
@@ -1928,6 +2110,83 @@ class MasterDatabase:
             (status, external_id),
         )
         logger.info(f"Updated invoice by external_id {external_id} status to {status}")
+
+    async def get_superadmin_clients(
+        self,
+        offset: int = 0,
+        limit: int = 50,
+        search: Optional[str] = None,
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        """
+        Возвращает список клиентов для SuperAdmin (без имён — их нет в БД).
+        Возвращает (clients_list, total_count)
+        """
+        async with self.pool.acquire() as conn:
+            # Определяем search_id параметр для фильтрации
+            search_id = None
+            if search:
+                try:
+                    search_id = int(search.strip())
+                except ValueError:
+                    return [], 0
+            
+            # Основной запрос с параметризацией всего
+            main_query = """
+                WITH filtered_owners AS (
+                    SELECT DISTINCT owner_user_id AS user_id 
+                    FROM bot_instances
+                    WHERE ($1::bigint IS NULL OR owner_user_id = $1::bigint)
+                ),
+                owners_with_stats AS (
+                    SELECT 
+                        fo.user_id,
+                        COUNT(bi.instance_id) AS instances_count,
+                        sp.code AS plan_code,
+                        sp.name AS plan_name,
+                        us.period_end,
+                        GREATEST(0, CAST(EXTRACT(EPOCH FROM (us.period_end - NOW())) / 86400 AS INTEGER)) AS days_left,
+                        MIN(bi.created_at) AS first_instance_at
+                    FROM filtered_owners fo
+                    LEFT JOIN bot_instances bi ON bi.owner_user_id = fo.user_id
+                    LEFT JOIN user_subscription us ON us.user_id = fo.user_id
+                    LEFT JOIN saas_plans sp ON sp.plan_id = us.plan_id
+                    GROUP BY fo.user_id, sp.code, sp.name, us.period_end
+                )
+                SELECT 
+                    *,
+                    (SELECT COUNT(*) FROM owners_with_stats) AS total_count
+                FROM owners_with_stats
+                ORDER BY instances_count DESC, user_id
+                LIMIT $2 OFFSET $3
+            """
+            
+            # Выполняем основной запрос
+            rows = await conn.fetch(main_query, search_id, limit, offset)
+            
+            # Если нет результатов, возвращаем пустой список
+            if not rows:
+                return [], 0
+            
+            # Получаем total из первой строки (есть в каждой строке)
+            total = int(rows[0]["total_count"]) if rows[0]["total_count"] is not None else 0
+            
+            # Формируем список клиентов
+            clients = []
+            for row in rows:
+                clients.append({
+                    "user_id": row["user_id"],
+                    "full_name": f"User {row['user_id']}",
+                    "username": None,
+                    "first_name": None,
+                    "last_name": None,
+                    "instances_count": int(row["instances_count"]) if row["instances_count"] is not None else 0,
+                    "plan_code": row["plan_code"] or "demo",
+                    "plan_name": row["plan_name"] or "Demo",
+                    "days_left": int(row["days_left"]) if row["days_left"] is not None else 0,
+                    "first_instance_at": row["first_instance_at"].isoformat() if row["first_instance_at"] else None,
+                })
+            
+            return clients, total
 
     async def apply_invoice_to_billing(self, invoice_id: int) -> None:
         """
@@ -2104,6 +2363,25 @@ class MasterDatabase:
         inst["role"] = "owner"
         return inst
 
+    async def update_instance_meta_language(self, instance_id: str, language: str) -> None:
+        """
+        Обновляет только поле language в instance_meta.
+        Если записи нет — создаёт её с дефолтными значениями.
+        """
+        await self.execute(
+            """
+            INSERT INTO instance_meta (instance_id, language, created_at, updated_at)
+            VALUES ($1, $2, NOW(), NOW())
+            ON CONFLICT (instance_id)
+            DO UPDATE SET
+                language = EXCLUDED.language,
+                updated_at = NOW()
+            """,
+            instance_id,
+            language,
+        )
+        logger.info("update_instance_meta_language: instance_id=%s lang=%s", instance_id, language)
+
 
     async def enqueue_tg_update(self, instance_id: str, update_id: int, payload: dict) -> bool:
         """
@@ -2269,17 +2547,64 @@ class MasterDatabase:
         )
 
     async def get_decrypted_token(self, instance_id: str) -> Optional[str]:
-        assert self.cipher is not None
+        """🔥 DECRYPT с fallback на None cipher"""
         row = await self.fetchone(
             "SELECT encrypted_token FROM encrypted_tokens WHERE instance_id = $1", (instance_id,)
         )
         if not row:
             return None
+        
+        encrypted_data = bytes(row["encrypted_token"])
+        
+        # 🔥 Graceful fallback!
+        if self.cipher is None:
+            logger.warning(f"⚠️ No cipher for {instance_id} - returning raw token")
+            return encrypted_data.decode("utf-8")  # ← Предполагаем plaintext!
+        
         try:
-            return self.cipher.decrypt(bytes(row["encrypted_token"])).decode("utf-8")
+            decrypted = self.cipher.decrypt(encrypted_data).decode("utf-8")
+            logger.info(f"✅ Token decrypted for {instance_id}")
+            return decrypted
         except Exception as e:
-            logger.error(f"Failed to decrypt token for {instance_id}: {e}")
+            logger.error(f"❌ Decrypt failed for {instance_id}: {e}")
             return None
+
+    def get_or_create_encryption_key(self) -> bytes:
+        """🔥 PRIORITY: ENV > file > generate"""
+        import os
+        import base64
+        from pathlib import Path
+        
+        # 1. ENV ключ (ПРИОРИТЕТ!)
+        env_key = os.getenv("ENCRYPTION_KEY")
+        if env_key:
+            try:
+                # Padding для base64
+                key_str = env_key + "=" * (-len(env_key) % 4)
+                key = base64.urlsafe_b64decode(key_str)
+                logger.info("✅ Encryption: Using ENCRYPTION_KEY env")
+                return key
+            except Exception as e:
+                logger.error(f"❌ Invalid ENCRYPTION_KEY env: {e}")
+        
+        # 2. Файл
+        key_path = Path(settings.ENCRYPTION_KEY_FILE)
+        if key_path.exists():
+            try:
+                key = key_path.read_bytes()
+                logger.info(f"✅ Encryption: Using file {key_path}")
+                return key
+            except Exception as e:
+                logger.error(f"❌ Key file error {key_path}: {e}")
+        
+        # 3. Генерация нового
+        logger.warning("⚠️ Generating NEW encryption key!")
+        key = os.urandom(32)
+        key_path.parent.mkdir(parents=True, exist_ok=True)
+        key_path.write_bytes(key)
+        logger.info(f"✅ New key saved: {key_path}")
+        return key
+
 
     # === User state helpers (для master UI) ===
 
@@ -2585,67 +2910,90 @@ class MasterDatabase:
             (code,),
         )
 
-    async def ensure_default_billing(self, instance_id: str) -> None:
+    async def ensure_default_billing(self, conn_or_instance_id: Union[asyncpg.Connection, str], instance_id: Optional[str] = None) -> None:
         """
         Гарантирует, что для инстанса есть запись instance_billing.
         По умолчанию выдаёт Demo-план на 7 дней с его лимитами.
+        Поддержка транзакций: conn или instance_id.
         """
+        instance_id = instance_id or conn_or_instance_id  # conn или instance_id напрямую
         now = datetime.now(timezone.utc)
 
-        async with self.pool.acquire() as conn:
-            async with conn.transaction():
-                # уже есть биллинг — ничего не делаем
-                row = await conn.fetchrow(
-                    "SELECT 1 FROM instance_billing WHERE instance_id = $1", *(instance_id,)
-                )
-                if row:
-                    return
+        if isinstance(conn_or_instance_id, asyncpg.Connection):
+            # В транзакции create_instance
+            row = await conn_or_instance_id.fetchrow(
+                "SELECT 1 FROM instance_billing WHERE instance_id = $1", instance_id
+            )
+            if row:
+                return  # Уже есть
 
-                # ищем demo-план
-                row = await conn.fetchrow(
-                    "SELECT plan_id, period_days, tickets_limit FROM saas_plans WHERE code = $1",
-                    *("demo",),
+            # Ищем demo-план
+            row = await conn_or_instance_id.fetchrow(
+                "SELECT plan_id, period_days, tickets_limit FROM saas_plans WHERE code = $1",
+                "demo",
+            )
+            if not row:
+                logger.error("ensure_default_billing (TX): demo plan not found, instance_id=%s", instance_id)
+                return
+
+            plan_id = row["plan_id"]
+            period_days = row["period_days"]
+            tickets_limit = row["tickets_limit"]
+
+            period_start = now
+            period_end = now + timedelta(days=period_days)
+
+            await conn_or_instance_id.execute(
+                """
+                INSERT INTO instance_billing (
+                    instance_id, plan_id, period_start, period_end, tickets_used,
+                    tickets_limit, over_limit, last_expiring_notice_date, last_paused_notice_at,
+                    created_at, updated_at
                 )
-                if not row:
-                    logger.error(
-                        "ensure_default_billing: demo plan not found, instance_id=%s", instance_id
+                VALUES ($1, $2, $3, $4, 0, $5, FALSE, NULL, NULL, $6, $7)
+                """,
+                instance_id, plan_id, period_start, period_end, tickets_limit, now, now,
+            )
+            logger.info(f"instance_billing (TX) для instance_id {instance_id}: demo {period_days}д")
+
+        else:
+            # Обычный вызов (не в транзакции)
+            async with self.pool.acquire() as conn:
+                async with conn.transaction():
+                    row = await conn.fetchrow(
+                        "SELECT 1 FROM instance_billing WHERE instance_id = $1", instance_id
                     )
-                    return
+                    if row:
+                        return
 
-                plan_id = row["plan_id"]
-                period_days = row["period_days"]
-                tickets_limit = row["tickets_limit"]
-
-                period_start = now
-                period_end = now + timedelta(days=period_days)
-
-                await conn.execute(
-                    """
-                    INSERT INTO instance_billing (
-                        instance_id,
-                        plan_id,
-                        period_start,
-                        period_end,
-                        tickets_used,
-                        tickets_limit,
-                        over_limit,
-                        last_expiring_notice_date,
-                        last_paused_notice_at,
-                        created_at,
-                        updated_at
+                    row = await conn.fetchrow(
+                        "SELECT plan_id, period_days, tickets_limit FROM saas_plans WHERE code = $1",
+                        "demo",
                     )
-                    VALUES ($1, $2, $3, $4, 0, $5, FALSE, NULL, NULL, $6, $7)
-                    """,
-                    *(
-                        instance_id,
-                        plan_id,
-                        period_start,
-                        period_end,
-                        tickets_limit,
-                        now,
-                        now,
-                    ),
-                )
+                    if not row:
+                        logger.error("ensure_default_billing: demo plan not found, instance_id=%s", instance_id)
+                        return
+
+                    plan_id = row["plan_id"]
+                    period_days = row["period_days"]
+                    tickets_limit = row["tickets_limit"]
+
+                    period_start = now
+                    period_end = now + timedelta(days=period_days)
+
+                    await conn.execute(
+                        """
+                        INSERT INTO instance_billing (
+                            instance_id, plan_id, period_start, period_end, tickets_used,
+                            tickets_limit, over_limit, last_expiring_notice_date, last_paused_notice_at,
+                            created_at, updated_at
+                        )
+                        VALUES ($1, $2, $3, $4, 0, $5, FALSE, NULL, NULL, $6, $7)
+                        """,
+                        instance_id, plan_id, period_start, period_end, tickets_limit, now, now,
+                    )
+                    logger.info(f"instance_billing для instance_id {instance_id}: demo {period_days}д")
+
 
     # === Row mapping ===
 
@@ -2685,3 +3033,73 @@ class MasterDatabase:
             """,
             (user_id, lang_code),
         )
+
+
+    async def ensure_default_subscription(self, conn_or_user_id: Union[asyncpg.Connection, int], owner_user_id: Optional[int] = None):
+        """
+        Демо-подписка по user_id (7 дней, если истекла или отсутствует).
+        Поддержка транзакций: conn или user_id.
+        """
+        user_id = owner_user_id or conn_or_user_id  # conn или user_id напрямую
+        now = datetime.now(timezone.utc)
+        demo_ends = now + timedelta(days=7)
+        
+        if isinstance(conn_or_user_id, asyncpg.Connection):
+            # В транзакции create_instance
+            row = await conn_or_user_id.fetchrow("SELECT period_end FROM user_subscription WHERE user_id = $1", user_id)
+            if not row or row['period_end'] < now:
+                await conn_or_user_id.execute("""
+                    INSERT INTO user_subscription (user_id, plan_id, period_start, period_end, instances_limit)
+                    SELECT $1, plan_id, $2, $3, 3 FROM saas_plans WHERE code = 'demo'
+                    ON CONFLICT (user_id) DO UPDATE SET 
+                        period_start = $2, period_end = $3, updated_at = NOW()
+                """, user_id, now, demo_ends)
+                logger.info(f"Демо-подписка (TX) для user_id {user_id}: до {demo_ends}")
+        else:
+            # Обычный вызов (master-бот)
+            row = await self.fetchone("SELECT period_end FROM user_subscription WHERE user_id = $1", (user_id,))
+            if not row or row['period_end'] < now:
+                await self.execute("""
+                    INSERT INTO user_subscription (user_id, plan_id, period_start, period_end, instances_limit)
+                    SELECT $1, plan_id, $2, $3, 3 FROM saas_plans WHERE code = 'demo'
+                    ON CONFLICT (user_id) DO UPDATE SET 
+                        period_start = $2, period_end = $3, updated_at = NOW()
+                """, (user_id, now, demo_ends))
+                logger.info(f"Демо-подписка для user_id {user_id}: до {demo_ends}")
+
+
+    async def get_user_subscription(self, owneruserid: int) -> Optional[Dict]:
+        """Получить подписку юзера с информацией о плане"""
+        row = await self.fetchone("""
+            SELECT 
+                us.*,
+                sp.plan_code,
+                sp.plan_name,
+                sp.unlimited,  -- если есть такое поле
+                GREATEST(0, CAST(EXTRACT(EPOCH FROM (us.period_end - NOW()) / 86400) AS INTEGER)) as days_left 
+            FROM user_subscription us
+            LEFT JOIN saas_plans sp ON us.plan_id = sp.plan_id
+            WHERE us.user_id = $1
+        """, (owneruserid,)) 
+        return dict(row) if row else None
+
+    async def mark_user_expired_noticed_today(self, owneruserid: int):
+        """Отметить алерт отправленным"""
+        await self.execute("""
+            UPDATE user_subscription SET last_expiring_notice_date = CURRENT_DATE, updated_at = NOW() 
+            WHERE user_id = $1
+        """, (owneruserid,))  
+
+    async def increment_user_instances_created(self, user_id: int):
+        await self.execute("""
+            UPDATE user_subscription 
+            SET instances_created = instances_created + 1, updated_at = NOW()
+            WHERE user_id = $1
+        """, (user_id,))
+
+    async def decrement_user_instances_created(self, user_id: int):
+        await self.execute("""
+            UPDATE user_subscription 
+            SET instances_created = GREATEST(0, instances_created - 1), updated_at = NOW()
+            WHERE user_id = $1
+        """, (user_id,))

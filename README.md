@@ -1,9 +1,12 @@
+[![Schemathesis](https://github.com/glebgv/GraceHub/actions/workflows/schemathesis.yml/badge.svg?branch=dev)](https://github.com/glebgv/GraceHub/actions/workflows/schemathesis.yml) [![Frontend CI](https://github.com/glebgv/GraceHub/actions/workflows/frontend-ci.yml/badge.svg?branch=dev)](https://github.com/glebgv/GraceHub/actions/workflows/frontend-ci.yml) [![Backend CI](https://github.com/glebgv/GraceHub/actions/workflows/backend-ci.yml/badge.svg?branch=dev)](https://github.com/glebgv/GraceHub/actions/workflows/backend-ci.yml) [![Security Scan](https://github.com/glebgv/GraceHub/actions/workflows/security.yml/badge.svg?branch=dev)](https://github.com/glebgv/GraceHub/actions/workflows/security.yml) 
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 <div align="right">
   <a href="README.md">🇷🇺 Русский</a> •
-  <a href="README.en.md">🇬🇧 English</a> •
-  <a href="README.es.md">🇪🇸 Español</a> •
-  <a href="README.hi.md">🇮🇳 हिन्दी</a> •
-  <a href="README.zh.md">🇨🇳 简体中文</a>
+  <a href="README/README.en.md">🇬🇧 English</a> •
+  <a href="README/README.es.md">🇪🇸 Español</a> •
+  <a href="README/README.hi.md">🇮🇳 हिन्दी</a> •
+  <a href="README/README.zh.md">🇨🇳 简体中文</a>
 </div>
 
 <div align="center">
@@ -20,7 +23,7 @@
   <table cellpadding="0" cellspacing="0" style="border: none;">
     <tr>
       <td style="padding: 0; border: none; vertical-align: middle;">
-        <img src="logo.png" alt="GraceHub Logo" width="60">
+        <img src="README/logo.png" alt="GraceHub Logo" width="60">
       </td>
       <td style="padding: 0 0 0 20px; border: none; vertical-align: middle;">
         <h1 style="margin: 0;">GraceHub Platform</h1>
@@ -34,15 +37,15 @@ GraceHub — это SaaS платформа, которая позволяет �
 **🌐 Сайт:** [gracehub.ru](https://gracehub.ru)  
 **📢 Telegram канал:** [@gracehubru](https://t.me/gracehubru)  
 **👨‍💻 Разработчик:** [@Gribson_Micro](https://t.me/Gribson_Micro)  
-**🗺️ Roadmap:** [ROADMAP.md](./ROADMAP.md)
+**🗺️ Roadmap:** [README/ROADMAP.md](./ROADMAP.md)
 
 <div align="center">
   <h3>📱 Скриншоты</h3>
   <table>
     <tr>
-      <td align="center"><img src="./images/gracehub1.png" width="180" alt="Стартовая"></td>
-      <td align="center"><img src="./images/gracehub2.png" width="180" alt="Дашборд"></td>
-      <td align="center"><img src="./images/gracehub3.png" width="180" alt="Добавление бота"></td>
+      <td align="center"><img src="./README/images/gracehub1.png" width="180" alt="Стартовая"></td>
+      <td align="center"><img src="./README/images/gracehub2.png" width="180" alt="Дашборд"></td>
+      <td align="center"><img src="./README/images/gracehub3.png" width="180" alt="Добавление бота"></td>
     </tr>
     <tr>
       <td align="center"><em>Стартовая страница</em></td>
@@ -50,9 +53,9 @@ GraceHub — это SaaS платформа, которая позволяет �
       <td align="center"><em>Добавление бота</em></td>
     </tr>
     <tr>
-      <td align="center"><img src="./images/gracehub4.png" width="180" alt="Раздел оплаты"></td>
-      <td align="center"><img src="./images/gracehub5.png" width="180" alt="Скриншот 5"></td>
-      <td align="center"><img src="./images/gracehub6.png" width="180" alt="Скриншот 6"></td>
+      <td align="center"><img src="./README/images/gracehub4.png" width="180" alt="Раздел оплаты"></td>
+      <td align="center"><img src="./README/images/gracehub5.png" width="180" alt="Скриншот 5"></td>
+      <td align="center"><img src="./README/images/gracehub6.png" width="180" alt="Скриншот 6"></td>
     </tr>
     <tr>
       <td align="center"><em>Раздел оплаты, в котором было убито много времени</em></td>
@@ -60,9 +63,9 @@ GraceHub — это SaaS платформа, которая позволяет �
       <td align="center"><em>Меню админа бота поддержки пользователей</em></td>
     </tr>
     <tr>
-      <td align="center"><img src="./images/gracehub7.png" width="180" alt="Скриншот 7"></td>
-      <td align="center"><img src="./images/gracehub8.png" width="180" alt="Скриншот 8"></td>
-      <td align="center"><img src="./images/gracehub9.png" width="180" alt="Скриншот 9"></td>
+      <td align="center"><img src="./README/images/gracehub7.png" width="180" alt="Скриншот 7"></td>
+      <td align="center"><img src="./README/images/gracehub8.png" width="180" alt="Скриншот 8"></td>
+      <td align="center"><img src="./README/images/gracehub9.png" width="180" alt="Скриншот 9"></td>
     </tr>
     <tr>
       <td align="center"><em>Приходит месседж от клиента</em></td>
@@ -97,7 +100,7 @@ gracehub/
 │       ├── main.py                 # Точка входа мастер‑бота
 │       ├── api_server.py           # REST API сервер
 │       └── worker/                 # Воркеры для инстансов
-├── frontend/miniapp_frontend/      # React приложение
+├── frontend/                       # React приложение
 ├── config/                         # Конфигурационные файлы
 ├── scripts/
 │   └── launch.sh                   # Скрипт запуска
@@ -127,7 +130,7 @@ gracehub/
 | Прокси | Nginx (опционально) |
 | Версия Python | 3.10+ |
 | Node.js | 20+ |
-| Доменное имя |  |
+| Доменное имя | Необходимо🤓 |
 
 
 ## ⚙️ Подготовка окружения

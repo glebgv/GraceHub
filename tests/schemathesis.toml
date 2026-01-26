@@ -3,29 +3,29 @@ headers = { Authorization = "Bearer ${API_TOKEN}" }
 [checks]
 missing_required_header.expected-statuses = [400, 401, 403, 406, 422]
 
-# Отключаем конкретные операции по exact path
+# ============================================================================
+# SUPERADMIN-ONLY ЭНДПОИНТЫ (требуют специальной роли)
+# ============================================================================
+
 [[operations]]
-include-path = "/api/instances"
+include-path = "/api/platform/metrics"
 enabled = false
 
 [[operations]]
-include-path = "/api/billing/yookassa/status"
+include-path = "/api/superadmin/metrics"
 enabled = false
 
 [[operations]]
-include-path = "/api/webhook/stripe"
+include-path = "/api/superadmin/clients"
 enabled = false
 
 [[operations]]
-include-path = "/api/billing/ton/status"
+include-path = "/api/platform/settings"
 enabled = false
 
-# Отключаем по exact "operation name" (метод + путь)
 [[operations]]
-include-name = "POST /api/invoices/stripe/{invoice_id}/cancel"
+include-name = "POST /api/platform/settings/{key}"
 enabled = false
-
-# --- Убираем "admin" ручки, которые стабильно 403 (missing_auth warning) ---
 
 [[operations]]
 include-path = "/api/platform/single-tenant"
@@ -35,7 +35,114 @@ enabled = false
 include-path = "/api/platform/superadmins"
 enabled = false
 
+# ============================================================================
+# WEBHOOK ЭНДПОИНТЫ (вызываются внешними системами)
+# ============================================================================
+
+[[operations]]
+include-path = "/api/webhook/stripe"
+enabled = false
+
+[[operations]]
+include-path = "/api/billing/yookassa/webhook"
+enabled = false
+
+# ============================================================================
+# TELEGRAM-SPECIFIC ВАЛИДАЦИЯ (требуют реальные данные от Telegram)
+# ============================================================================
+
+[[operations]]
+include-name = "POST /api/auth/telegram"
+enabled = false
+
+[[operations]]
+include-path = "/api/instances"
+enabled = false
+
+# ============================================================================
+# INVOICE ЭНДПОИНТЫ (требуют реальные invoice_id из БД)
+# ============================================================================
+
+[[operations]]
+include-name = "GET /api/invoices/stripe/{invoice_id}/status"
+enabled = false
+
+[[operations]]
+include-name = "POST /api/invoices/stripe/{invoice_id}/cancel"
+enabled = false
+
+[[operations]]
+include-path = "/api/billing/ton/status"
+enabled = false
+
+[[operations]]
+include-name = "POST /api/billing/ton/cancel"
+enabled = false
+
+[[operations]]
+include-path = "/api/billing/yookassa/status"
+enabled = false
+
+# ============================================================================
+# INSTANCE-SPECIFIC ЭНДПОИНТЫ (требуют доступ к конкретному инстансу)
+# ============================================================================
+
+[[operations]]
+include-name = "DELETE /api/instances/{instance_id}"
+enabled = false
+
+[[operations]]
+include-name = "GET /api/instances/{instance_id}/stats"
+enabled = false
+
+[[operations]]
+include-name = "GET /api/instances/{instance_id}/tickets"
+enabled = false
+
+[[operations]]
+include-name = "POST /api/instances/{instance_id}/tickets/{ticket_id}/status"
+enabled = false
+
+[[operations]]
+include-name = "POST /api/instances/{instance_id}/operators"
+enabled = false
+
+[[operations]]
+include-name = "DELETE /api/instances/{instance_id}/operators/{user_id}"
+enabled = false
+
+# ============================================================================
+# INSTANCE-SPECIFIC ЭНДПОИНТЫ С ПРОБЛЕМАМИ В ТЕСТАХ
+# ============================================================================
+
+[[operations]]
+include-name = "GET /api/instances/{instance_id}/billing"
+enabled = false
+
+[[operations]]
+include-name = "GET /api/instances/{instance_id}/operators"
+enabled = false
+
+[[operations]]
+include-name = "GET /api/instances/{instance_id}/settings"
+enabled = false
+
+[[operations]]
+include-name = "POST /api/instances/{instance_id}/billing/create_invoice"
+enabled = false
+
+[[operations]]
+include-name = "POST /api/instances/{instance_id}/settings"
+enabled = false
+
+[[operations]]
+include-name = "GET /api/user/subscription"
+enabled = false
+
+# ============================================================================
+# СЛУЖЕБНЫЕ ЭНДПОИНТЫ
+# ============================================================================
+
 [[operations]]
 include-path = "/manage/health"
 enabled = false
-

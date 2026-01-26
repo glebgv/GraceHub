@@ -1,4 +1,5 @@
-#!/usr/bin/env python3
+# creator GraceHub Tg: @Gribson_Micro
+
 import asyncio
 import logging
 import os
@@ -105,7 +106,7 @@ async def main():
 
     config = uvicorn.Config(
         app=app,
-        host="0.0.0.0",
+        host="127.0.0.1",
         port=8001,
         log_level="info",
     )

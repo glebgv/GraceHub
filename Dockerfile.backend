@@ -1,0 +1,69 @@
+FROM mirror.gcr.io/library/python:3.12-slim
+
+# PostgreSQL deps
+RUN apt-get update && apt-get install -y \
+    libpq-dev gcc g++ curl && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app/src
+
+# Dependencies
+COPY requirements.txt ../
+RUN pip install --no-cache-dir -r ../requirements.txt
+
+# Source code (включая queue_worker.py в src/)
+COPY src/ ./
+
+# ENV
+ENV PYTHONPATH=/app/src
+ENV APP_BASE_DIR=/app
+ENV PYTHONUNBUFFERED=1
+
+# === TARGETS ===
+FROM mirror.gcr.io/library/python:3.12-slim AS queue-worker
+RUN apt-get update && apt-get install -y libpq-dev gcc g++ curl && rm -rf /var/lib/apt/lists/*
+WORKDIR /app/src
+COPY requirements.txt ../
+RUN pip install --no-cache-dir -r ../requirements.txt
+COPY src/ ./
+ENV PYTHONPATH=/app/src
+ENV APP_BASE_DIR=/app
+ENV PYTHONUNBUFFERED=1
+CMD ["python", "queue_worker.py"]
+
+FROM mirror.gcr.io/library/python:3.12-slim AS api
+RUN apt-get update && apt-get install -y libpq-dev gcc g++ curl && rm -rf /var/lib/apt/lists/*
+WORKDIR /app/src
+COPY requirements.txt ../
+RUN pip install --no-cache-dir -r ../requirements.txt
+COPY src/ ./
+ENV PYTHONPATH=/app/src
+ENV APP_BASE_DIR=/app
+ENV PYTHONUNBUFFERED=1
+EXPOSE 8001
+CMD ["bash", "-c", "python -u -m master_bot.api_server"]
+
+FROM mirror.gcr.io/library/python:3.12-slim AS master-bot
+RUN apt-get update && apt-get install -y libpq-dev gcc g++ curl && rm -rf /var/lib/apt/lists/*
+WORKDIR /app/src
+COPY requirements.txt ../
+RUN pip install --no-cache-dir -r ../requirements.txt
+COPY src/ ./
+ENV PYTHONPATH=/app/src
+ENV APP_BASE_DIR=/app
+ENV PYTHONUNBUFFERED=1
+EXPOSE 9443
+CMD ["bash", "-c", "python -u -m master_bot.main"]
+
+FROM mirror.gcr.io/library/python:3.12-slim AS user-worker
+RUN apt-get update && apt-get install -y libpq-dev gcc g++ curl && rm -rf /var/lib/apt/lists/*
+WORKDIR /app/src
+COPY requirements.txt ../
+RUN pip install --no-cache-dir -r ../requirements.txt
+COPY src/ ./
+ENV PYTHONPATH=/app/src
+ENV APP_BASE_DIR=/app
+ENV PYTHONUNBUFFERED=1
+# 🔥 ФИКС: bash -c + PYTHONUNBUFFERED
+CMD ["bash", "-c", "python -u -m worker.main"]
+
