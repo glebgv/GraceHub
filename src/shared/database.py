@@ -2122,67 +2122,55 @@ class MasterDatabase:
         Возвращает (clients_list, total_count)
         """
         async with self.pool.acquire() as conn:
-            # Базовый запрос без user_states (имён нет в БД)
-            base_select = """
-                SELECT 
-                    owners.user_id,
-                    COUNT(bi.instance_id) AS instances_count,
-                    sp.code AS plan_code,
-                    sp.name AS plan_name,
-                    us.period_end,
-                    GREATEST(0, CAST(EXTRACT(EPOCH FROM (us.period_end - NOW())) / 86400 AS INTEGER)) AS days_left,
-                    MIN(bi.created_at) AS first_instance_at
-                FROM 
-                    (SELECT DISTINCT owner_user_id AS user_id FROM bot_instances) AS owners
-                LEFT JOIN bot_instances bi ON bi.owner_user_id = owners.user_id
-                LEFT JOIN user_subscription us ON us.user_id = owners.user_id
-                LEFT JOIN saas_plans sp ON sp.plan_id = us.plan_id
-            """
-
-            # Создаем параметризованные запросы
-            params: List[Any] = []
-            count_params: List[Any] = []
-            
-            # Базовое условие WHERE (всегда 1=1 для упрощения добавления условий)
-            where_conditions = ["1=1"]
-            
-            # Поиск по user_id
+            # Определяем search_id параметр для фильтрации
+            search_id = None
             if search:
                 try:
                     search_id = int(search.strip())
-                    where_conditions.append("owners.user_id = $1")
-                    params.append(search_id)
-                    count_params.append(search_id)
                 except ValueError:
                     return [], 0
             
-            # Собираем WHERE-часть
-            where_clause = " WHERE " + " AND ".join(where_conditions)
-            
-            # Основной запрос
-            query = f"""
-                {base_select}
-                {where_clause}
-                GROUP BY owners.user_id, sp.code, sp.name, us.period_end
-                ORDER BY instances_count DESC, owners.user_id
-                LIMIT ${len(params) + 1} OFFSET ${len(params) + 2}
+            # Основной запрос с параметризацией всего
+            main_query = """
+                WITH filtered_owners AS (
+                    SELECT DISTINCT owner_user_id AS user_id 
+                    FROM bot_instances
+                    WHERE ($1::bigint IS NULL OR owner_user_id = $1::bigint)
+                ),
+                owners_with_stats AS (
+                    SELECT 
+                        fo.user_id,
+                        COUNT(bi.instance_id) AS instances_count,
+                        sp.code AS plan_code,
+                        sp.name AS plan_name,
+                        us.period_end,
+                        GREATEST(0, CAST(EXTRACT(EPOCH FROM (us.period_end - NOW())) / 86400 AS INTEGER)) AS days_left,
+                        MIN(bi.created_at) AS first_instance_at
+                    FROM filtered_owners fo
+                    LEFT JOIN bot_instances bi ON bi.owner_user_id = fo.user_id
+                    LEFT JOIN user_subscription us ON us.user_id = fo.user_id
+                    LEFT JOIN saas_plans sp ON sp.plan_id = us.plan_id
+                    GROUP BY fo.user_id, sp.code, sp.name, us.period_end
+                )
+                SELECT 
+                    *,
+                    (SELECT COUNT(*) FROM owners_with_stats) AS total_count
+                FROM owners_with_stats
+                ORDER BY instances_count DESC, user_id
+                LIMIT $2 OFFSET $3
             """
             
-            # Добавляем параметры limit и offset
-            params.extend([limit, offset])
+            # Выполняем основной запрос
+            rows = await conn.fetch(main_query, search_id, limit, offset)
             
-            rows = await conn.fetch(query, *params)
-
-            # Count query
-            count_query = f"""
-                SELECT COUNT(DISTINCT owner_user_id) AS total 
-                FROM bot_instances
-                {where_clause}
-            """
+            # Если нет результатов, возвращаем пустой список
+            if not rows:
+                return [], 0
             
-            total_row = await conn.fetchrow(count_query, *count_params)
-            total = int(total_row["total"]) if total_row else 0
-
+            # Получаем total из первой строки (есть в каждой строке)
+            total = int(rows[0]["total_count"]) if rows[0]["total_count"] is not None else 0
+            
+            # Формируем список клиентов
             clients = []
             for row in rows:
                 clients.append({
@@ -2191,13 +2179,13 @@ class MasterDatabase:
                     "username": None,
                     "first_name": None,
                     "last_name": None,
-                    "instances_count": int(row["instances_count"]),
+                    "instances_count": int(row["instances_count"]) if row["instances_count"] is not None else 0,
                     "plan_code": row["plan_code"] or "demo",
                     "plan_name": row["plan_name"] or "Demo",
-                    "days_left": int(row["days_left"]),
+                    "days_left": int(row["days_left"]) if row["days_left"] is not None else 0,
                     "first_instance_at": row["first_instance_at"].isoformat() if row["first_instance_at"] else None,
                 })
-
+            
             return clients, total
 
     async def apply_invoice_to_billing(self, invoice_id: int) -> None:
