@@ -2164,16 +2164,16 @@ class MasterDatabase:
             """
 
             # Основной запрос - только конкатенация, никаких f-strings
-            sql = base_select + where_clause + group_order_limit   # nosec B608
-            rows = await conn.fetch(sql, *params)
+            sql = base_select + where_clause + group_order_limit
+            rows = await conn.fetch(sql, *params)  # nosec B608
 
             # Подсчёт total - только конкатенация, никаких f-strings
             count_sql = (
                 "SELECT COUNT(*) AS total "
                 "FROM (SELECT DISTINCT owner_user_id FROM bot_instances) AS owners"
                 + where_clause
-            )    # nosec B608
-            total_row = await conn.fetchrow(count_sql, *count_params)
+            )
+            total_row = await conn.fetchrow(count_sql, *count_params)  # nosec B608
             total = int(total_row["total"]) if total_row else 0
 
             clients = []
@@ -2192,8 +2192,6 @@ class MasterDatabase:
                 })
 
             return clients, total
-
-
 
     async def apply_invoice_to_billing(self, invoice_id: int) -> None:
         """
