@@ -2163,10 +2163,12 @@ class MasterDatabase:
             """
 
             # WHERE clause contains only safe literals, all values passed via params
+            # nosec B608
             sql = base_select + where_clause + group_order_limit  # nosec B608
             rows = await conn.fetch(sql, *params)
 
             # WHERE clause is safe literal, values in count_params
+            # nosec B608
             count_sql = (  # nosec B608
                 "SELECT COUNT(*) AS total "
                 "FROM (SELECT DISTINCT owner_user_id FROM bot_instances) AS owners"
