@@ -2111,7 +2111,6 @@ class MasterDatabase:
         )
         logger.info(f"Updated invoice by external_id {external_id} status to {status}")
 
-
     async def get_superadmin_clients(
         self,
         offset: int = 0,
@@ -2163,17 +2162,17 @@ class MasterDatabase:
                 LIMIT $1 OFFSET $2
             """
 
-            # Основной запрос - только конкатенация, никаких f-strings
-            sql = base_select + where_clause + group_order_limit
-            rows = await conn.fetch(sql, *params)  # nosec B608
+            # WHERE clause contains only safe literals, all values passed via params
+            sql = base_select + where_clause + group_order_limit  # nosec B608
+            rows = await conn.fetch(sql, *params)
 
-            # Подсчёт total - только конкатенация, никаких f-strings
-            count_sql = (
+            # WHERE clause is safe literal, values in count_params
+            count_sql = (  # nosec B608
                 "SELECT COUNT(*) AS total "
                 "FROM (SELECT DISTINCT owner_user_id FROM bot_instances) AS owners"
                 + where_clause
             )
-            total_row = await conn.fetchrow(count_sql, *count_params)  # nosec B608
+            total_row = await conn.fetchrow(count_sql, *count_params)
             total = int(total_row["total"]) if total_row else 0
 
             clients = []
