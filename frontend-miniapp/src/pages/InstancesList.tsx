@@ -73,10 +73,6 @@ const InstancesListSkeleton: React.FC = () => {
             className="skeleton animate-pulse"
             style={{ width: 100, height: 36, borderRadius: 999 }}
           />
-          <div
-            className="skeleton animate-pulse"
-            style={{ width: 120, height: 36, borderRadius: 999 }}
-          />
         </div>
       </div>
 
@@ -304,38 +300,51 @@ const InstancesList: React.FC<InstancesListProps> = ({
             </p>
 
             <div className="instances-empty-actions">
-              <button
-                type="button"
-                className="btn btn--outline instances-pill"
-                onClick={() => setLangOpen(true)}
-                disabled={langSaving}
-                aria-label={t('settings.language_title')}
-                title={t('settings.language_title')}
-              >
-                <span aria-hidden className={`fi fi-${currentLangMeta.flagCode} flag-icon`} />
-              </button>
+              <div style={{ 
+                display: 'flex', 
+                gap: '8px', 
+                marginBottom: '12px',
+                justifyContent: 'center'
+              }}>
+                <button
+                  type="button"
+                  className="btn btn--outline instances-pill"
+                  onClick={() => setLangOpen(true)}
+                  disabled={langSaving}
+                  aria-label={t('settings.language_title')}
+                  title={t('settings.language_title')}
+                >
+                  <span aria-hidden className={`fi fi-${currentLangMeta.flagCode} flag-icon`} />
+                </button>
+
+                {onAddBotClick && (
+                  <button
+                    type="button"
+                    onClick={handleAddBotClick}
+                    className="btn btn--primary instances-pill"
+                    disabled={deleting}
+                    title={deleting ? 'Недоступно во время операции' : undefined}
+                  >
+                    <span aria-hidden>➕</span>
+                    <span>{t('instances.bot')}</span>
+                  </button>
+                )}
+              </div>
 
               {onOpenSuperAdmin && (
                 <button
                   type="button"
                   onClick={onOpenSuperAdmin}
                   className="btn btn--secondary instances-pill"
+                  style={{ 
+                    width: '100%', 
+                    justifyContent: 'center',
+                    maxWidth: '200px',
+                    margin: '0 auto'
+                  }}
                 >
                   <span aria-hidden>🛡</span>
                   <span>Admin</span>
-                </button>
-              )}
-
-              {onAddBotClick && (
-                <button
-                  type="button"
-                  onClick={handleAddBotClick}
-                  className="btn btn--primary instances-pill"
-                  disabled={deleting}
-                  title={deleting ? 'Недоступно во время операции' : undefined}
-                >
-                  <span aria-hidden>➕</span>
-                  <span>{t('instances.bot')}</span>
                 </button>
               )}
             </div>
@@ -373,39 +382,57 @@ const InstancesList: React.FC<InstancesListProps> = ({
                 )}
               </div>
 
-              <div className="instances-actions">
-                <button
-                  type="button"
-                  className="btn btn--outline instances-pill"
-                  onClick={() => setLangOpen(true)}
-                  disabled={langSaving}
-                  aria-label={t('settings.language_title')}
-                  title={t('settings.language_title')}
-                >
-                  <span aria-hidden className={`fi fi-${currentLangMeta.flagCode} flag-icon`} />
-                </button>
+              <div className="instances-actions" style={{ 
+                display: 'flex', 
+                flexDirection: 'column', 
+                gap: '8px',
+                alignItems: 'stretch'
+              }}>
+                {/* Первая строка: язык и бот в одной строке */}
+                <div style={{ 
+                  display: 'flex', 
+                  gap: '8px',
+                  justifyContent: 'flex-start'
+                }}>
+                  <button
+                    type="button"
+                    className="btn btn--outline instances-pill"
+                    onClick={() => setLangOpen(true)}
+                    disabled={langSaving}
+                    aria-label={t('settings.language_title')}
+                    title={t('settings.language_title')}
+                  >
+                    <span aria-hidden className={`fi fi-${currentLangMeta.flagCode} flag-icon`} />
+                  </button>
 
+                  {onAddBotClick && (
+                    <button
+                      type="button"
+                      onClick={handleAddBotClick}
+                      className="btn btn--primary instances-pill"
+                      disabled={deleting}
+                      title={deleting ? 'Недоступно во время операции' : undefined}
+                    >
+                      <span aria-hidden>➕</span>
+                      <span>{t('instances.bot')}</span>
+                    </button>
+                  )}
+                </div>
+
+                {/* Вторая строка: админка */}
                 {onOpenSuperAdmin && (
                   <button
                     type="button"
                     onClick={onOpenSuperAdmin}
                     className="btn btn--secondary instances-pill"
+                    style={{ 
+                      width: '100%', 
+                      justifyContent: 'center',
+                      maxWidth: '200px'
+                    }}
                   >
                     <span aria-hidden>🛡</span>
                     <span>Admin</span>
-                  </button>
-                )}
-
-                {onAddBotClick && (
-                  <button
-                    type="button"
-                    onClick={handleAddBotClick}
-                    className="btn btn--primary instances-pill"
-                    disabled={deleting}
-                    title={deleting ? 'Недоступно во время операции' : undefined}
-                  >
-                    <span aria-hidden>➕</span>
-                    <span>{t('instances.bot')}</span>
                   </button>
                 )}
               </div>
@@ -419,40 +446,133 @@ const InstancesList: React.FC<InstancesListProps> = ({
 
             <div className="instances-grid">
               {instances.map((inst) => (
-                <button
+                <div
                   key={inst.instanceid}
-                  type="button"
+                  role="button"
+                  tabIndex={0}
                   className="card instance-card"
-                  onClick={() => onSelect(inst)}
-                  disabled={deleting}
+                  onClick={() => !deleting && onSelect(inst)}
+                  onKeyDown={(e) => {
+                    if (!deleting && (e.key === 'Enter' || e.key === ' ')) {
+                      e.preventDefault();
+                      onSelect(inst);
+                    }
+                  }}
+                  style={{ 
+                    cursor: deleting ? 'not-allowed' : 'pointer',
+                    opacity: deleting ? 0.6 : 1,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    padding: '16px',
+                    gap: '12px',
+                    borderRadius: '12px',
+                    backgroundColor: 'var(--tg-background-secondary)',
+                    border: '1px solid var(--tg-border-color)',
+                    transition: 'all 0.2s ease'
+                  }}
+                  aria-disabled={deleting}
                 >
-                  <div className="instance-left">
-                    <div className="instance-name">
-                      <span className="instance-emoji" aria-hidden>
+                  <div style={{ 
+                    flex: 1, 
+                    display: 'flex', 
+                    flexDirection: 'column', 
+                    gap: '4px',
+                    overflow: 'hidden'
+                  }}>
+                    <div style={{ 
+                      display: 'flex', 
+                      alignItems: 'center', 
+                      gap: '8px' 
+                    }}>
+                      <span style={{ 
+                        fontSize: '18px',
+                        lineHeight: 1
+                      }} aria-hidden>
                         🤖
                       </span>
-                      <span className="instance-name-text">{inst.botname}</span>
+                      <span style={{ 
+                        fontSize: '16px',
+                        fontWeight: '600',
+                        color: 'var(--tg-color-text-primary)',
+                        whiteSpace: 'nowrap',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis'
+                      }}>
+                        {inst.botname}
+                      </span>
                     </div>
-                    <div className="instance-username">@{inst.botusername}</div>
+                    <div style={{ 
+                      fontSize: '14px',
+                      color: 'var(--tg-color-text-secondary)',
+                      whiteSpace: 'nowrap',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis'
+                    }}>
+                      @{inst.botusername}
+                    </div>
                   </div>
 
-                  <div className="instance-right" onClick={(e) => e.stopPropagation()}>
-                    <span className="instance-badge">{inst.role}</span>
+                  <div style={{ 
+                    display: 'flex', 
+                    alignItems: 'center', 
+                    gap: '8px',
+                    flexShrink: 0
+                  }} onClick={(e) => e.stopPropagation()}>
+                    <span style={{ 
+                      padding: '4px 10px',
+                      borderRadius: '12px',
+                      backgroundColor: 'var(--tg-background-tertiary)',
+                      color: 'var(--tg-color-text-primary)',
+                      fontSize: '13px',
+                      fontWeight: '500',
+                      border: '1px solid var(--tg-border-color)'
+                    }}>
+                      {inst.role}
+                    </span>
 
                     {onDeleteInstance && (
                       <button
                         type="button"
                         aria-label="Delete"
                         title="Delete"
-                        onClick={() => setInstanceToDelete(inst)}
-                        className="btn btn--outline btn--sm instance-trash"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setInstanceToDelete(inst);
+                        }}
+                        style={{
+                          background: 'transparent',
+                          border: '1px solid var(--tg-border-color)',
+                          borderRadius: '8px',
+                          width: '36px',
+                          height: '36px',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          cursor: 'pointer',
+                          color: 'var(--tg-color-text-secondary)',
+                          transition: 'all 0.2s ease',
+                          flexShrink: 0
+                        }}
                         disabled={deleting}
+                        onMouseEnter={(e) => {
+                          if (!deleting) {
+                            e.currentTarget.style.backgroundColor = 'var(--tg-background-tertiary)';
+                            e.currentTarget.style.color = '#ff4444';
+                          }
+                        }}
+                        onMouseLeave={(e) => {
+                          if (!deleting) {
+                            e.currentTarget.style.backgroundColor = 'transparent';
+                            e.currentTarget.style.color = 'var(--tg-color-text-secondary)';
+                          }
+                        }}
                       >
                         🗑
                       </button>
                     )}
                   </div>
-                </button>
+                </div>
               ))}
             </div>
           </>
@@ -479,11 +599,13 @@ const InstancesList: React.FC<InstancesListProps> = ({
       >
         <Drawer.Portal>
           <Drawer.Overlay className="drawer-overlay" />
-          <Drawer.Content className="drawer-content">
+          <Drawer.Content className="drawer-content" aria-describedby={undefined}>
+            <Drawer.Title className="drawer-title">
+              🌐 {t('settings.language_title')}
+            </Drawer.Title>
+
             <div className="drawer-body">
               <div className="drawer-handle" />
-
-              <h3 className="drawer-title">🌐 {t('settings.language_title')}</h3>
 
               <div className="drawer-list">
                 {LANGS.map((l) => (
@@ -521,13 +643,15 @@ const InstancesList: React.FC<InstancesListProps> = ({
         >
           <Drawer.Portal>
             <Drawer.Overlay className="drawer-overlay" />
-            <Drawer.Content className="drawer-content">
+            <Drawer.Content className="drawer-content" aria-describedby="delete-description">
+              <Drawer.Title className="drawer-title">
+                🗑️ Удалить бота?
+              </Drawer.Title>
+
               <div className="drawer-body">
                 <div className="drawer-handle" />
 
-                <h3 className="drawer-title">🗑️ Удалить бота?</h3>
-
-                <div className="drawer-text">
+                <div className="drawer-text" id="delete-description">
                   <p className="drawer-text-line">Вы действительно хотите удалить инстанс:</p>
                   <p className="drawer-text-strong">{instanceToDelete?.botname}</p>
                   <p className="drawer-text-hint">@{instanceToDelete?.botusername}</p>
@@ -568,13 +692,17 @@ const InstancesList: React.FC<InstancesListProps> = ({
       >
         <Drawer.Portal>
           <Drawer.Overlay className="drawer-overlay" />
-          <Drawer.Content className="drawer-content">
+          <Drawer.Content className="drawer-content" aria-describedby="limit-description">
+            <Drawer.Title className="drawer-title">
+              ⚠️ Ограничение
+            </Drawer.Title>
+
             <div className="drawer-body">
               <div className="drawer-handle" />
 
-              <h3 className="drawer-title">⚠️ Ограничение</h3>
-
-              <p className="drawer-text">{normalizedLimitText}</p>
+              <p className="drawer-text" id="limit-description">
+                {normalizedLimitText}
+              </p>
 
               <div className="drawer-footer drawer-footer-end">
                 <button type="button" className="btn btn--primary" onClick={goHomeFromLimitModal}>
@@ -597,15 +725,15 @@ const InstancesList: React.FC<InstancesListProps> = ({
       >
         <Drawer.Portal>
           <Drawer.Overlay className="drawer-overlay" />
-          <Drawer.Content className="drawer-content">
+          <Drawer.Content className="drawer-content" aria-describedby="restart-description">
+            <Drawer.Title className="drawer-title">
+              🔄 {t('settings.restart_required_title') || 'Требуется перезапуск'}
+            </Drawer.Title>
+
             <div className="drawer-body">
               <div className="drawer-handle" />
 
-              <h3 className="drawer-title">
-                🔄 {t('settings.restart_required_title') || 'Требуется перезапуск'}
-              </h3>
-
-              <p className="drawer-text">
+              <p className="drawer-text" id="restart-description">
                 {t('settings.restart_required_text') ||
                   'Язык был изменён. Чтобы изменения применились везде, перезапустите приложение.'}
               </p>
@@ -645,13 +773,15 @@ const InstancesList: React.FC<InstancesListProps> = ({
       >
         <Drawer.Portal>
           <Drawer.Overlay className="drawer-overlay" />
-          <Drawer.Content className="drawer-content">
+          <Drawer.Content className="drawer-content" aria-describedby="expired-description">
+            <Drawer.Title className="drawer-title">
+              ⚠️ {t('billing.demo_expired_title') || 'Демо-подписка истекла'}
+            </Drawer.Title>
+
             <div className="drawer-body">
               <div className="drawer-handle" />
 
-              <h3 className="drawer-title">⚠️ {t('billing.demo_expired_title') || 'Демо-подписка истекла'}</h3>
-
-              <p className="drawer-text">
+              <p className="drawer-text" id="expired-description">
                 {t('billing.demo_expired_message') ||
                   'Ваша демо-подписка закончилась. Чтобы продолжить использовать ботов, выберите платный тариф.'}
               </p>

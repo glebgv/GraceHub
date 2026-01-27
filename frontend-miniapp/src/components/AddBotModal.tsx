@@ -104,8 +104,20 @@ const AddBotModal: React.FC<AddBotModalProps> = ({
             borderTopRightRadius: 20,
             outline: 'none',
           }}
+          aria-describedby="add-bot-description"
         >
-          <div style={{ padding: '12px 16px 24px' }}>
+          <Drawer.Title
+            style={{
+              margin: '12px 16px 6px',
+              fontSize: 18,
+              fontWeight: 600,
+              color: 'var(--tg-theme-text-color)',
+            }}
+          >
+            🤖 {t('firstLaunch.addBot')}
+          </Drawer.Title>
+
+          <div style={{ padding: '0 16px 24px' }}>
             {/* Drag handle */}
             <div
               style={{
@@ -117,20 +129,9 @@ const AddBotModal: React.FC<AddBotModalProps> = ({
               }}
             />
 
-            {/* Header */}
-            <h3
-              style={{
-                margin: '0 0 6px 0',
-                fontSize: 18,
-                fontWeight: 600,
-                color: 'var(--tg-theme-text-color)',
-              }}
-            >
-              🤖 {t('firstLaunch.addBot')}
-            </h3>
-
             {/* Description */}
             <p
+              id="add-bot-description"
               style={{
                 margin: '0 0 16px 0',
                 fontSize: 13,
@@ -145,6 +146,7 @@ const AddBotModal: React.FC<AddBotModalProps> = ({
             <form onSubmit={handleSubmit}>
               <div style={{ marginBottom: 16 }}>
                 <label
+                  htmlFor="bot-token-input"
                   style={{
                     display: 'block',
                     marginBottom: 6,
@@ -156,12 +158,15 @@ const AddBotModal: React.FC<AddBotModalProps> = ({
                   {t('firstLaunch.botTokenLabel')}
                 </label>
                 <input
+                  id="bot-token-input"
                   type="text"
                   placeholder={t('firstLaunch.botTokenPlaceholder') || '123456:ABC-DEF...'}
                   value={token}
                   onChange={handleTokenChange}
                   disabled={loading}
                   autoFocus
+                  aria-invalid={!!error}
+                  aria-describedby={error ? 'token-error' : undefined}
                   style={{
                     width: '100%',
                     padding: '10px 12px',
@@ -179,6 +184,8 @@ const AddBotModal: React.FC<AddBotModalProps> = ({
                 {/* Validation error message */}
                 {error && (
                   <div
+                    id="token-error"
+                    role="alert"
                     style={{
                       marginTop: 6,
                       fontSize: 12,
@@ -188,7 +195,7 @@ const AddBotModal: React.FC<AddBotModalProps> = ({
                       gap: 4,
                     }}
                   >
-                    <span>⚠️</span>
+                    <span aria-hidden="true">⚠️</span>
                     <span>{error}</span>
                   </div>
                 )}

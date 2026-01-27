@@ -3664,7 +3664,7 @@ def create_miniapp_app(
             sub = await miniapp_db.db.get_user_subscription(user_id)
             
             if sub:
-                logger.info(f"[Subscription] Найдена существующая подписка: plan={sub.get('plan_code')}, "
+                logger.info(f"[Subscription] Найдена существующая подписка: plan={sub.get('code')}, "
                         f"status={sub.get('status', 'unknown')}")
                 logger.debug(f"[Subscription] Данные подписки: {sub}")
             else:
@@ -3695,7 +3695,16 @@ def create_miniapp_app(
                         detail="Subscription creation failed - no subscription found after creation attempt"
                     )
             
-            # 5. Проверяем обязательные поля подписки
+            # 5. Маппинг полей из базы данных в ожидаемый формат API
+            logger.info(f"[Subscription] Маппинг полей базы данных...")
+            if 'code' in sub and 'plan_code' not in sub:
+                sub['plan_code'] = sub['code']
+            if 'name' in sub and 'plan_name' not in sub:
+                sub['plan_name'] = sub['name']
+            
+            logger.debug(f"[Subscription] После маппинга: plan_code={sub.get('plan_code')}, plan_name={sub.get('plan_name')}")
+            
+            # 6. Проверяем обязательные поля подписки
             logger.info(f"[Subscription] Проверка структуры данных подписки...")
             required_fields = ['plan_code', 'plan_name', 'period_start', 'period_end', 'days_left', 
                             'instances_limit', 'instances_created']
@@ -3709,7 +3718,7 @@ def create_miniapp_app(
                     detail=f"Subscription data is incomplete. Missing fields: {missing_fields}"
                 )
             
-            # 6. Преобразуем даты в строки (с проверкой)
+            # 7. Преобразуем даты в строки (с проверкой)
             try:
                 period_start_str = sub["period_start"].isoformat() if isinstance(sub["period_start"], datetime) else sub["period_start"]
                 period_end_str = sub["period_end"].isoformat() if isinstance(sub["period_end"], datetime) else sub["period_end"]
@@ -3725,7 +3734,7 @@ def create_miniapp_app(
                     detail=f"Invalid date format in subscription data: {str(date_error)}"
                 )
             
-            # 7. Формируем ответ
+            # 8. Формируем ответ
             response_data = {
                 "plan_code": sub["plan_code"],
                 "plan_name": sub["plan_name"],
@@ -3769,6 +3778,7 @@ def create_miniapp_app(
                 detail = "Internal Server Error"
                 
             raise HTTPException(status_code=500, detail=detail)
+
 
     @app.get(
         "/api/billing/ton/status",

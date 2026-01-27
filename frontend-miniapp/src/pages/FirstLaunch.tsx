@@ -1,7 +1,7 @@
 // src/pages/FirstLaunch.tsx
 // creator GraceHub Tg: @Gribson_Micro
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Drawer } from 'vaul';
 import { apiClient } from '../api/client';
@@ -146,6 +146,10 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
   });
 
   const [offerSubmitting, setOfferSubmitting] = useState(false);
+  
+  // Ref для отслеживания монтирования
+  const mountedRef = useRef(true);
+  const offerLoadedRef = useRef(false);
 
   const isOfferGateOpen = useMemo(() => {
     return offer.loading ? false : offer.enabled && !offer.accepted && !!offer.url;
@@ -165,13 +169,24 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
   }, [i18n, initialLang]);
 
   useEffect(() => {
-    let cancelled = false;
-
+    mountedRef.current = true;
+    offerLoadedRef.current = false;
+    
     const loadOfferStatus = async () => {
+      // Не загружаем если уже загрузили или идет внешняя загрузка
+      if (offerLoadedRef.current || loading) {
+        return;
+      }
+      
       try {
+        console.log('[FirstLaunch] Loading offer status...');
         const st = await apiClient.getOfferStatus();
-        if (cancelled) return;
-
+        
+        if (!mountedRef.current) return;
+        
+        console.log('[FirstLaunch] Offer status loaded:', st);
+        offerLoadedRef.current = true;
+        
         setOffer({
           enabled: !!st?.enabled,
           url: String(st?.url ?? ''),
@@ -180,8 +195,11 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
           error: null,
         });
       } catch (e: any) {
-        if (cancelled) return;
+        if (!mountedRef.current) return;
+        
         console.error('[FirstLaunch] getOfferStatus failed', e);
+        offerLoadedRef.current = true;
+        
         setOffer({
           enabled: false,
           url: '',
@@ -192,12 +210,16 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
       }
     };
 
-    void loadOfferStatus();
+    // Используем задержку для предотвращения скачков рендера
+    const timeoutId = setTimeout(() => {
+      void loadOfferStatus();
+    }, 150);
 
     return () => {
-      cancelled = true;
+      mountedRef.current = false;
+      clearTimeout(timeoutId);
     };
-  }, []);
+  }, [loading]); // Добавляем зависимость от loading
 
   const acceptOffer = async () => {
     if (!offer.url || offerSubmitting) return;
@@ -246,7 +268,6 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
     }
   };
 
-
   const handleSubmitToken = async (token: string) => {
     setAddBotError(null);
     try {
@@ -261,7 +282,7 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
   };
 
   // Показ скелетона только во время загрузки оферты или внешнего loading
-  if (loading || offer.loading) {
+  if (loading) {
     return <FirstLaunchSkeleton />;
   }
 
