@@ -391,6 +391,12 @@ class UserSubscriptionResponse(BaseModel):
     instances_created: int
     unlimited: bool = False
 
+class SaveLanguageRequest(BaseModel):
+    language: str = Field(..., min_length=2, max_length=5, description="Language code: ru, en, es, hi, zh")
+
+    class Config:
+        populate_by_name = True
+
 # ========================================================================
 # Telegram Validation
 # ========================================================================
@@ -1420,6 +1426,7 @@ def create_miniapp_app(
     # 2) Публикуем в app.state (чтобы роуты могли брать через request.app.state)
     app.state.session_manager = session_manager
     app.state.telegram_validator = telegram_validator
+    app.state.master_bot = master_bot_instance 
 
     # 3) Подключаем основные роуты
     app.include_router(manage_router)
@@ -3958,6 +3965,41 @@ def create_miniapp_app(
                 for inst in instances
             ],
         )
+
+    @app.post("/api/user/settings/language")
+    async def save_user_language(
+        payload: SaveLanguageRequest,
+        request: Request, 
+        current_user: dict = Depends(get_current_user),  
+    ) -> dict:
+        """Save user language preference to user_states table."""
+        # Достаём master_bot из app.state
+        master_bot = request.app.state.master_bot
+        
+        user_id = current_user.get("userId") or current_user.get("user_id") or current_user.get("id")
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+        
+        user_id = int(user_id)
+        language = str(payload.language).strip().lower()
+        
+        # Validate language code
+        if language not in ["ru", "en", "es", "hi", "zh"]:
+            raise HTTPException(status_code=400, detail="Invalid language code")
+        
+        try:
+            if master_bot and hasattr(master_bot, "db"):
+                await master_bot.db.set_user_language(user_id, language)
+                logger.info(f"[API] User language saved: user_id={user_id}, language={language}")
+            else:
+                logger.warning(f"[API] master_bot not available for setting language: user_id={user_id}")
+        except Exception as e:
+            logger.error(f"[API] Failed to save user language: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail="Failed to save language")
+        
+        return {"status": "ok"}
+
+
 
     @app.get("/api/instances", response_model=List[InstanceInfo])
     async def list_instances(

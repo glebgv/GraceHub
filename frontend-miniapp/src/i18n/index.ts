@@ -25,6 +25,14 @@ i18n
     supportedLngs: ['ru', 'en', 'es', 'hi', 'zh'],
     interpolation: {
       escapeValue: false
+    },
+    react: {
+      useSuspense: false,
+      bindI18n: 'languageChanged loaded',
+      bindI18nStore: 'added removed',
+      transEmptyNodeValue: '',
+      transSupportBasicHtmlNodes: true,
+      transKeepBasicHtmlNodesFor: ['br', 'strong', 'i', 'p']
     }
   });
 

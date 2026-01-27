@@ -251,6 +251,16 @@ export interface PlatformMetrics {
   paid_subscriptions: number;
 }
 
+// --- User settings ---
+export interface UserSettingsResponse {
+  language?: string;
+  // другие настройки пользователя могут быть добавлены здесь
+}
+
+export interface SaveLanguageRequest {
+  language: string;
+}
+
 /**
  * Ошибка API с кодом HTTP и телом ответа (если оно было).
  * Удобно для UI: можно делать проверку e.status === 400 и e.message.includes(...).
@@ -515,6 +525,16 @@ class ApiClient {
 
   async getMe() {
     return this.request('GET', '/api/me');
+  }
+
+  // === User Settings ===
+  async getUserSettings(): Promise<UserSettingsResponse> {
+    return this.request<UserSettingsResponse>('GET', '/api/user/settings');
+  }
+
+  async saveUserLanguage(language: string): Promise<SimpleStatusResponse> {
+    const payload: SaveLanguageRequest = { language };
+    return this.request<SimpleStatusResponse>('POST', '/api/user/settings/language', payload);
   }
 
   // === Offer (публичная оферта) ===

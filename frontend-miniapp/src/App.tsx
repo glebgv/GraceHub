@@ -1,6 +1,6 @@
 // src/App.tsx
 // creator GraceHub Tg: @Gribson_Micro
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState, useRef } from 'react';
 import './App.css';
 import Dashboard from './pages/Dashboard';
 import InstancesList from './pages/InstancesList';
@@ -76,7 +76,7 @@ const App: React.FC<AppProps> = ({
   const [selectedInstance, setSelectedInstance] = useState<Instance | null>(null);
 
 
-  // ✅ Always start from InstancesList screen
+  //  Always start from InstancesList screen
   const [currentPage, setCurrentPage] = useState<Page>('instances');
 
 
@@ -151,7 +151,13 @@ const App: React.FC<AppProps> = ({
   }, [currentPage]);
 
 
+  const hasInitialized = useRef(false);
+
   useEffect(() => {
+    // Выполняем инициализацию только один раз
+    if (hasInitialized.current) return;
+    hasInitialized.current = true;
+
     const initApp = async () => {
       console.log('[App.initApp] start', {
         instanceIdFromUrl,
@@ -161,90 +167,68 @@ const App: React.FC<AppProps> = ({
         initDataPreview: initDataRaw?.slice(0, 80),
       });
 
-
       try {
         setLoading(true);
         setError(null);
 
-
-        const initData = initDataRaw || '';
-
-
+        const initData = initDataRaw;
         if (!initData) {
-          console.warn('[App.initApp] initData отсутствует или пуста');
-          setError(t('app.open_from_telegram'));
+          console.warn('[App.initApp] initData missing');
+          setError(t('app.openFromTelegram'));
           setLoading(false);
           return;
         }
 
-
         apiClient.setInitData(initData);
-
-
         const startParam = '';
-
-
         console.log('[App.initApp] calling authTelegram', { startParam });
-
-
         const authResponse = await apiClient.authTelegram({
           initData,
-          start_param: startParam,
+          startparam: startParam,
         });
 
 
         console.log('[App.initApp] authResponse:', {
           user: authResponse.user,
-          default_instance_id: authResponse.default_instance_id,
+          default_instance_id: authResponse.defaultinstanceid,
           instancesCount: authResponse.user?.instances?.length,
         });
-
-
         apiClient.setToken(authResponse.token);
         setUser(authResponse.user);
-
 
         let resolvedInstance: Instance | null = null;
         let linkForbidden = false;
 
-
         try {
           const payload: any = {};
 
-
           if (instanceIdFromUrl) {
-            payload.instance_id = instanceIdFromUrl;
+            payload.instanceid = instanceIdFromUrl;
           }
-
 
           if (adminIdFromUrl) {
             const adminNum = Number(adminIdFromUrl);
             if (!Number.isNaN(adminNum)) {
-              payload.admin_id = adminNum;
+              payload.adminid = adminNum;
             }
           }
 
-
           console.log('[App.initApp] resolveInstance payload:', payload);
 
-
-          if (payload.instance_id || payload.admin_id) {
+          if (payload.instanceid || payload.adminid) {
             const resolveResp = await apiClient.resolveInstance(payload);
-
-
             console.log('[App.initApp] resolveInstance response:', resolveResp);
 
-
-            if (resolveResp.link_forbidden) {
+            if (resolveResp.linkforbidden) {
               linkForbidden = true;
-            } else if (resolveResp.instance_id) {
+            } else if (resolveResp.instanceid) {
               resolvedInstance = {
-                instanceid: resolveResp.instance_id,
-                botusername: resolveResp.bot_username ?? '',
-                botname: resolveResp.bot_name ?? '',
+                instanceid: resolveResp.instanceid,
+                botusername: resolveResp.botusername ?? '',
+                botname: resolveResp.botname ?? '',
                 role: resolveResp.role ?? 'owner',
-                openchatusername: resolveResp.openchat_username ?? null,
-                generalpanelchatid: resolveResp.general_panel_chat_id ?? null,
+                openchatusername: resolveResp.openchatusername ?? null,
+                generalpanelchatid: resolveResp.generalpanelchatid ?? null,
               };
             } else {
               console.warn('[App.initApp] resolveInstance returned no instance_id', resolveResp);
@@ -253,43 +237,35 @@ const App: React.FC<AppProps> = ({
             console.log('[App.initApp] no instance_id/admin_id in payload, skip resolveInstance');
           }
         } catch (e: any) {
-          console.warn(
-            '[App.initApp] resolve_instance error (продолжаем без него):',
-            e?.message || e,
-          );
+          console.warn('App.initApp resolveinstance error:', e?.message || e);
         }
-
 
         if (linkForbidden) {
           setSelectedInstance(null);
-          setError(t('app.owner_only'));
+          setError(t('app.ownerOnly'));
           setLoading(false);
           return;
         }
-
 
         console.log('[App.initApp] fallback instance selection', {
           instancesCount: authResponse.user.instances?.length,
         });
 
-
-        const userInstancesRaw = authResponse.user.instances || [];
-        const normalizedList: Instance[] = userInstancesRaw.map((src: any): Instance => ({
-          instanceid: src.instanceid || src.instance_id,
-          botusername: src.botusername || src.bot_username || '',
-          botname: src.botname || src.bot_name || '',
+        const userInstancesRaw = authResponse.user.instances;
+        const normalizedList: Instance[] = userInstancesRaw.map((src: any) => ({
+          instanceid: src.instanceid || src.instanceid,
+          botusername: src.botusername || src.botusername,
+          botname: src.botname || src.botname,
           role: src.role || 'owner',
-          openchatusername: src.openchatusername || src.openchat_username || null,
-          generalpanelchatid: src.generalpanelchatid || src.general_panel_chat_id || null,
+          openchatusername: src.openchatusername || src.openchatusername || null,
+          generalpanelchatid: src.generalpanelchatid || src.generalpanelchatid || null,
         }));
-
 
         setInstances(normalizedList);
 
-
         if (normalizedList.length === 0) {
           console.log(
-            '[App.initApp] first launch: no instances for this user, show FirstLaunch screen',
+            '[App.initApp] first launch: no instances for this user, show FirstLaunch screen'
           );
           setIsFirstLaunch(true);
           setSelectedInstance(null);
@@ -298,57 +274,45 @@ const App: React.FC<AppProps> = ({
           return;
         }
 
-
         if (resolvedInstance) {
           setSelectedInstance(resolvedInstance);
         } else {
           setSelectedInstance((prev) => {
             if (prev) return prev;
 
-
-            const defId = authResponse.default_instance_id;
+            const defId = authResponse.defaultinstanceid;
             if (defId) {
               const fromList = normalizedList.find((i) => i.instanceid === defId);
               if (fromList) return fromList;
             }
 
-
             return normalizedList[0] ?? null;
           });
         }
 
-
-        // ✅ Always land on InstancesList after init
+        // Always land on InstancesList after init
         setCurrentPage('instances');
-
-
         setLoading(false);
-        console.log('[App.initApp] done (resolvedInstance) =', resolvedInstance);
+
+        console.log('[App.initApp] done', { resolvedInstance });
       } catch (err: any) {
-        console.error('[App.initApp] FATAL Ошибка инициализации:', {
+        console.error('[App.initApp] FATAL', {
           message: err?.message,
           stack: err?.stack,
         });
 
-
-        if (
-          typeof err?.message === 'string' &&
-          err.message.includes('панель доступна только владельцу')
-        ) {
-          setError(t('app.owner_only'));
+        if (typeof err?.message === 'string' && err.message.includes('link_forbidden')) {
+          setError(t('app.ownerOnly'));
         } else {
-          setError(t('app.open_from_telegram'));
+          setError(t('app.openFromTelegram'));
         }
-
 
         setLoading(false);
       }
     };
 
-
-    initApp();
-  }, [instanceIdFromUrl, adminIdFromUrl, initDataRaw, currentUserId, t]);
-
+    void initApp();
+  }, []);
 
   // NEW: load platform settings once token is set (after initApp)
   useEffect(() => {
@@ -380,18 +344,16 @@ const App: React.FC<AppProps> = ({
       return;
     }
 
-    if (!selectedInstance) {
+    if (!selectedInstance || selectedInstance.instanceid === 'temp-loading') {
       setChatInfo(null);
       setBilling(null);
       setInstanceDataLoading(false);
       return;
     }
 
-
     setChatInfo(null);
     setBilling(null);
     setInstanceDataLoading(true);
-
 
     const loadAll = async () => {
       try {
@@ -400,23 +362,18 @@ const App: React.FC<AppProps> = ({
           apiClient.getInstanceBilling(selectedInstance.instanceid),
         ]);
 
-
         const lang = (s as any).language as string | undefined;
         if (lang && ['ru', 'en', 'es', 'hi', 'zh'].includes(lang)) {
           i18n.changeLanguage(lang);
         }
 
-
         const openchat = (s as any).openchat || {};
         const id = openchat.general_panel_chat_id ?? (s as any).generalpanelchatid ?? null;
         const username = openchat.openchat_username ?? (s as any).openchatusername ?? null;
 
-
         console.log('[App] settings for header:', { openchat, id, username, lang });
 
-
         setChatInfo({ id, username });
-
 
         setBilling({
           planCode: data.plan_code,
@@ -438,9 +395,9 @@ const App: React.FC<AppProps> = ({
       }
     };
 
-
     loadAll();
-  }, [selectedInstance?.instanceid, isDeleting]); // Добавляем зависимость от isDeleting
+  }, [selectedInstance?.instanceid, isDeleting]);
+
 
 
   // Добавленный useEffect для динамической установки темы
@@ -474,7 +431,7 @@ const App: React.FC<AppProps> = ({
 
   const handleCreateInstanceByToken = async (token: string) => {
     try {
-      // ✅ НЕ используем глобальный loading - вместо этого используем isCreatingInstance
+      //  НЕ используем глобальный loading - вместо этого используем isCreatingInstance
       setError(null);
       setLimitMessage(null);
       setIsCreatingInstance(true);
@@ -483,7 +440,7 @@ const App: React.FC<AppProps> = ({
       console.log('[App] createInstanceByToken, preview:', token.slice(0, 10));
 
 
-      // ✅ Создаём временный инстанс для немедленного показа Dashboard со скелетоном
+      //  Создаём временный инстанс для немедленного показа Dashboard со скелетоном
       const tempInstance: Instance = {
         instanceid: 'temp-loading',
         botusername: '',
@@ -494,7 +451,7 @@ const App: React.FC<AppProps> = ({
       };
 
 
-      // ✅ Сразу переключаемся на Dashboard - там будет показан скелетон
+      //  Сразу переключаемся на Dashboard - там будет показан скелетон
       setSelectedInstance(tempInstance);
       setIsFirstLaunch(false);
       setCurrentPage('dashboard');
@@ -521,7 +478,7 @@ const App: React.FC<AppProps> = ({
       };
 
 
-      // ✅ Обновляем список и выбранный инстанс реальными данными
+      //  Обновляем список и выбранный инстанс реальными данными
       setInstances((prev) => [...prev, normalized]);
       setSelectedInstance(normalized);
 
@@ -553,7 +510,7 @@ const App: React.FC<AppProps> = ({
         if (err.status === 400 || err.status === 403) {
           if (looksLikeLimit) {
             setLimitMessage(text);
-            // ✅ При ошибке лимита возвращаемся на instances
+            //  При ошибке лимита возвращаемся на instances
             setIsFirstLaunch(true);
             setCurrentPage('instances');
             setSelectedInstance(null);
@@ -570,7 +527,7 @@ const App: React.FC<AppProps> = ({
 
 
       setError(message);
-      // ✅ При любой другой ошибке тоже возвращаемся
+      //  При любой другой ошибке тоже возвращаемся
       setIsFirstLaunch(true);
       setCurrentPage('instances');
       setSelectedInstance(null);
@@ -584,17 +541,17 @@ const App: React.FC<AppProps> = ({
     try {
       console.log('[App] delete instance', inst);
       
-      // ✅ Устанавливаем флаг удаления
+      //  Устанавливаем флаг удаления
       setIsDeleting(true);
       
-      // ✅ Сохраняем предыдущее состояние для возможного отката
+      //  Сохраняем предыдущее состояние для возможного отката
       const previousInstances = [...instances];
       const previousSelectedInstance = selectedInstance;
       const previousSelectedInstanceId = selectedInstance?.instanceid;
       const wasFirstLaunch = isFirstLaunch;
       const wasOnDashboard = currentPage === 'dashboard';
       
-      // ✅ Оптимистичное обновление - сразу обновляем UI
+      //  Оптимистичное обновление - сразу обновляем UI
       setInstances((prev) => {
         const filtered = prev.filter((i) => i.instanceid !== inst.instanceid);
         
@@ -622,7 +579,7 @@ const App: React.FC<AppProps> = ({
         return filtered;
       });
       
-      // ✅ Удаление в фоне
+      //  Удаление в фоне
       const deletePromise = apiClient.deleteInstance(inst.instanceid);
       
       // Обрабатываем успешное удаление
@@ -631,7 +588,7 @@ const App: React.FC<AppProps> = ({
       }).catch((err: any) => {
         console.error('[App] Фоновое удаление не удалось', err);
         
-        // ✅ Возвращаем инстанс обратно
+        //  Возвращаем инстанс обратно
         setInstances(previousInstances);
         
         // Если удаляли выбранный инстанс, возвращаем его
@@ -657,7 +614,7 @@ const App: React.FC<AppProps> = ({
           setBackgroundError(message);
         }, 300);
       }).finally(() => {
-        // ✅ Сбрасываем флаг удаления после завершения операции
+        //  Сбрасываем флаг удаления после завершения операции
         setIsDeleting(false);
       });
       
@@ -1117,7 +1074,7 @@ const App: React.FC<AppProps> = ({
         )}
 
 
-        {/* ✅ Показываем Dashboard если есть selectedInstance ИЛИ идёт создание инстанса */}
+        {/*  Показываем Dashboard если есть selectedInstance ИЛИ идёт создание инстанса */}
         {currentPage === 'dashboard' && (isCreatingInstance || selectedInstance) && (
           <Dashboard instanceId={selectedInstance?.instanceid || ''} />
         )}

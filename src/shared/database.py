@@ -3073,14 +3073,14 @@ class MasterDatabase:
         row = await self.fetchone("""
             SELECT 
                 us.*,
-                sp.plan_code,
-                sp.plan_name,
-                sp.unlimited,  -- если есть такое поле
-                GREATEST(0, CAST(EXTRACT(EPOCH FROM (us.period_end - NOW()) / 86400) AS INTEGER)) as days_left 
+                sp.code,
+                sp.name,
+                FALSE as unlimited,
+                GREATEST(0, FLOOR(EXTRACT(EPOCH FROM (us.period_end - NOW())) / 86400)::INTEGER) as days_left 
             FROM user_subscription us
             LEFT JOIN saas_plans sp ON us.plan_id = sp.plan_id
             WHERE us.user_id = $1
-        """, (owneruserid,)) 
+        """, (owneruserid,))
         return dict(row) if row else None
 
     async def mark_user_expired_noticed_today(self, owneruserid: int):

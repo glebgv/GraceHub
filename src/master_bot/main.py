@@ -533,7 +533,7 @@ class MasterBot:
         )
         return link
 
-    def _build_miniapp_url(self, instance: BotInstance, admin_user_id: int) -> str:
+    async def _build_miniapp_url(self, instance: BotInstance, admin_user_id: int, user_id: int) -> str:
         """
         Собирает URL мини-аппы для конкретного инстанса и администратора.
         MINIAPP_BASE_URL должен быть задан в окружении, например:
@@ -545,8 +545,12 @@ class MasterBot:
             logger.warning("MINIAPP_BASE_URL is not set; mini app link will be empty")
             return ""
 
-        # фронтенд читает query-параметры instance_id/admin_id
-        return f"{base_url}?instance_id={instance.instance_id}&admin_id={admin_user_id}"
+        # Получаем язык пользователя
+        user_lang = await self.get_user_lang(user_id)
+        
+        # фронтенд читает query-параметры instance_id/admin_id/user_language
+        return f"{base_url}?instance_id={instance.instance_id}&admin_id={admin_user_id}&user_language={user_lang}"
+
 
     async def auto_close_tickets_loop(self) -> None:
         """
@@ -782,11 +786,12 @@ class MasterBot:
                 return
             
             try:
-                # Добавляем / для Telegram WebApp
-                if not base_url.endswith("/"):
-                    tma_url = base_url + "/"
-                else:
-                    tma_url = base_url
+                # Получаем текущий язык пользователя из БД
+                user_lang = await self.get_user_lang(user_id)  # ru, en, es, hi, zh
+                
+                # Добавляем параметры: instance_id НЕ НУЖЕН (resolveInstance), admin_id, user_language
+                query_params = f"admin_id={user_id}&user_language={user_lang}"
+                tma_url = f"{base_url}?{query_params}"
                 
                 logger.info(f"Opening Mini App with URL: {tma_url}")
                 
@@ -821,8 +826,10 @@ class MasterBot:
                 logger.error(f"Error creating Mini App link: {e}", exc_info=True)
                 # Альтернатива: простая ссылка
                 try:
+                    user_lang = await self.get_user_lang(user_id)
+                    fallback_url = f"{base_url}?admin_id={user_id}&user_language={user_lang}"
                     await callback.message.edit_text(
-                        f"Откройте мини-приложение по ссылке: {base_url}",
+                        f"Откройте мини-приложение по ссылке: {fallback_url}",
                         reply_markup=InlineKeyboardMarkup(
                             inline_keyboard=[
                                 [
@@ -839,13 +846,13 @@ class MasterBot:
             
             await callback.answer()
             return
-            
+        
         elif data == "help":
             await callback.message.answer(
                 texts.master_help_text,
                 reply_markup=self.get_main_menu_for_lang(texts),
             )
-            
+        
         elif data == "change_language":
             base_texts = LANGS.get(self.default_lang)
             
@@ -881,7 +888,7 @@ class MasterBot:
             )
             await callback.answer()
             return
-            
+        
         elif data == "offer_accept":
             # Обработка принятия оферты
             st = await self.db.get_offer_settings()
@@ -894,7 +901,7 @@ class MasterBot:
             # возвращаем в старт/меню
             await self.cmd_start(callback.message, user_id=user_id)
             return
-            
+        
         elif data == "offer_decline":
             # Обработка отказа от оферты
             user_id = callback.from_user.id
@@ -906,15 +913,16 @@ class MasterBot:
             await callback.answer("Отменено.", show_alert=True)
             await callback.message.answer("Без принятия оферты использование сервиса невозможно.")
             return
-            
+        
         elif data == "main_menu":
             # возвращаемся в главное меню
             await self.cmd_start(callback.message, user_id=user_id)
-            
+        
         else:
             await callback.answer(texts.master_unknown_command)
 
         await callback.answer()
+
 
     async def ensure_offer_accepted(self, userid: int, message_or_cb) -> bool:
         st = await self.db.get_offer_settings()
@@ -967,18 +975,19 @@ class MasterBot:
             try:
                 open_panel_text = getattr(texts, 'master_menu_open_panel', '🚀 Старт / Панель')
                 
-                # Telegram требует URL с / в конце для WebAppInfo
-                if not base_url.endswith("/"):
-                    tma_url = base_url + "/"
-                else:
-                    tma_url = base_url
+                # Получаем текущий язык пользователя из БД
+                user_lang = await self.get_user_lang(user_id)  # ru, en, es, hi, zh
+                
+                # Формируем URL с параметрами admin_id и user_language
+                query_params = f"admin_id={user_id}&user_language={user_lang}"
+                tma_url = f"{base_url}?{query_params}"
                 
                 logger.info(f"Creating WebAppInfo with URL: {tma_url}")
                 
                 keyboard_rows.append([
                     InlineKeyboardButton(
                         text=open_panel_text,
-                        web_app=WebAppInfo(url=tma_url),  # URL должен быть с / в конце
+                        web_app=WebAppInfo(url=tma_url),
                     )
                 ])
                 
@@ -1020,6 +1029,7 @@ class MasterBot:
         ])
         
         return InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
+
 
 
     async def cmd_start(self, message: Message, user_id: int | None = None):

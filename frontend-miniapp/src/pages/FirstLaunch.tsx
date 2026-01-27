@@ -122,8 +122,16 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
 }) => {
   const { t, i18n } = useTranslation();
 
-  const initialLang = (i18n.language as LangCode) || 'ru';
+  // Читаем user_language из URL параметров (передаётся из бота)
+  const urlParams = new URLSearchParams(window.location.search);
+  const passedLangParam = urlParams.get('user_language');
+  const passedLang = (passedLangParam as LangCode) || null;
+
+  // Инициализируем язык: 1) из URL, 2) из i18n, 3) 'ru'
+  const initialLang: LangCode = passedLang || (i18n.language as LangCode) || 'ru';
+  
   const [language, setLanguage] = useState<LangCode>(initialLang);
+  const [userLanguage, setUserLanguage] = useState<LangCode>(initialLang);
 
   const [showAddModal, setShowAddModal] = useState(false);
   const [addBotError, setAddBotError] = useState<string | null>(null);
@@ -148,6 +156,13 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
     if (tg?.close) tg.close();
     else window.close();
   };
+
+  // Инициализируем язык в i18n при монтировании
+  useEffect(() => {
+    if (LANGS.some(lang => lang.code === initialLang)) {
+      i18n.changeLanguage(initialLang);
+    }
+  }, [i18n, initialLang]);
 
   useEffect(() => {
     let cancelled = false;
@@ -213,11 +228,24 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
     }
   };
 
-  // Язык меняется только локально (не сохраняем на бэкенде в FirstLaunch)
-  const handleLanguageClick = (lang: LangCode) => {
-    setLanguage(lang);
-    i18n.changeLanguage(lang);
+  // Язык меняется локально и сохраняем на бэкенде
+  const handleLanguageClick = async (lang: LangCode) => {
+    try {
+      // Обновляем локальное состояние ПЕРЕД сменой языка в i18n
+      setLanguage(lang);
+      setUserLanguage(lang);
+      
+      // Меняем язык в i18n
+      await i18n.changeLanguage(lang);
+      
+      // Сохраняем язык в базу данных
+      await apiClient.saveUserLanguage(lang);
+    } catch (e: any) {
+      console.error('[FirstLaunch] Failed to save language', e);
+      // Можно показать уведомление об ошибке
+    }
   };
+
 
   const handleSubmitToken = async (token: string) => {
     setAddBotError(null);
@@ -232,7 +260,7 @@ const FirstLaunch: React.FC<FirstLaunchProps> = ({
     }
   };
 
-  // Показ скелетона во время загрузки оферты или внешнего loading
+  // Показ скелетона только во время загрузки оферты или внешнего loading
   if (loading || offer.loading) {
     return <FirstLaunchSkeleton />;
   }
